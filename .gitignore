@@ -1,0 +1,30 @@
+# Internal debugging notes — contain a real IP/domain, not for publication
+CLAUDE_REVIEW_NOTES.md
+
+# Scratch / local
+.tmp/
+*.bak
+*.bak-*
+*.patched
+*.log
+.DS_Store
+
+# Runtime secrets and generated node state — never publish
+.env
+.env.*
+!.env.example
+*.token
+*.pem
+*.key
+inputs.env
+node.json
+entry-node.json
+state/
+ssl/
+keys/
+*.zip
+
+# Session working notes — contain real IPs/keys/domains, not for publication
+PROJECT-STATE.md
+
+# Local audit SSH keypair — private key, never publish
