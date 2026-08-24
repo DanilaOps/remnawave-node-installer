@@ -38,7 +38,7 @@ export NEEDRESTART_MODE=a
 export NEEDRESTART_SUSPEND=1
 
 # ── Defaults ────────────────────────────────────────────────────────────────
-INSTALLER_VERSION="3.3.2-rw1"
+INSTALLER_VERSION="3.3.2-rw2"
 
 # Pin the node image to a released version, not a moving :latest, so the same script
 # yields the same Node/Xray build (reproducible installs + validation). Override with
@@ -53,6 +53,15 @@ NODE_DIR="/opt/remnanode"
 NGINX_DIR="/opt/nginx-selfsteal"
 STATE_DIR="/opt/remnawave-node/state"
 ACME_HOME="/root/.acme.sh"
+
+# RemnaNode 3.3.2 normally uses the Xray bundled in its image. Pin a known-good
+# core on the host and bind-mount it over /usr/local/bin/xray; the image's
+# /usr/local/bin/rw-core symlink then executes this exact binary. Keeping the
+# binary outside the container makes the pin survive compose recreates/resume.
+XRAY_CORE_VERSION="26.6.27"
+XRAY_CORE_REPO="XTLS/Xray-core"
+XRAY_CORE_DIR="${NODE_DIR}/xray-core-${XRAY_CORE_VERSION}"
+XRAY_CORE_BIN="${XRAY_CORE_DIR}/xray"
 
 # Bootstrap installer is fetched at the pinned NA_REF (not a hardcoded 'main'), so
 # the bootstrap and the modules it pulls come from the same ref.
@@ -559,10 +568,10 @@ generate_reality_keys() {
   if [[ "$DRY_RUN" == "1" ]]; then
     REALITY_PRIVATE="DRY_PRIVATE"; REALITY_PUBLIC="DRY_PUBLIC"; REALITY_SHORT_ID="dryshortid"; return
   fi
-  info "Generating Reality x25519 keypair (via node image)…"
+  info "Generating Reality x25519 keypair (Xray ${XRAY_CORE_VERSION})…"
   local out priv pub
-  out="$(docker run --rm --entrypoint xray "$NODE_IMAGE" x25519 2>/dev/null)" \
-    || die "Failed to run 'xray x25519' from $NODE_IMAGE."
+  out="$("$XRAY_CORE_BIN" x25519 2>/dev/null)" \
+    || die "Failed to run 'xray x25519' from $XRAY_CORE_BIN."
   # Newer Xray-core (25.x) renamed the x25519 output labels: "Public key:" became
   # "Password:". Match both so a fresh node image doesn't break key generation.
   priv="$(printf '%s' "$out" | grep -iE 'private'          | awk '{print $NF}' | head -1 || true)"
@@ -711,9 +720,9 @@ build_xray_config() {
 }'
 }
 
-# Best-effort validation of the generated config with the node image's own xray
-# binary (`xray run -test`) before it is pushed to the panel — otherwise a bad
-# config only surfaces later as an offline node / missing inbound.
+# Validate the generated config with the same pinned Xray binary that the node
+# will run. It is mounted into a disposable node container so the image's bundled
+# geosite/geoip assets remain available during `xray run -test`.
 validate_xray_config() {
   local cfg="$1"
   [[ "$DRY_RUN" == "1" ]] && return 0
@@ -722,7 +731,9 @@ validate_xray_config() {
   local f="$SCRATCH/xray-config.json"
   printf '%s' "$cfg" > "$f"; chmod 600 "$f"   # config embeds the Reality private key
   info "Validating generated Xray config (xray -test)…"
-  if docker run --rm --entrypoint xray -v "$f:/cfg/config.json:ro" "$NODE_IMAGE" \
+  if docker run --rm --entrypoint /usr/local/bin/xray \
+       -v "$XRAY_CORE_BIN:/usr/local/bin/xray:ro" \
+       -v "$f:/cfg/config.json:ro" "$NODE_IMAGE" \
        run -test -c /cfg/config.json >/dev/null 2>"$SCRATCH/xray-test.err"; then
     ok "Xray config valid."
   else
@@ -783,13 +794,13 @@ EOF
 # ── Base system ─────────────────────────────────────────────────────────────
 install_base() {
   step "Base packages"
-  if [[ "$DRY_RUN" == "1" ]]; then info "DRY-RUN: apt-get install curl jq openssl socat ca-certificates"; return; fi
+  if [[ "$DRY_RUN" == "1" ]]; then info "DRY-RUN: apt-get install curl jq openssl socat ca-certificates unzip"; return; fi
   if command -v apt-get >/dev/null 2>&1; then
     DEBIAN_FRONTEND=noninteractive apt-get update -qq
     DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
-      curl jq openssl socat ca-certificates iproute2 cron >/dev/null
+      curl jq openssl socat ca-certificates iproute2 cron unzip >/dev/null
   else
-    warn "Non-apt system: ensure curl, jq, openssl, socat, cron are installed."
+    warn "Non-apt system: ensure curl, jq, openssl, socat, cron, unzip are installed."
   fi
   ok "Base packages ready."
 }
@@ -826,6 +837,62 @@ install_docker() {
   systemctl enable --now docker >/dev/null 2>&1 || true
   docker compose version >/dev/null 2>&1 || die "docker compose v2 plugin is missing after install."
   ok "Docker installed: $(docker --version)"
+}
+
+# Download and verify the exact Xray release used by the node. Checksums are from
+# the official XTLS/Xray-core v26.6.27 release .dgst assets. Only architectures
+# supported by both RemnaNode and this installer are accepted deliberately.
+install_pinned_xray_core() {
+  step "Pinned Xray core ${XRAY_CORE_VERSION}"
+  if [[ "$DRY_RUN" == "1" ]]; then
+    info "DRY-RUN: download, SHA-256 verify and install Xray ${XRAY_CORE_VERSION} at $XRAY_CORE_BIN"
+    return 0
+  fi
+
+  local asset expected_sha arch archive unpack actual_sha actual_version
+  arch="$(uname -m)"
+  case "$arch" in
+    x86_64|amd64)
+      asset="Xray-linux-64.zip"
+      expected_sha="b3e5902d06d6282fe53cfa2fc426058b9aeaa429b2c812e20887cd47f26d08bf"
+      ;;
+    aarch64|arm64)
+      asset="Xray-linux-arm64-v8a.zip"
+      expected_sha="13a251379bea366c2cf10363ad71e75734193d401f26f518bf0c25e5c8f8c931"
+      ;;
+    *) die "Unsupported architecture for pinned Xray ${XRAY_CORE_VERSION}: $arch" ;;
+  esac
+
+  if [[ -x "$XRAY_CORE_BIN" ]]; then
+    actual_version="$("$XRAY_CORE_BIN" version 2>/dev/null | head -n 1 || true)"
+    if [[ "$actual_version" == "Xray ${XRAY_CORE_VERSION} "* ]]; then
+      ok "Pinned Xray already present: $actual_version"
+      return 0
+    fi
+    warn "Existing pinned-core file has an unexpected version: ${actual_version:-unreadable}; replacing it."
+  fi
+
+  archive="$SCRATCH/$asset"
+  unpack="$SCRATCH/xray-${XRAY_CORE_VERSION}"
+  rm -rf "$unpack"
+  mkdir -p "$unpack" "$XRAY_CORE_DIR"
+  info "Downloading $asset from ${XRAY_CORE_REPO} v${XRAY_CORE_VERSION}…"
+  curl -fL --retry 3 --retry-delay 2 --connect-timeout 15 --max-time 300 \
+    -o "$archive" \
+    "https://github.com/${XRAY_CORE_REPO}/releases/download/v${XRAY_CORE_VERSION}/${asset}" \
+    || die "Failed to download Xray ${XRAY_CORE_VERSION}."
+
+  actual_sha="$(sha256sum "$archive" | awk '{print $1}')"
+  [[ "$actual_sha" == "$expected_sha" ]] \
+    || die "Xray archive SHA-256 mismatch: expected $expected_sha, got $actual_sha"
+
+  unzip -oj "$archive" xray -d "$unpack" >/dev/null \
+    || die "Failed to extract xray from $asset."
+  install -m 0755 "$unpack/xray" "$XRAY_CORE_BIN"
+  actual_version="$("$XRAY_CORE_BIN" version 2>/dev/null | head -n 1 || true)"
+  [[ "$actual_version" == "Xray ${XRAY_CORE_VERSION} "* ]] \
+    || die "Installed Xray version mismatch: ${actual_version:-unreadable}"
+  ok "Pinned Xray installed and verified: $actual_version"
 }
 
 # ── Decoy template (real masking site, not a bare stub) ─────────────────────
@@ -1480,6 +1547,7 @@ services:
     ulimits:
       nofile: { soft: 1048576, hard: 1048576 }
     volumes:
+      - ${XRAY_CORE_BIN}:/usr/local/bin/xray:ro
       - ${NGINX_DIR}/ssl:/etc/xray/cert:ro
       - ${NODE_DIR}/logs:/var/log/xray${shm_vol}${geo_vol}
     logging:
@@ -1751,7 +1819,7 @@ adopt_existing_reality_keys() {
     # so existing client subscriptions keep matching (this is what keeps the key
     # STABLE across re-runs — without it every run would rotate the key).
     if [[ "$DRY_RUN" != "1" ]]; then
-      epub="$(docker run --rm --entrypoint xray "$NODE_IMAGE" x25519 -i "$epriv" 2>/dev/null | grep -iE 'public|password' | awk '{print $NF}' | head -1 || true)"
+      epub="$("$XRAY_CORE_BIN" x25519 -i "$epriv" 2>/dev/null | grep -iE 'public|password' | awk '{print $NF}' | head -1 || true)"
       [[ -n "$epub" ]] && REALITY_PUBLIC="$epub"
     fi
     info "Reusing existing Reality key (public ${REALITY_PUBLIC:0:12}…, shortId $REALITY_SHORT_ID)."
@@ -2643,6 +2711,13 @@ F2B
 verify() {
   step "Verification"
   command -v docker >/dev/null 2>&1 && docker ps --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}' || true
+  local running_core
+  running_core="$(docker exec "$NODE_CONTAINER" /usr/local/bin/rw-core version 2>/dev/null | head -n 1 || true)"
+  if [[ "$running_core" == "Xray ${XRAY_CORE_VERSION} "* ]]; then
+    ok "Running core is pinned correctly: $running_core"
+  else
+    die "Running core is NOT Xray ${XRAY_CORE_VERSION}: ${running_core:-unreadable}. Check the /usr/local/bin/xray bind mount."
+  fi
   if [[ -f "$NGINX_DIR/ssl/fullchain.crt" ]] && command -v openssl >/dev/null 2>&1; then
     openssl x509 -in "$NGINX_DIR/ssl/fullchain.crt" -noout -subject -dates || true
   fi
@@ -3603,7 +3678,7 @@ run_preflight_checks() {
 # and echoed. The operator pastes it into the entry node's config-profile.
 generate_entry_reality_keys() {
   local out priv pub
-  out="$(docker run --rm --entrypoint xray "$NODE_IMAGE" x25519 2>/dev/null)" \
+  out="$("$XRAY_CORE_BIN" x25519 2>/dev/null)" \
     || die "Failed to run 'xray x25519' for the entry keypair."
   priv="$(printf '%s' "$out" | grep -iE 'private'         | awk '{print $NF}' | head -1 || true)"
   pub="$(printf '%s' "$out" | grep -iE 'public|password' | awk '{print $NF}' | head -1 || true)"
@@ -3778,6 +3853,7 @@ main() {
 
   run_stage system-update system_update   # full OS upgrade + enable automatic security updates
   run_stage docker install_docker
+  run_stage "xray-core-${XRAY_CORE_VERSION}" install_pinned_xray_core
 
   # Fetch the node-accelerator installer up front: if it (or the network) is
   # unreachable, fail here — BEFORE any panel resource is created (L3).

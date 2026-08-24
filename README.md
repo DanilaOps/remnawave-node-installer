@@ -10,9 +10,11 @@ host in the Remnawave panel over the HTTP API — no manual clicking in the UI.
 
 - **Remnawave Panel / Backend: 3.3.2**.
 - **Remnawave Node: `ghcr.io/remnawave/node:3.3.2`** (pinned by default).
+- **Xray-core: `26.6.27`** (official XTLS archive, SHA-256 verified and
+  bind-mounted over the core bundled in the node image).
 - `/api/keygen`: native Remnawave 3.x `response.secretKey`, with a fallback to the
   older `response.pubKey` response.
-- Installer version: **3.3.2-rw1**.
+- Installer version: **3.3.2-rw2**.
 
 Unlike wrapper scripts that `curl | bash` several third-party installers, this script
 inlines everything it controls (node container, nginx selfsteal, TLS certificate,
@@ -23,7 +25,7 @@ Xray Reality config). The only external component is the optional firewall step
 
 The script installs its own dependencies (Docker, jq, openssl, socat, cron), so a
 fresh Debian/Ubuntu server needs nothing but `curl`. For reproducible installs,
-the download URL is pinned to release tag `v3.3.2-rw1` instead of the moving
+the download URL is pinned to release tag `v3.3.2-rw2` instead of the moving
 `main` branch.
 
 ```bash
@@ -31,7 +33,7 @@ apt-get update -qq && apt-get install -y -qq curl
 
 # Recommended: download, syntax-check, then run.
 curl -fsSLo /root/remnawave-node.sh \
-  https://raw.githubusercontent.com/DanilaOps/remnawave-node-installer/v3.3.2-rw1/remnawave-node.sh
+  https://raw.githubusercontent.com/DanilaOps/remnawave-node-installer/v3.3.2-rw2/remnawave-node.sh
 chmod 700 /root/remnawave-node.sh
 bash -n /root/remnawave-node.sh
 sudo bash /root/remnawave-node.sh
@@ -76,7 +78,8 @@ sudo bash /root/remnawave-node.sh -y \
    updates** (`unattended-upgrades`) — skip with `--skip-update`. May flag a
    reboot-required for a new kernel.
 1. Installs Docker (official `get.docker.com`, skipped if present).
-2. Generates a Reality x25519 keypair and shortId (via `xray x25519` from the node image).
+2. Generates a Reality x25519 keypair and shortId with the pinned
+   `Xray 26.6.27` binary.
 3. Writes an **nginx selfsteal** and serves a **real decoy website** (see
    [Decoy site](#decoy-site-reality-masking) below), not a placeholder page.
    By default nginx listens on a **unix socket** (`/dev/shm/nginx.sock`, shared

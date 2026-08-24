@@ -12,7 +12,7 @@
 #   8. undefined calls   name-like tokens invoked as commands but never defined
 #      (heuristic; whitelisted externals)
 #   9. safety rails      set -Eeuo pipefail, ERR trap, cleanup trap present
-#  10. 3.3.2 compatibility: node image, keygen response, Xray log path
+#  10. 3.3.2 compatibility: node image, pinned Xray, keygen response, log path
 #  11. misc pitfalls
 #
 # Usage: bash check.sh [path/to/remnawave-node.sh]
@@ -154,6 +154,12 @@ grep -qE '^INSTALLER_VERSION="3\.3\.2-[^"]+"$' "$TARGET" \
   && pass "installer version targets 3.3.2" || fail "INSTALLER_VERSION is not a 3.3.2 build"
 grep -qE '^NODE_IMAGE=.*ghcr\.io/remnawave/node:3\.3\.2' "$TARGET" \
   && pass "default RemnaNode image is pinned to 3.3.2" || fail "default RemnaNode image is not 3.3.2"
+grep -qE '^XRAY_CORE_VERSION="26\.6\.27"$' "$TARGET" \
+  && pass "Xray core is pinned to 26.6.27" || fail "Xray core is not pinned to 26.6.27"
+grep -qF '${XRAY_CORE_BIN}:/usr/local/bin/xray:ro' "$TARGET" \
+  && pass "pinned Xray is mounted over the stock binary" || fail "missing pinned Xray bind mount"
+grep -qF '/usr/local/bin/rw-core version' "$TARGET" \
+  && pass "running rw-core version is verified" || fail "running rw-core version is not verified"
 keygen_body="$(fnbody panel_get_keygen)"
 if grep -qF '.response.secretKey' <<<"$keygen_body" && grep -qF '.response.pubKey' <<<"$keygen_body"; then
   pass "keygen reads 3.x secretKey with legacy pubKey fallback"

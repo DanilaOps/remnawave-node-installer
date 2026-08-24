@@ -10,9 +10,11 @@
 
 - **Remnawave Panel / Backend: 3.3.2**.
 - **Remnawave Node: `ghcr.io/remnawave/node:3.3.2`** (закреплён по умолчанию).
+- **Xray-core: `26.6.27`** (официальный архив XTLS с проверкой SHA-256,
+  монтируется поверх версии из образа ноды).
 - `/api/keygen`: основной формат 3.x `response.secretKey`; для старых панелей
   сохранён fallback на `response.pubKey`.
-- Версия установщика: **3.3.2-rw1**.
+- Версия установщика: **3.3.2-rw2**.
 
 В отличие от скриптов-обёрток, которые `curl | bash` тянут несколько сторонних
 установщиков, этот скрипт инлайнит всё, что контролирует (контейнер ноды, nginx
@@ -24,14 +26,16 @@ selfsteal, TLS-сертификат, Xray Reality-конфиг). Единств�
 
 Скрипт сам ставит зависимости (Docker, jq, openssl, socat, cron), поэтому чистому
 серверу Debian/Ubuntu нужен только `curl`. Для воспроизводимых установок ссылка
-закреплена на tag/release (`v3.3.2-rw1`), а не на меняющуюся ветку `main`.
+закреплена на tag/release (`v3.3.2-rw2`), а не на меняющуюся ветку `main`.
+
+Подробная инструкция с отдельными командами: **[INSTALL.ru.md](INSTALL.ru.md)**.
 
 ```bash
 apt-get update -qq && apt-get install -y -qq curl
 
 # Рекомендуемый вариант: скачать, проверить синтаксис, затем запустить.
 curl -fsSLo /root/remnawave-node.sh \
-  https://raw.githubusercontent.com/DanilaOps/remnawave-node-installer/v3.3.2-rw1/remnawave-node.sh
+  https://raw.githubusercontent.com/DanilaOps/remnawave-node-installer/v3.3.2-rw2/remnawave-node.sh
 chmod 700 /root/remnawave-node.sh
 bash -n /root/remnawave-node.sh
 sudo bash /root/remnawave-node.sh
@@ -76,7 +80,8 @@ sudo bash /root/remnawave-node.sh -y \
    обновления безопасности** (`unattended-upgrades`) — отключить `--skip-update`.
    Может пометить, что нужен ребут (новое ядро).
 1. Ставит Docker (официальный `get.docker.com`, пропускает если уже есть).
-2. Генерирует пару ключей Reality x25519 и shortId (через `xray x25519` из образа ноды).
+2. Генерирует пару ключей Reality x25519 и shortId через закреплённый
+   `Xray 26.6.27`.
 3. Пишет **nginx selfsteal** и отдаёт **настоящий сайт-заглушку** (см.
    [Сайт-заглушка](#сайт-заглушка-маскировка-reality) ниже), а не placeholder.
    По умолчанию nginx слушает **unix-сокет** (`/dev/shm/nginx.sock`, шарится с

@@ -1,5 +1,15 @@
 # Changelog
 
+## 3.3.2-rw2
+
+- Pin the runtime Xray core to `26.6.27` independently of the core bundled in the
+  RemnaNode image.
+- Download Xray from the official XTLS release, verify its SHA-256 checksum, and
+  bind-mount it over `/usr/local/bin/xray` so the pin survives container recreation.
+- Generate Reality keys and validate panel configs with the same pinned core.
+- Fail verification when the running `/usr/local/bin/rw-core` is not `26.6.27`.
+- Add a dedicated Russian step-by-step installation and resume guide.
+
 ## 3.3.2-rw1
 
 - Pin the default Remnawave Node image to `ghcr.io/remnawave/node:3.3.2`.
