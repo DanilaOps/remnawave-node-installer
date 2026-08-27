@@ -15,11 +15,16 @@ profile_name: Default August
 config_profile_create: false
 config_profile_require_routing: true
 
-# Source addresses allowed to reach a node: the Ansible controller (SSH) and the
-# panel (NODE_PORT). Preflight refuses to apply a firewall that would lock the
-# controller out, so this must be the address sshd actually sees.
-management_cidrs:
-  - 198.51.100.10/32
+# Source addresses allowed to reach a node. The controller's own address is
+# discovered from the live SSH connection, so it never has to be maintained by
+# hand and a controller with a changing address cannot lock itself out. Add
+# stable addresses that must keep SSH access even when nobody runs from them
+# (a second operator, a jump host) to management_cidrs_extra; set
+# management_cidrs explicitly to opt out of the discovery entirely.
+management_cidrs_extra: []
+# The panel's address, allowed to reach NODE_PORT. Keep it explicit: resolving it
+# from the panel URL would silently point at a CDN if the panel ever moves behind
+# one, which would leave the node unreachable for the panel itself.
 remnawave_panel_cidrs:
   - 198.51.100.20/32
 

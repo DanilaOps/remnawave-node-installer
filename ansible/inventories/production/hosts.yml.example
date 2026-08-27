@@ -1,10 +1,9 @@
 ---
 # Copy to hosts.yml (git-ignored) and add one block per node.
-# Three facts per node; everything else is derived in group_vars.
 all:
   children:
     remnawave_nodes:
       hosts:
         ee01:
           ansible_host: 203.0.113.10
-          node_id: ee_01
+          node_host_remark: Estonia

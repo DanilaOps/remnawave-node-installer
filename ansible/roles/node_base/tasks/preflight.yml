@@ -1,10 +1,40 @@
 ---
+- name: Detect the source address of the active Ansible SSH session
+  ansible.builtin.set_fact:
+    node_base_observed_ssh_source: >-
+      {{ ansible_env.SSH_CONNECTION.split()[0] if ansible_env.SSH_CONNECTION is defined else '' }}
+
+- name: Resolve the management allow list
+  # The controller's own address comes from the live connection, so it is never
+  # maintained by hand and a controller with a changing address cannot lock
+  # itself out. An explicitly configured management_cidrs wins; extras are always
+  # merged so a second operator or jump host keeps access.
+  ansible.builtin.set_fact:
+    management_cidrs: >-
+      {{ ((management_cidrs | default([], true))
+          if (management_cidrs | default([], true) | length > 0)
+          else ([node_base_observed_ssh_source ~
+                 ('/128' if ':' in node_base_observed_ssh_source else '/32')]
+                if node_base_observed_ssh_source | length > 0 else [])
+         ) + (management_cidrs_extra | default([])) | unique }}
+
+- name: Require a management allow list
+  ansible.builtin.assert:
+    that:
+      - management_cidrs | length > 0
+    fail_msg: >-
+      Could not determine which address may reach SSH on this node. The controller
+      address is normally taken from the live SSH connection; with a non-SSH
+      connection set management_cidrs explicitly in the inventory.
+
 - name: Validate supported platform and required values
   ansible.builtin.assert:
     that:
       - ansible_facts.distribution in node_base_supported_os
       - ansible_facts.distribution_major_version in node_base_supported_os[ansible_facts.distribution]
       - ansible_facts.architecture in node_base_supported_architectures
+      - node_id is match('^[a-z][a-z0-9]*_[a-z0-9-]+$')
+      - node_name is match('^[A-Za-z0-9][A-Za-z0-9._-]*$')
       - node_country is match('^[A-Za-z]{2}$')
       - (node_public_ip | ansible.utils.ipaddr) != false
       - selfsteal_domain is match('^(?=.{1,253}$)([A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,63}$')
@@ -15,8 +45,10 @@
       - remnawave_panel_cidrs | length > 0
       - internal_squad_uuid | default('') | length > 0 or internal_squad_name | default('') | length > 0
     fail_msg: >-
-      Unsupported platform or invalid required variables. Supported systems are Debian 12, Debian 13 and Ubuntu 24.04;
-      management/panel CIDRs and an Internal Squad identity are mandatory.
+      Unsupported platform or invalid required variables. Supported systems are Debian 12, Debian 13 and
+      Ubuntu 24.04; a panel CIDR and an Internal Squad identity are mandatory. Identity is derived from the
+      inventory hostname, which is expected to look like "ee01" (country code plus sequence) - name the host
+      that way, or set node_id, node_name and node_country explicitly for this host.
 
 - name: Validate all management CIDRs
   ansible.builtin.assert:
@@ -27,17 +59,16 @@
   loop_control:
     label: "{{ item }}"
 
-- name: Detect the source address of the active Ansible SSH session
-  ansible.builtin.set_fact:
-    node_base_observed_ssh_source: "{{ ansible_env.SSH_CONNECTION.split()[0] }}"
-
-- name: Require management CIDRs to include the source seen by sshd
+- name: Require the management allow list to include the source seen by sshd
   ansible.builtin.assert:
     that:
       - node_base_observed_ssh_source | remnawave_ip_in_cidrs(management_cidrs)
     fail_msg: >-
-      sshd sees this Controller as {{ node_base_observed_ssh_source }}, but management_cidrs does not include it.
-      This commonly happens behind a provider TCP proxy; refusing to apply a firewall that would lock out Ansible.
+      sshd sees this Controller as {{ node_base_observed_ssh_source }}, but the configured
+      management_cidrs does not include it. This commonly happens behind a provider TCP proxy;
+      refusing to apply a firewall that would lock out Ansible. Either remove the explicit
+      management_cidrs so the address is discovered, or add {{ node_base_observed_ssh_source }}.
+  when: node_base_observed_ssh_source | length > 0
 
 - name: Validate bridge input
   ansible.builtin.assert:
@@ -74,21 +105,169 @@
     fail_msg: "{{ selfsteal_domain }} does not resolve to {{ node_public_ip }} from the new node."
   when: preflight_check_dns | bool
 
+# Everything below is read-only and runs before the first change to the node, so
+# a missing shared profile or a conflicting panel object stops the run while the
+# server is still untouched instead of half-installed.
 - name: Verify panel connectivity and token scope
   ansible.builtin.uri:
     url: "{{ remnawave_panel_url | regex_replace('/+$', '') }}/api/nodes"
     method: GET
     headers:
       Authorization: "Bearer {{ remnawave_panel_token }}"
-    return_content: false
+    return_content: true
     status_code: 200
     timeout: "{{ remnawave_api_timeout }}"
     validate_certs: "{{ remnawave_panel_validate_certs }}"
+  register: node_base_preflight_nodes
   delegate_to: localhost
   become: false
   no_log: true
   changed_when: false
   check_mode: false
+  when: preflight_check_panel | bool
+
+- name: Reject a conflicting Node in the panel
+  ansible.builtin.assert:
+    that:
+      - node_base_preflight_node_by_name | length <= 1
+      - node_base_preflight_node_by_address | length <= 1
+      - >-
+        node_base_preflight_node_by_name | length == 0 or
+        node_base_preflight_node_by_address | length == 0 or
+        node_base_preflight_node_by_name[0].uuid == node_base_preflight_node_by_address[0].uuid
+    fail_msg: >-
+      The panel already holds conflicting Nodes: {{ node_base_preflight_node_by_name | map(attribute='name') | list }}
+      matches the name {{ node_name }} and
+      {{ node_base_preflight_node_by_address | map(attribute='name') | list }} matches the address
+      {{ node_public_ip }}. Resolve that in the panel first - this run would not know which one it owns.
+  vars:
+    node_base_preflight_node_by_name: >-
+      {{ node_base_preflight_nodes.json.response | selectattr('name', 'equalto', node_name) | list }}
+    node_base_preflight_node_by_address: >-
+      {{ node_base_preflight_nodes.json.response | selectattr('address', 'equalto', node_public_ip) | list }}
+  when: preflight_check_panel | bool
+
+- name: Read the panel's Config Profiles
+  ansible.builtin.uri:
+    url: "{{ remnawave_panel_url | regex_replace('/+$', '') }}/api/config-profiles"
+    method: GET
+    headers:
+      Authorization: "Bearer {{ remnawave_panel_token }}"
+    return_content: true
+    status_code: 200
+    timeout: "{{ remnawave_api_timeout }}"
+    validate_certs: "{{ remnawave_panel_validate_certs }}"
+  register: node_base_preflight_profiles
+  delegate_to: localhost
+  become: false
+  no_log: true
+  changed_when: false
+  check_mode: false
+  when: preflight_check_panel | bool
+
+- name: Select the Config Profile this node will publish against
+  ansible.builtin.set_fact:
+    node_base_preflight_profile: >-
+      {{ (node_base_preflight_profiles.json | remnawave_response_items('configProfiles') |
+          selectattr('uuid', 'equalto', profile_uuid) | list)
+         if profile_uuid | default('') | length > 0 else
+         (node_base_preflight_profiles.json | remnawave_response_items('configProfiles') |
+          selectattr('name', 'equalto', profile_name) | list) }}
+    node_base_preflight_foreign_owners: >-
+      {{ node_base_preflight_profiles.json | remnawave_response_items('configProfiles') |
+         remnawave_inbound_owners(inbound_specs | map(attribute='tag') | list, '') }}
+  when: preflight_check_panel | bool
+
+- name: Require the shared Config Profile to exist before the node is touched
+  ansible.builtin.assert:
+    that:
+      - node_base_preflight_profile | length == 1 or config_profile_create | default(false) | bool
+    fail_msg: >-
+      Config Profile '{{ profile_name }}' was not found in the panel
+      ({{ node_base_preflight_profile | length }} matches). It is the Xray JSON that carries the routing
+      every published Host depends on, so it is never created silently. Create it in the panel, fix
+      profile_name, or set config_profile_create=true to bootstrap it from the role template.
+  when:
+    - preflight_check_panel | bool
+    - config_profile_mode | default('shared') == 'shared'
+
+- name: Reject an inbound tag that another Config Profile already owns
+  ansible.builtin.assert:
+    that:
+      - >-
+        node_base_preflight_foreign_owners | rejectattr('uuid', 'equalto',
+          node_base_preflight_profile[0].uuid | default('')) | list | length == 0
+    fail_msg: >-
+      Inbound tag(s) {{ inbound_specs | map(attribute='tag') | list }} already exist in another Config
+      Profile: {{ node_base_preflight_foreign_owners }}. Two profiles claiming one tag makes the published
+      Host ambiguous; rename this node or remove the stale inbound.
+  when: preflight_check_panel | bool
+
+- name: Read the target Config Profile in full
+  ansible.builtin.uri:
+    url: >-
+      {{ remnawave_panel_url | regex_replace('/+$', '') }}/api/config-profiles/{{
+         node_base_preflight_profile[0].uuid }}
+    method: GET
+    headers:
+      Authorization: "Bearer {{ remnawave_panel_token }}"
+    return_content: true
+    status_code: 200
+    timeout: "{{ remnawave_api_timeout }}"
+    validate_certs: "{{ remnawave_panel_validate_certs }}"
+  register: node_base_preflight_profile_detail
+  delegate_to: localhost
+  become: false
+  no_log: true
+  changed_when: false
+  check_mode: false
+  when:
+    - preflight_check_panel | bool
+    - node_base_preflight_profile | default([]) | length == 1
+
+- name: Require the target Config Profile to carry routing rules
+  ansible.builtin.assert:
+    that:
+      - node_base_preflight_profile_detail.json.response.config.routing.rules | default([]) | length > 0
+    fail_msg: >-
+      Config Profile '{{ profile_name }}' has no routing rules. Publishing a Host against it would ship
+      clients a configuration without this deployment's routing.
+  when:
+    - preflight_check_panel | bool
+    - config_profile_require_routing | default(true) | bool
+    - node_base_preflight_profile_detail is not skipped | default(false)
+
+- name: Read the panel's Hosts for a conflict check
+  ansible.builtin.uri:
+    url: "{{ remnawave_panel_url | regex_replace('/+$', '') }}/api/hosts"
+    method: GET
+    headers:
+      Authorization: "Bearer {{ remnawave_panel_token }}"
+    return_content: true
+    status_code: 200
+    timeout: "{{ remnawave_api_timeout }}"
+    validate_certs: "{{ remnawave_panel_validate_certs }}"
+  register: node_base_preflight_hosts
+  delegate_to: localhost
+  become: false
+  no_log: true
+  changed_when: false
+  check_mode: false
+  when: preflight_check_panel | bool
+
+- name: Reject ambiguous Hosts in the panel
+  ansible.builtin.assert:
+    that:
+      - >-
+        node_base_preflight_hosts.json.response |
+        selectattr('remark', 'equalto', item.remark) |
+        selectattr('address', 'equalto', item.address) | list | length <= 1
+    fail_msg: >-
+      The panel already holds more than one Host called '{{ item.remark }}' at {{ item.address }};
+      this run would not know which one it owns.
+  loop: "{{ host_specs }}"
+  loop_control:
+    label: "{{ item.remark }}"
   when: preflight_check_panel | bool
 
 - name: Check NTP synchronization state

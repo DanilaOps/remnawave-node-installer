@@ -7,14 +7,19 @@ ansible_user: deployer
 ansible_port: 22
 
 # --- Derived identity -------------------------------------------------------
-# node_id is the only identity fact entered by hand: "ee_01" yields
-# node_name EE-01, node_country EE and selfsteal domain ee01.<node_domain_zone>.
-node_name: "{{ node_id | upper | replace('_', '-') }}"
-node_country: "{{ node_id.split('_')[0] | upper }}"
+# The inventory hostname is the identity. "ee01" yields node_id ee_01, node_name
+# EE-01, node_country EE and selfsteal domain ee01.<node_domain_zone>, so a new
+# node needs no identity variables at all. Override any of them per host when a
+# node does not follow the pattern; preflight rejects a name it cannot parse.
+node_country_code: "{{ inventory_hostname | regex_replace('^([A-Za-z]+).*$', '\\1') | upper }}"
+node_sequence: "{{ inventory_hostname | regex_replace('^[A-Za-z]+[-_]?', '') }}"
+node_id: "{{ (node_country_code | lower) ~ '_' ~ node_sequence }}"
+node_name: "{{ node_country_code ~ '-' ~ node_sequence }}"
+node_country: "{{ node_country_code }}"
 node_role: direct
 node_public_ip: "{{ ansible_host }}"
 
-selfsteal_domain: "{{ node_id | replace('_', '') }}.{{ node_domain_zone }}"
+selfsteal_domain: "{{ inventory_hostname }}.{{ node_domain_zone }}"
 
 # --- Derived panel resources ------------------------------------------------
 # The inbound tag and the published Host follow from the identity above, so a new
@@ -57,9 +62,10 @@ dns_prune_extra_records: false
 
 # --- Certificate ------------------------------------------------------------
 # http01 is answered from the webroot nginx already serves, so issuance and
-# renewal never take the decoy site down. Use staging while iterating.
+# renewal never take the decoy site down. auto proves the challenge path against
+# the staging CA before spending a production issuance on a brand new node.
 certificate_mode: http01
-certificate_acme_environment: production
+certificate_acme_environment: auto
 
 # --- Verification -----------------------------------------------------------
 # Keep strict verification enabled in production and provide a real
@@ -74,9 +80,9 @@ bridge_spec:
 
 node_plugins: []
 
-# --- Bootstrap (playbooks/bootstrap.yml only) -------------------------------
-bootstrap_ssh_user: root
-bootstrap_authorized_keys: []
+# --- Bootstrap --------------------------------------------------------------
+# The managed account, the controller key and the one-off root password come
+# from the node_bootstrap role defaults; only the trust policy is a choice here.
 # A freshly created VPS has no entry in known_hosts. Accepting the key on first
 # contact is reasonable for a brand new server and wrong for an existing one.
 bootstrap_trust_new_host_keys: false
