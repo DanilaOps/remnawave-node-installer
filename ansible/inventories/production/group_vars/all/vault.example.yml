@@ -1,0 +1,6 @@
+---
+# Copy to vault.yml in this directory and encrypt it before use.
+vault_remnawave_panel_token: replace-me
+vault_node_root_password: ""
+vault_cloudflare_token: ""
+vault_bridge_secret: ""

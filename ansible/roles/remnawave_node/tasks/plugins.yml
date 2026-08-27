@@ -1,0 +1,122 @@
+---
+- name: Validate the single Node Plugin profile declaration
+  ansible.builtin.assert:
+    that:
+      - node_plugins | length == 1
+      - node_plugins[0].name | default('') | length > 0
+      - node_plugins[0].plugin_config | default({}) is mapping
+      - ansible_facts.kernel is version('5.7', '>=')
+    fail_msg: One named plugin profile and Linux kernel >=5.7 are required.
+
+- name: List Node Plugins
+  ansible.builtin.uri:
+    url: "{{ remnawave_api_base }}/node-plugins"
+    method: GET
+    headers:
+      Authorization: "Bearer {{ remnawave_panel_token }}"
+    return_content: true
+    status_code: 200
+    timeout: "{{ remnawave_api_timeout }}"
+    validate_certs: "{{ remnawave_panel_validate_certs }}"
+  register: remnawave_plugins_response
+  delegate_to: localhost
+  become: false
+  no_log: true
+  changed_when: false
+
+- name: Match Node Plugin profile
+  ansible.builtin.set_fact:
+    remnawave_plugin_matches: >-
+      {{ (remnawave_plugins_response.json | remnawave_response_items('nodePlugins')) |
+         selectattr('name', 'equalto', node_plugins[0].name) | list }}
+
+- name: Reject duplicate Node Plugin profiles
+  ansible.builtin.assert:
+    that:
+      - remnawave_plugin_matches | length <= 1
+    fail_msg: "Multiple Node Plugins are named {{ node_plugins[0].name }}."
+
+- name: Create Node Plugin profile
+  ansible.builtin.uri:
+    url: "{{ remnawave_api_base }}/node-plugins"
+    method: POST
+    headers:
+      Authorization: "Bearer {{ remnawave_panel_token }}"
+    body_format: json
+    body:
+      name: "{{ node_plugins[0].name }}"
+    return_content: true
+    status_code: 201
+    timeout: "{{ remnawave_api_timeout }}"
+    validate_certs: "{{ remnawave_panel_validate_certs }}"
+  register: remnawave_plugin_create
+  delegate_to: localhost
+  become: false
+  no_log: true
+  changed_when: true
+  when: remnawave_plugin_matches | length == 0
+
+- name: Store Node Plugin UUID
+  ansible.builtin.set_fact:
+    remnawave_node_plugin_uuid: >-
+      {{ remnawave_plugin_create.json.response.uuid
+         if remnawave_plugin_create is not skipped | default(false) else remnawave_plugin_matches[0].uuid }}
+
+- name: Read Node Plugin profile
+  ansible.builtin.uri:
+    url: "{{ remnawave_api_base }}/node-plugins/{{ remnawave_node_plugin_uuid }}"
+    method: GET
+    headers:
+      Authorization: "Bearer {{ remnawave_panel_token }}"
+    return_content: true
+    status_code: 200
+    timeout: "{{ remnawave_api_timeout }}"
+    validate_certs: "{{ remnawave_panel_validate_certs }}"
+  register: remnawave_plugin_current
+  delegate_to: localhost
+  become: false
+  no_log: true
+  changed_when: false
+
+- name: Update Node Plugin configuration only when changed
+  ansible.builtin.uri:
+    url: "{{ remnawave_api_base }}/node-plugins"
+    method: PATCH
+    headers:
+      Authorization: "Bearer {{ remnawave_panel_token }}"
+    body_format: json
+    body:
+      uuid: "{{ remnawave_node_plugin_uuid }}"
+      pluginConfig: "{{ node_plugins[0].plugin_config }}"
+    return_content: true
+    status_code: 200
+    timeout: "{{ remnawave_api_timeout }}"
+    validate_certs: "{{ remnawave_panel_validate_certs }}"
+  delegate_to: localhost
+  become: false
+  no_log: true
+  changed_when: true
+  when: >-
+    not (node_plugins[0].plugin_config |
+         remnawave_is_subset(remnawave_plugin_current.json.response.pluginConfig | default({})))
+
+- name: Attach Node Plugin profile only when needed
+  ansible.builtin.uri:
+    url: "{{ remnawave_api_base }}/nodes"
+    method: PATCH
+    headers:
+      Authorization: "Bearer {{ remnawave_panel_token }}"
+    body_format: json
+    body:
+      uuid: "{{ remnawave_node_uuid }}"
+      activePluginUuid: "{{ remnawave_node_plugin_uuid }}"
+    return_content: true
+    status_code: 200
+    timeout: "{{ remnawave_api_timeout }}"
+    validate_certs: "{{ remnawave_panel_validate_certs }}"
+  delegate_to: localhost
+  become: false
+  no_log: true
+  changed_when: true
+  when: remnawave_node_final.json.response.activePluginUuid | default('') != remnawave_node_plugin_uuid
+

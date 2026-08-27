@@ -1,0 +1,58 @@
+---
+remnawave_install_root: /opt/remnawave-node
+remnawave_compose_path: "{{ remnawave_install_root }}/compose.yml"
+remnawave_node_dir: "{{ remnawave_install_root }}/remnanode"
+remnawave_node_env_path: "{{ remnawave_node_dir }}/.env"
+remnawave_nginx_dir: "{{ remnawave_install_root }}/nginx"
+remnawave_state_dir: "{{ remnawave_install_root }}/state"
+remnawave_logs_dir: /var/log/remnanode
+remnawave_nginx_logs_dir: /var/log/nginx-selfsteal
+remnawave_geodata_dir: "{{ remnawave_install_root }}/geodata"
+
+remnawave_node_image: ghcr.io/remnawave/node:3.3.2
+remnawave_node_container: remnanode
+remnawave_node_port: 2222
+remnawave_nginx_image: nginx:1.29.3-alpine
+remnawave_nginx_container: nginx-selfsteal
+
+xray_version: 26.6.27
+xray_release_repository: XTLS/Xray-core
+xray_assets:
+  x86_64: Xray-linux-64.zip
+  aarch64: Xray-linux-arm64-v8a.zip
+xray_checksums:
+  x86_64: b3e5902d06d6282fe53cfa2fc426058b9aeaa429b2c812e20887cd47f26d08bf
+  aarch64: 13a251379bea366c2cf10363ad71e75734193d401f26f518bf0c25e5c8f8c931
+xray_install_dir: "{{ remnawave_node_dir }}/xray-core-{{ xray_version }}"
+xray_binary_path: "{{ xray_install_dir }}/xray"
+
+selfsteal_domain: ""
+selfsteal_local_port: 9443
+selfsteal_socket: ""
+selfsteal_refresh_content: false
+selfsteal_virtual_hosts:
+  - name: primary
+    server_names: ["{{ selfsteal_domain }}"]
+    root: "{{ remnawave_install_root }}/selfsteal/html/primary"
+    title: Cloud Infrastructure
+
+certificate_enabled: true
+certificate_mode: http01
+certificate_name: "{{ selfsteal_domain }}"
+certificate_renew_before_days: 30
+certificate_dns_propagation_seconds: 60
+acme_email: ""
+cloudflare_token: ""
+cloudflare_credentials_path: /etc/letsencrypt/cloudflare.ini
+
+geodata_enabled: false
+geodata_update_enabled: false
+geodata_update_calendar: "*-*-* 03:00:00"
+geodata_files: []
+
+node_plugins: []
+remnawave_maintenance_enabled: true
+remnawave_management_cli_enabled: true
+remnawave_disk_warning_percent: 85
+remnawave_disk_check_calendar: hourly
+remnawave_logrotate_retention: 14

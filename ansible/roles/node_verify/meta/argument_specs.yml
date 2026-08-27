@@ -1,0 +1,21 @@
+---
+argument_specs:
+  main:
+    short_description: Verify a complete Remnawave node deployment without changing it
+    options:
+      verify_panel_retries:
+        type: int
+      verify_panel_delay:
+        type: int
+      verify_require_tunnel_probe:
+        type: bool
+      verify_tunnel_probe_command:
+        type: list
+        elements: str
+      verify_require_node_port_denied_probe:
+        type: bool
+      verify_node_port_untrusted_probe_host:
+        type: str
+      verify_bridge_probe_command:
+        type: list
+        elements: str

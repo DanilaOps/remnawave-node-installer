@@ -1,0 +1,23 @@
+---
+- name: Run immutable preflight checks
+  ansible.builtin.import_tasks: preflight.yml
+  tags: [always, preflight]
+
+- name: Configure the base operating system
+  ansible.builtin.import_tasks: system.yml
+  tags: [system]
+
+- name: Install and configure Docker
+  ansible.builtin.import_tasks: docker.yml
+  tags: [docker]
+
+- name: Install the node firewall
+  ansible.builtin.import_tasks: firewall.yml
+  when: node_firewall_enabled | bool
+  tags: [firewall]
+
+- name: Apply host hardening
+  ansible.builtin.import_tasks: hardening.yml
+  when: node_hardening_enabled | bool
+  tags: [hardening]
+

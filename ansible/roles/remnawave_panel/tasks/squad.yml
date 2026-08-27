@@ -1,0 +1,94 @@
+---
+- name: List Internal Squads
+  ansible.builtin.uri:
+    url: "{{ remnawave_api_base }}/internal-squads"
+    method: GET
+    headers:
+      Authorization: "Bearer {{ remnawave_panel_token }}"
+    return_content: true
+    status_code: 200
+    timeout: "{{ remnawave_api_timeout }}"
+    validate_certs: "{{ remnawave_panel_validate_certs }}"
+  register: remnawave_squads_response
+  delegate_to: localhost
+  become: false
+  no_log: true
+  changed_when: false
+
+- name: Extract and match Internal Squad
+  ansible.builtin.set_fact:
+    remnawave_all_squads: "{{ remnawave_squads_response.json | remnawave_response_items('internalSquads') }}"
+    remnawave_squad_matches: >-
+      {{ (remnawave_squads_response.json | remnawave_response_items('internalSquads') |
+          selectattr('uuid', 'equalto', internal_squad_uuid) | list)
+         if internal_squad_uuid | length > 0 else
+         (remnawave_squads_response.json | remnawave_response_items('internalSquads') |
+          selectattr('name', 'equalto', internal_squad_name) | list) }}
+
+- name: Reject ambiguous or missing non-creatable Squad
+  ansible.builtin.assert:
+    that:
+      - remnawave_squad_matches | length <= 1
+      - remnawave_squad_matches | length == 1 or internal_squad_create | bool
+    fail_msg: Internal Squad is ambiguous or absent while internal_squad_create is false.
+
+- name: Build additive Internal Squad inbound set
+  ansible.builtin.set_fact:
+    remnawave_squad_current_inbounds: >-
+      {{ remnawave_squad_matches[0].inbounds | default([]) | remnawave_uuid_list
+         if remnawave_squad_matches | length == 1 else [] }}
+
+- name: Merge managed inbounds without removing foreign entries
+  ansible.builtin.set_fact:
+    remnawave_squad_desired_inbounds: >-
+      {{ (remnawave_squad_current_inbounds + remnawave_managed_inbound_uuids) | unique }}
+
+- name: Create Internal Squad
+  ansible.builtin.uri:
+    url: "{{ remnawave_api_base }}/internal-squads"
+    method: POST
+    headers:
+      Authorization: "Bearer {{ remnawave_panel_token }}"
+    body_format: json
+    body:
+      name: "{{ internal_squad_name }}"
+      inbounds: "{{ remnawave_squad_desired_inbounds }}"
+    return_content: true
+    status_code: 201
+    timeout: "{{ remnawave_api_timeout }}"
+    validate_certs: "{{ remnawave_panel_validate_certs }}"
+  register: remnawave_squad_create
+  delegate_to: localhost
+  become: false
+  no_log: true
+  changed_when: true
+  when: remnawave_squad_matches | length == 0
+
+- name: Store Internal Squad UUID
+  ansible.builtin.set_fact:
+    remnawave_internal_squad_uuid: >-
+      {{ remnawave_squad_create.json.response.uuid
+         if remnawave_squad_create is not skipped | default(false) else remnawave_squad_matches[0].uuid }}
+
+- name: Update Internal Squad additively
+  ansible.builtin.uri:
+    url: "{{ remnawave_api_base }}/internal-squads"
+    method: PATCH
+    headers:
+      Authorization: "Bearer {{ remnawave_panel_token }}"
+    body_format: json
+    body:
+      uuid: "{{ remnawave_internal_squad_uuid }}"
+      inbounds: "{{ remnawave_squad_desired_inbounds }}"
+    return_content: true
+    status_code: 200
+    timeout: "{{ remnawave_api_timeout }}"
+    validate_certs: "{{ remnawave_panel_validate_certs }}"
+  delegate_to: localhost
+  become: false
+  no_log: true
+  changed_when: true
+  when:
+    - remnawave_squad_matches | length == 1
+    - remnawave_squad_current_inbounds | sort != remnawave_squad_desired_inbounds | sort
+

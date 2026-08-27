@@ -1,0 +1,57 @@
+#!/bin/sh
+set -eu
+
+certificate_name={{ certificate_name | quote }}
+fullchain="/etc/letsencrypt/live/${certificate_name}/fullchain.pem"
+renew_before_seconds=$(({{ certificate_renew_before_days | int }} * 86400))
+nginx_container={{ remnawave_nginx_container | quote }}
+stopped_nginx=0
+
+restore_nginx() {
+  result=$?
+  trap - EXIT INT TERM
+  if [ "${stopped_nginx}" -eq 1 ]; then
+    /usr/bin/docker start "${nginx_container}" >/dev/null || result=1
+  fi
+  exit "${result}"
+}
+trap restore_nginx EXIT INT TERM
+
+if [ ! -s "${fullchain}" ]; then
+  echo "Certificate ${certificate_name} does not exist" >&2
+  exit 1
+fi
+
+# Do not disrupt nginx while the certificate is outside the configured renewal window.
+if /usr/bin/openssl x509 -checkend "${renew_before_seconds}" -noout -in "${fullchain}"; then
+  exit 0
+fi
+
+before_hash=$(/usr/bin/sha256sum "${fullchain}" | /usr/bin/cut -d' ' -f1)
+nginx_running=0
+if /usr/bin/docker inspect --format='{% raw %}{{.State.Running}}{% endraw %}' "${nginx_container}" 2>/dev/null | /usr/bin/grep -qx true; then
+  nginx_running=1
+fi
+
+{% if certificate_mode == 'http01' %}
+if [ "${nginx_running}" -eq 1 ]; then
+  /usr/bin/docker stop "${nginx_container}" >/dev/null
+  stopped_nginx=1
+fi
+{% endif %}
+
+/usr/bin/certbot renew --cert-name "${certificate_name}" --quiet
+after_hash=$(/usr/bin/sha256sum "${fullchain}" | /usr/bin/cut -d' ' -f1)
+
+{% if certificate_mode == 'http01' %}
+if [ "${stopped_nginx}" -eq 1 ]; then
+  /usr/bin/docker start "${nginx_container}" >/dev/null
+  stopped_nginx=0
+fi
+{% else %}
+if [ "${nginx_running}" -eq 1 ] && [ "${before_hash}" != "${after_hash}" ]; then
+  /usr/bin/docker exec "${nginx_container}" nginx -s reload
+fi
+{% endif %}
+
+trap - EXIT INT TERM

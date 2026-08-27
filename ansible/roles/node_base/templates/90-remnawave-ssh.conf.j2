@@ -1,0 +1,7 @@
+PasswordAuthentication {{ 'yes' if node_ssh_allow_root_password | bool else 'no' }}
+KbdInteractiveAuthentication no
+PermitRootLogin {{ 'yes' if node_ssh_allow_root_password | bool else 'prohibit-password' }}
+X11Forwarding no
+PrintMotd no
+ClientAliveInterval 300
+ClientAliveCountMax 2

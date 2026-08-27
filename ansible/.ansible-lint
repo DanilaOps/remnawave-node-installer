@@ -1,0 +1,14 @@
+---
+profile: production
+exclude_paths:
+  - .cache/
+  - .venv/
+  - roles/*/molecule/
+mock_roles: []
+skip_list:
+  # These four roles exchange one explicit deployment contract. Prefixing every
+  # shared input/output with the currently executing role would duplicate names.
+  - var-naming[no-role-prefix]
+  # Firewall activation is intentionally immediate: a rollback timer must be
+  # armed and confirmed before execution continues to RemnaNode.
+  - no-handler

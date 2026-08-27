@@ -1,0 +1,46 @@
+---
+remnawave_panel_validate_certs: true
+remnawave_api_timeout: 60
+remnawave_api_retries: 3
+remnawave_api_delay: 3
+remnawave_adopt_existing_profile: false
+remnawave_validate_xray_profile: true
+remnawave_secret_key_override: ""
+remnawave_node_env_path: "{{ remnawave_node_dir | default('/opt/remnawave-node/remnanode') }}/.env"
+remnawave_rotate_node_secret_key: false
+
+profile_uuid: ""
+profile_name: "{{ node_name }}"
+inbound_specs:
+  - tag: "{{ node_name | upper | regex_replace('[^A-Z0-9_]', '_') }}_REALITY"
+    port: 443
+    network: raw
+
+host_specs: []
+internal_squad_uuid: ""
+internal_squad_name: ""
+internal_squad_create: true
+
+reality_private_key: ""
+reality_short_ids: []
+reality_rotate_keys: false
+reality_xver: 1
+reality_fingerprint: firefox
+selfsteal_local_port: 9443
+selfsteal_socket: ""
+xhttp_path: /api/v1/update
+xhttp_extra_params:
+  noSSEHeader: true
+  xPaddingBytes: 100-1000
+  scMaxBufferedPosts: 30
+  scMaxEachPostBytes: 1000000
+  scStreamUpServerSecs: 20-80
+
+bridge_spec:
+  enabled: false
+bridge_secret: ""
+bridge_user_expire_at: "2125-01-01T00:00:00Z"
+
+remnawave_node_image: ghcr.io/remnawave/node:3.3.2
+remnawave_node_port: 2222
+remnawave_profile_validation_path: "/run/remnawave-{{ node_id }}-profile.json"

@@ -1,0 +1,14 @@
+---
+verify_panel_retries: 30
+verify_panel_delay: 5
+verify_external_timeout: 30
+verify_log_since: 10m
+verify_require_tunnel_probe: true
+verify_tunnel_probe_command: []
+verify_tunnel_probe_no_log: true
+verify_require_node_port_denied_probe: true
+verify_node_port_untrusted_probe_host: ""
+verify_bridge_probe_command: []
+verify_bridge_probe_no_log: true
+verify_fatal_log_pattern: "(?i)(fatal|panic|configuration error|failed to start)"
+verify_required_certificate_days: 7

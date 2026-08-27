@@ -1,0 +1,288 @@
+---
+- name: List Config Profiles
+  ansible.builtin.uri:
+    url: "{{ remnawave_api_base }}/config-profiles"
+    method: GET
+    headers:
+      Authorization: "Bearer {{ remnawave_panel_token }}"
+    return_content: true
+    status_code: 200
+    timeout: "{{ remnawave_api_timeout }}"
+    validate_certs: "{{ remnawave_panel_validate_certs }}"
+  register: remnawave_profiles_response
+  delegate_to: localhost
+  become: false
+  no_log: true
+  changed_when: false
+
+- name: Select Config Profile candidates
+  ansible.builtin.set_fact:
+    remnawave_all_profiles: "{{ remnawave_profiles_response.json | remnawave_response_items('configProfiles') }}"
+    remnawave_profile_matches: >-
+      {{ (remnawave_profiles_response.json | remnawave_response_items('configProfiles') |
+          selectattr('uuid', 'equalto', profile_uuid) | list)
+         if profile_uuid | length > 0 else
+         (remnawave_profiles_response.json | remnawave_response_items('configProfiles') |
+          selectattr('name', 'equalto', profile_name) | list) }}
+
+- name: Reject ambiguous Config Profiles
+  ansible.builtin.assert:
+    that:
+      - remnawave_profile_matches | length <= 1
+    fail_msg: "Multiple Config Profiles match {{ profile_uuid | default(profile_name, true) }}; refusing an arbitrary update."
+
+- name: Detect foreign owners of managed inbound tags
+  ansible.builtin.set_fact:
+    remnawave_foreign_profile_owners: >-
+      {{ remnawave_all_profiles |
+         remnawave_inbound_owners(inbound_specs | map(attribute='tag') | list,
+                                  remnawave_profile_matches[0].uuid | default('') if remnawave_profile_matches | length == 1 else '') }}
+
+- name: Refuse silent adoption of a foreign profile
+  ansible.builtin.assert:
+    that:
+      - remnawave_foreign_profile_owners | length == 0 or remnawave_adopt_existing_profile | bool
+    fail_msg: >-
+      Managed inbound tags already belong to another Config Profile: {{ remnawave_foreign_profile_owners }}.
+      Set remnawave_adopt_existing_profile=true only after verifying ownership.
+  when: remnawave_profile_matches | length == 0
+
+- name: Choose an adopted profile explicitly
+  ansible.builtin.set_fact:
+    remnawave_config_profile_uuid: "{{ remnawave_foreign_profile_owners[0].uuid }}"
+  when:
+    - remnawave_profile_matches | length == 0
+    - remnawave_foreign_profile_owners | length > 0
+    - remnawave_adopt_existing_profile | bool
+
+- name: Choose the existing Config Profile
+  ansible.builtin.set_fact:
+    remnawave_config_profile_uuid: "{{ remnawave_profile_matches[0].uuid }}"
+  when: remnawave_profile_matches | length == 1
+
+- name: Read existing or adopted Config Profile
+  ansible.builtin.uri:
+    url: "{{ remnawave_api_base }}/config-profiles/{{ remnawave_config_profile_uuid }}"
+    method: GET
+    headers:
+      Authorization: "Bearer {{ remnawave_panel_token }}"
+    return_content: true
+    status_code: 200
+    timeout: "{{ remnawave_api_timeout }}"
+    validate_certs: "{{ remnawave_panel_validate_certs }}"
+  register: remnawave_existing_profile_response
+  delegate_to: localhost
+  become: false
+  no_log: true
+  changed_when: false
+  when: remnawave_config_profile_uuid is defined
+
+- name: Extract reusable Reality settings
+  ansible.builtin.set_fact:
+    remnawave_existing_profile_config: >-
+      {{ remnawave_existing_profile_response.json.response.config | default({})
+         if remnawave_existing_profile_response is not skipped | default(false) else {} }}
+    remnawave_existing_reality: >-
+      {{ (remnawave_existing_profile_response.json.response.config | default({}) | remnawave_reality_settings)
+         if remnawave_existing_profile_response is not skipped | default(false) else {} }}
+  no_log: true
+
+- name: Decide whether a Reality key must be generated
+  ansible.builtin.set_fact:
+    remnawave_generate_reality_key: >-
+      {{ reality_rotate_keys | bool or
+         (reality_private_key | length == 0 and remnawave_existing_reality.privateKey | default('') | length == 0) }}
+
+- name: Pull the pinned RemnaNode image for X25519 generation
+  community.docker.docker_image:
+    name: "{{ remnawave_node_image }}"
+    source: pull
+  when: remnawave_generate_reality_key | bool
+
+- name: Generate a Reality X25519 keypair
+  ansible.builtin.command:
+    argv:
+      - docker
+      - run
+      - --rm
+      - --entrypoint
+      - /usr/local/bin/xray
+      - "{{ remnawave_node_image }}"
+      - x25519
+  register: remnawave_reality_keygen
+  changed_when: true
+  no_log: true
+  when: remnawave_generate_reality_key | bool
+
+- name: Select stable Reality private key
+  ansible.builtin.set_fact:
+    remnawave_reality_private_key: >-
+      {{ (remnawave_reality_keygen.stdout | regex_search('(?im)^Private\s*key:\s*(\S+)', '\1') | first)
+         if remnawave_generate_reality_key | bool else
+         (reality_private_key if reality_rotate_keys | bool and reality_private_key | length > 0 else
+          remnawave_existing_reality.privateKey | default(reality_private_key)) }}
+  no_log: true
+
+- name: Generate a Reality short ID when none can be reused
+  ansible.builtin.command:
+    argv: [openssl, rand, -hex, "8"]
+  register: remnawave_short_id_generation
+  changed_when: true
+  no_log: true
+  when:
+    - reality_rotate_keys | bool or (reality_short_ids | length == 0 and remnawave_existing_reality.shortIds | default([]) | length == 0)
+
+- name: Select stable Reality short IDs
+  ansible.builtin.set_fact:
+    remnawave_reality_short_ids: >-
+      {{ [remnawave_short_id_generation.stdout | trim]
+         if remnawave_short_id_generation is not skipped | default(false) else
+         (reality_short_ids if reality_rotate_keys | bool and reality_short_ids | length > 0 else
+          remnawave_existing_reality.shortIds | default(reality_short_ids)) }}
+  no_log: true
+
+- name: Validate Reality key and short IDs
+  ansible.builtin.assert:
+    that:
+      - remnawave_reality_private_key | length > 0
+      - remnawave_reality_short_ids | length > 0
+      - item is match('^([0-9a-fA-F]{2}){0,8}$')
+    fail_msg: Reality private key is empty or shortId is not even-length hexadecimal up to 16 characters.
+  loop: "{{ remnawave_reality_short_ids }}"
+  no_log: true
+
+- name: Render desired Xray profile in memory
+  ansible.builtin.set_fact:
+    remnawave_desired_xray_config: "{{ lookup('template', 'xray-config.json.j2') | from_json }}"
+  no_log: true
+
+- name: Write temporary profile for Xray validation
+  ansible.builtin.copy:
+    content: "{{ remnawave_desired_xray_config | to_nice_json }}\n"
+    dest: "{{ remnawave_profile_validation_path }}"
+    owner: root
+    group: root
+    mode: "0600"
+  no_log: true
+  when: remnawave_validate_xray_profile | bool
+
+- name: Validate desired profile with the pinned Node image
+  ansible.builtin.command:
+    argv:
+      - docker
+      - run
+      - --rm
+      - --entrypoint
+      - /usr/local/bin/xray
+      - --volume
+      - "{{ remnawave_profile_validation_path }}:/tmp/config.json:ro"
+      - "{{ remnawave_node_image }}"
+      - run
+      - -test
+      - -c
+      - /tmp/config.json
+  register: remnawave_profile_validation
+  changed_when: false
+  no_log: true
+  when: remnawave_validate_xray_profile | bool
+
+- name: Determine Config Profile change
+  ansible.builtin.set_fact:
+    remnawave_profile_needs_update: >-
+      {{ remnawave_config_profile_uuid is not defined or
+         not (remnawave_desired_xray_config |
+              remnawave_is_subset(remnawave_existing_profile_config | default({}), ['uuid'])) }}
+
+- name: Create Config Profile
+  ansible.builtin.uri:
+    url: "{{ remnawave_api_base }}/config-profiles"
+    method: POST
+    headers:
+      Authorization: "Bearer {{ remnawave_panel_token }}"
+    body_format: json
+    body:
+      name: "{{ profile_name }}"
+      config: "{{ remnawave_desired_xray_config }}"
+    return_content: true
+    status_code: 201
+    timeout: "{{ remnawave_api_timeout }}"
+    validate_certs: "{{ remnawave_panel_validate_certs }}"
+  register: remnawave_profile_create
+  delegate_to: localhost
+  become: false
+  no_log: true
+  changed_when: true
+  when: remnawave_config_profile_uuid is not defined
+
+- name: Store new Config Profile UUID
+  ansible.builtin.set_fact:
+    remnawave_config_profile_uuid: "{{ remnawave_profile_create.json.response.uuid }}"
+  when: remnawave_profile_create is not skipped | default(false)
+
+- name: Update Config Profile only when its managed config differs
+  ansible.builtin.uri:
+    url: "{{ remnawave_api_base }}/config-profiles"
+    method: PATCH
+    headers:
+      Authorization: "Bearer {{ remnawave_panel_token }}"
+    body_format: json
+    body:
+      uuid: "{{ remnawave_config_profile_uuid }}"
+      name: "{{ profile_name }}"
+      config: "{{ remnawave_desired_xray_config }}"
+    return_content: true
+    status_code: 200
+    timeout: "{{ remnawave_api_timeout }}"
+    validate_certs: "{{ remnawave_panel_validate_certs }}"
+  register: remnawave_profile_update
+  delegate_to: localhost
+  become: false
+  no_log: true
+  changed_when: true
+  when:
+    - remnawave_profile_create is skipped | default(true)
+    - remnawave_profile_needs_update | bool
+
+- name: Read reconciled Config Profile and panel-assigned inbound UUIDs
+  ansible.builtin.uri:
+    url: "{{ remnawave_api_base }}/config-profiles/{{ remnawave_config_profile_uuid }}"
+    method: GET
+    headers:
+      Authorization: "Bearer {{ remnawave_panel_token }}"
+    return_content: true
+    status_code: 200
+    timeout: "{{ remnawave_api_timeout }}"
+    validate_certs: "{{ remnawave_panel_validate_certs }}"
+  register: remnawave_profile_final
+  delegate_to: localhost
+  become: false
+  no_log: true
+  changed_when: false
+
+- name: Initialize inbound UUID map
+  ansible.builtin.set_fact:
+    remnawave_inbound_uuid_map: {}
+
+- name: Map panel-assigned inbound UUIDs by tag
+  ansible.builtin.set_fact:
+    remnawave_inbound_uuid_map: "{{ remnawave_inbound_uuid_map | combine({item.tag: item.uuid}) }}"
+  loop: "{{ remnawave_profile_final.json.response.inbounds | default(remnawave_profile_final.json.response.config.inbounds) }}"
+  loop_control:
+    label: "{{ item.tag }}"
+
+- name: Require UUIDs for all managed inbounds
+  ansible.builtin.assert:
+    that:
+      - item.tag in remnawave_inbound_uuid_map
+    fail_msg: "Panel did not return an inbound UUID for tag {{ item.tag }}."
+  loop: "{{ inbound_specs }}"
+  loop_control:
+    label: "{{ item.tag }}"
+
+- name: Store managed inbound UUIDs and profile change state
+  ansible.builtin.set_fact:
+    remnawave_managed_inbound_uuids: >-
+      {{ inbound_specs | map(attribute='tag') | map('extract', remnawave_inbound_uuid_map) | list }}
+    remnawave_panel_profile_changed: >-
+      {{ remnawave_profile_create is not skipped | default(false) or
+         remnawave_profile_update is not skipped | default(false) }}

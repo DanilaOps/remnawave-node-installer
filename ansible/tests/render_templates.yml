@@ -1,0 +1,122 @@
+---
+- name: Render and validate core templates locally
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  become: false
+  vars:
+    node_name: DE-01
+    node_id: de_01
+    selfsteal_domain: node-de-01.example.com
+    selfsteal_local_port: 9443
+    selfsteal_socket: ""
+    reality_xver: 1
+    remnawave_reality_private_key: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+    remnawave_reality_short_ids: ["0011223344556677"]
+    inbound_specs:
+      - tag: DE_01_REALITY
+        port: 443
+        network: raw
+    xhttp_path: /api/v1/update
+    xhttp_extra_params: {}
+    bridge_spec:
+      enabled: false
+    remnawave_install_root: /opt/remnawave-node
+    remnawave_node_dir: /opt/remnawave-node/remnanode
+    remnawave_node_env_path: /opt/remnawave-node/remnanode/.env
+    remnawave_node_image: ghcr.io/remnawave/node:3.3.2
+    remnawave_node_container: remnanode
+    remnawave_nginx_image: nginx:1.29.3-alpine
+    remnawave_nginx_container: nginx-selfsteal
+    remnawave_logs_dir: /var/log/remnanode
+    remnawave_nginx_logs_dir: /var/log/nginx-selfsteal
+    remnawave_nginx_dir: /opt/remnawave-node/nginx
+    remnawave_geodata_dir: /opt/remnawave-node/geodata
+    remnawave_node_secret_key: test-secret
+    remnawave_node_port: 2222
+    xray_binary_path: /opt/remnawave-node/remnanode/xray-core-26.6.27/xray
+    node_plugins: []
+    geodata_enabled: false
+    geodata_files: []
+    certificate_name: node-de-01.example.com
+    certificate_mode: http01
+    certificate_renew_before_days: 30
+    node_firewall_table: remnawave_filter_test
+    management_cidrs: [203.0.113.1/32]
+    remnawave_panel_cidrs: [203.0.113.2/32]
+    node_public_tcp_ports: [80, 443]
+    node_public_udp_ports: []
+    selfsteal_virtual_hosts:
+      - name: primary
+        server_names: [node-de-01.example.com]
+        root: /opt/remnawave-node/selfsteal/html/primary
+        title: Cloud Infrastructure
+  tasks:
+    - name: Render Xray profile into a fact
+      ansible.builtin.set_fact:
+        rendered_xray: >-
+          {{ lookup('template', playbook_dir ~ '/../roles/remnawave_panel/templates/xray-config.json.j2') | from_json }}
+      no_log: true
+
+    - name: Validate Xray invariants
+      ansible.builtin.assert:
+        that:
+          - rendered_xray.inbounds[0].port == 443
+          - rendered_xray.inbounds[0].streamSettings.network == 'raw'
+          - rendered_xray.inbounds[0].streamSettings.security == 'reality'
+          - rendered_xray.inbounds[0].streamSettings.realitySettings.target == '127.0.0.1:9443'
+          - rendered_xray.inbounds[0].settings.clients | length == 0
+
+    - name: Store rendered Xray profile for executable validation
+      ansible.builtin.copy:
+        content: "{{ rendered_xray | to_nice_json }}\n"
+        dest: /tmp/remnawave-xray-test.json
+        mode: "0600"
+      no_log: true
+
+    - name: Render compose template
+      ansible.builtin.template:
+        src: "{{ playbook_dir }}/../roles/remnawave_node/templates/compose.yml.j2"
+        dest: /tmp/remnawave-compose-test.yml
+        mode: "0600"
+
+    - name: Render nginx template
+      ansible.builtin.template:
+        src: "{{ playbook_dir }}/../roles/remnawave_node/templates/nginx.conf.j2"
+        dest: /tmp/remnawave-nginx-test.conf
+        mode: "0600"
+
+    - name: Render certificate renewal helper
+      ansible.builtin.template:
+        src: "{{ playbook_dir }}/../roles/remnawave_node/templates/remnawave-cert-renew.sh.j2"
+        dest: /tmp/remnawave-cert-renew-test.sh
+        mode: "0700"
+
+    - name: Validate certificate renewal shell syntax
+      ansible.builtin.command:
+        argv: [sh, -n, /tmp/remnawave-cert-renew-test.sh]
+      changed_when: false
+
+    - name: Render nftables template
+      ansible.builtin.template:
+        src: "{{ playbook_dir }}/../roles/node_base/templates/remnawave-filter.nft.j2"
+        dest: /tmp/remnawave-filter-test.nft
+        mode: "0600"
+
+    - name: Read rendered compose file
+      ansible.builtin.slurp:
+        src: /tmp/remnawave-compose-test.yml
+      register: rendered_compose
+
+    - name: Parse rendered compose as YAML
+      ansible.builtin.set_fact:
+        rendered_compose_data: "{{ rendered_compose.content | b64decode | from_yaml }}"
+
+    - name: Require both application services and host networking
+      ansible.builtin.assert:
+        that:
+          - rendered_compose_data.services.remnanode.network_mode == 'host'
+          - rendered_compose_data.services['nginx-selfsteal'].network_mode == 'host'
+          - >-
+            '/var/log/remnanode:/var/log/xray' in rendered_compose_data.services.remnanode.volumes
+          - rendered_compose_data.services.remnanode.healthcheck.test | length > 0

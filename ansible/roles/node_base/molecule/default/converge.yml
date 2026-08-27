@@ -1,0 +1,28 @@
+---
+- name: Converge node_base
+  hosts: all
+  become: true
+  gather_facts: true
+  vars:
+    node_id: test_01
+    node_name: TEST-01
+    node_public_ip: 203.0.113.10
+    node_country: DE
+    selfsteal_domain: node.example.test
+    remnawave_panel_url: https://panel.example.test
+    remnawave_panel_token: test-token
+    remnawave_node_port: 2222
+    management_cidrs: [203.0.113.1/32]
+    remnawave_panel_cidrs: [203.0.113.2/32]
+    internal_squad_name: Test
+    preflight_check_dns: false
+    preflight_check_panel: false
+    preflight_check_ports: false
+    preflight_require_ntp_sync: false
+    node_base_upgrade_packages: false
+    node_base_reboot_if_required: false
+    node_firewall_enabled: false
+    node_hardening_enabled: false
+  roles:
+    - role: node_base
+

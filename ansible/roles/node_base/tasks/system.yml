@@ -1,0 +1,191 @@
+---
+- name: Check whether cloud-init is installed
+  ansible.builtin.stat:
+    path: /usr/bin/cloud-init
+  register: node_base_cloud_init_binary
+
+- name: Wait for cloud-init to finish
+  ansible.builtin.command:
+    argv: [cloud-init, status, --wait]
+  register: node_base_cloud_init
+  changed_when: false
+  failed_when: node_base_cloud_init.rc not in [0, 2]
+  when: node_base_cloud_init_binary.stat.exists
+
+- name: Read the root filesystem block device
+  ansible.builtin.command:
+    argv: [findmnt, -n, -o, SOURCE, /]
+  register: node_base_root_source
+  changed_when: false
+
+- name: Resolve the parent disk of the root filesystem
+  ansible.builtin.command:
+    argv: [lsblk, -n, -o, PKNAME, "{{ node_base_root_source.stdout | trim }}"]
+  register: node_base_root_parent_disk
+  changed_when: false
+
+- name: Detect EFI boot mode
+  ansible.builtin.stat:
+    path: /sys/firmware/efi
+  register: node_base_efi_firmware
+
+- name: Detect an installed BIOS GRUB package
+  ansible.builtin.command:
+    argv: [dpkg-query, --show, "--showformat=${db:Status-Abbrev}", grub-pc]
+  register: node_base_grub_pc_status
+  changed_when: false
+  failed_when: node_base_grub_pc_status.rc not in [0, 1]
+
+- name: Validate the detected BIOS boot disk
+  ansible.builtin.assert:
+    that:
+      - node_base_root_parent_disk.stdout | trim is match('^[A-Za-z0-9._-]+$')
+    fail_msg: >-
+      Could not safely determine the parent disk of {{ node_base_root_source.stdout | trim }}.
+      Refusing to change the GRUB installation target.
+  when:
+    - not node_base_efi_firmware.stat.exists
+    - node_base_grub_pc_status.rc == 0
+
+- name: Preseed the actual BIOS GRUB installation device
+  ansible.builtin.debconf:
+    name: grub-pc
+    question: "{{ item.question }}"
+    value: "{{ item.value }}"
+    vtype: "{{ item.vtype }}"
+  loop:
+    - question: grub-pc/install_devices
+      value: "/dev/{{ node_base_root_parent_disk.stdout | trim }}"
+      vtype: multiselect
+    - question: grub-pc/install_devices_disks_changed
+      value: "/dev/{{ node_base_root_parent_disk.stdout | trim }}"
+      vtype: multiselect
+    - question: grub-pc/install_devices_empty
+      value: "false"
+      vtype: boolean
+    - question: grub-pc/install_devices_failed
+      value: "false"
+      vtype: boolean
+    - question: grub-pc/install_devices_failed_upgrade
+      value: "false"
+      vtype: boolean
+  loop_control:
+    label: "{{ item.question }}"
+  when:
+    - not node_base_efi_firmware.stat.exists
+    - node_base_grub_pc_status.rc == 0
+
+- name: Finish any interrupted package configuration
+  ansible.builtin.command:
+    argv: [dpkg, --configure, -a]
+  environment:
+    DEBIAN_FRONTEND: noninteractive
+  register: node_base_dpkg_configure
+  changed_when: >-
+    'Setting up ' in node_base_dpkg_configure.stdout or
+    'Setting up ' in node_base_dpkg_configure.stderr
+  when:
+    - not node_base_efi_firmware.stat.exists
+    - node_base_grub_pc_status.rc == 0
+
+- name: Refresh APT metadata and upgrade installed packages
+  ansible.builtin.apt:
+    update_cache: true
+    upgrade: dist
+    cache_valid_time: 3600
+    lock_timeout: 300
+  when: node_base_upgrade_packages | bool
+
+- name: Install base packages
+  ansible.builtin.apt:
+    name: "{{ node_base_packages }}"
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+    lock_timeout: 300
+
+- name: Configure the system hostname
+  ansible.builtin.hostname:
+    name: "{{ node_base_hostname }}"
+
+- name: Configure UTC timezone
+  community.general.timezone:
+    name: "{{ node_base_timezone }}"
+
+- name: Discover installed time synchronization services
+  ansible.builtin.service_facts:
+
+- name: Enable time synchronization
+  ansible.builtin.systemd_service:
+    name: systemd-timesyncd
+    state: started
+    enabled: true
+  when: "'systemd-timesyncd.service' in ansible_facts.services"
+
+- name: Configure unattended security upgrades
+  ansible.builtin.template:
+    src: 20auto-upgrades.j2
+    dest: /etc/apt/apt.conf.d/20auto-upgrades
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Enable unattended upgrades
+  ansible.builtin.systemd_service:
+    name: unattended-upgrades
+    state: started
+    enabled: true
+
+- name: Remove the superseded late SSH hardening drop-in
+  ansible.builtin.file:
+    path: /etc/ssh/sshd_config.d/90-remnawave.conf
+    state: absent
+  notify: Restart SSH
+
+- name: Install SSH hardening drop-in before cloud-init overrides
+  ansible.builtin.template:
+    src: 90-remnawave-ssh.conf.j2
+    dest: /etc/ssh/sshd_config.d/00-remnawave.conf
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart SSH
+
+- name: Validate the complete SSH daemon configuration
+  ansible.builtin.command:
+    argv: [/usr/sbin/sshd, -t]
+  changed_when: false
+
+- name: Read the effective SSH daemon configuration
+  ansible.builtin.command:
+    argv: [/usr/sbin/sshd, -T]
+  register: node_base_sshd_effective_config
+  changed_when: false
+
+- name: Verify the requested SSH authentication policy is effective
+  ansible.builtin.assert:
+    that:
+      - >-
+        ('passwordauthentication ' ~ ('yes' if node_ssh_allow_root_password | bool else 'no'))
+        in node_base_sshd_effective_config.stdout
+      - >-
+        (('permitrootlogin yes' in node_base_sshd_effective_config.stdout)
+        if (node_ssh_allow_root_password | bool) else
+        ('permitrootlogin yes' not in node_base_sshd_effective_config.stdout))
+    fail_msg: >-
+      The effective sshd policy does not match node_ssh_allow_root_password.
+      Check earlier vendor or cloud-init SSH configuration files before continuing.
+
+- name: Check whether a reboot is required
+  ansible.builtin.stat:
+    path: /var/run/reboot-required
+  register: node_base_reboot_required
+
+- name: Reboot after system upgrades
+  ansible.builtin.reboot:
+    reboot_timeout: 900
+    connect_timeout: 10
+    post_reboot_delay: 10
+  when:
+    - node_base_reboot_if_required | bool
+    - node_base_reboot_required.stat.exists

@@ -1,0 +1,88 @@
+---
+- name: Create nginx, site and log directories
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: "{{ item.owner | default('root') }}"
+    group: "{{ item.group | default('root') }}"
+    mode: "{{ item.mode }}"
+  loop:
+    - path: "{{ remnawave_nginx_dir }}/conf.d"
+      mode: "0755"
+    - path: "{{ remnawave_nginx_logs_dir }}"
+      mode: "0750"
+    - path: "{{ remnawave_install_root }}/acme-webroot"
+      mode: "0755"
+
+- name: Create virtual-host document roots
+  ansible.builtin.file:
+    path: "{{ item.root }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  loop: "{{ selfsteal_virtual_hosts }}"
+  loop_control:
+    label: "{{ item.name }}"
+
+- name: Install stable decoy content
+  ansible.builtin.template:
+    src: index.html.j2
+    dest: "{{ item.root }}/index.html"
+    owner: root
+    group: root
+    mode: "0644"
+    force: "{{ selfsteal_refresh_content }}"
+  loop: "{{ selfsteal_virtual_hosts }}"
+  loop_control:
+    label: "{{ item.name }}"
+  vars:
+    selfsteal_site: "{{ item }}"
+  notify: Reload selfsteal nginx
+
+- name: Check whether the compose project has already been applied
+  ansible.builtin.stat:
+    path: "{{ remnawave_install_root }}/.compose-applied"
+  register: remnawave_compose_marker
+
+- name: Render nginx configuration for all virtual hosts
+  ansible.builtin.template:
+    src: nginx.conf.j2
+    dest: "{{ remnawave_nginx_dir }}/nginx.conf"
+    owner: root
+    group: root
+    mode: "0644"
+  register: remnawave_nginx_config
+
+- name: Validate the rendered nginx configuration in the pinned container image
+  ansible.builtin.command:
+    argv:
+      - docker
+      - run
+      - --rm
+      - --network
+      - host
+      - --volume
+      - "{{ remnawave_nginx_dir }}/nginx.conf:/etc/nginx/nginx.conf:ro"
+      - --volume
+      - /etc/letsencrypt:/etc/letsencrypt:ro
+      - --volume
+      - "{{ remnawave_install_root }}/selfsteal:/var/www/selfsteal:ro"
+      - --volume
+      - "{{ remnawave_install_root }}/acme-webroot:/var/www/acme:ro"
+      - --volume
+      - "{{ remnawave_nginx_logs_dir }}:/var/log/nginx"
+      - "{{ remnawave_nginx_image }}"
+      - nginx
+      - -t
+  changed_when: false
+  when: remnawave_nginx_config.changed
+
+- name: Schedule nginx recreation for an updated bind-mounted configuration
+  ansible.builtin.debug:
+    msg: nginx configuration changed; the existing container will be recreated after validation.
+  changed_when: true
+  when:
+    - remnawave_nginx_config.changed
+    - remnawave_compose_marker.stat.exists
+  notify: Recreate selfsteal nginx

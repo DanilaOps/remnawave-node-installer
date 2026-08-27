@@ -1,0 +1,57 @@
+---
+ansible_user: deployer
+ansible_port: 22
+
+management_cidrs:
+  - 198.51.100.10/32
+remnawave_panel_cidrs:
+  - 198.51.100.20/32
+
+remnawave_panel_url: https://panel.example.com
+remnawave_panel_token: "{{ vault_remnawave_panel_token }}"
+remnawave_node_image: ghcr.io/remnawave/node:3.3.2
+remnawave_node_port: 2222
+
+xray_version: 26.6.27
+xray_checksums:
+  x86_64: b3e5902d06d6282fe53cfa2fc426058b9aeaa429b2c812e20887cd47f26d08bf
+  aarch64: 13a251379bea366c2cf10363ad71e75734193d401f26f518bf0c25e5c8f8c931
+
+inbound_specs:
+  - tag: DE_01_REALITY
+    port: 443
+    network: raw
+
+host_specs:
+  - remark: Germany
+    address: node-de-01.example.com
+    inbound_tag: DE_01_REALITY
+    port: 443
+    sni: node-de-01.example.com
+    fingerprint: firefox
+    security_layer: DEFAULT
+    is_hidden: false
+    is_disabled: false
+    tags: [EU, DIRECT]
+
+selfsteal_virtual_hosts:
+  - name: primary
+    server_names:
+      - node-de-01.example.com
+    root: /opt/remnawave-node/selfsteal/html/primary
+    title: Cloud Infrastructure
+
+certificate_mode: http01
+acme_email: ops@example.com
+
+# Keep strict verification enabled in production and provide a real controller-side
+# probe command that exits 0 only after a valid VLESS connection succeeds.
+verify_require_tunnel_probe: true
+verify_tunnel_probe_command: []
+verify_require_node_port_denied_probe: true
+verify_node_port_untrusted_probe_host: localhost
+
+bridge_spec:
+  enabled: false
+
+node_plugins: []

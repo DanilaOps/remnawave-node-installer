@@ -1,0 +1,46 @@
+---
+- name: Apply Remnawave compose
+  community.docker.docker_compose_v2:
+    project_src: "{{ remnawave_install_root }}"
+    files: [compose.yml]
+    state: present
+    pull: missing
+    remove_orphans: true
+  register: remnawave_compose_apply
+  notify: Mark compose applied
+
+- name: Mark compose applied
+  ansible.builtin.file:
+    path: "{{ remnawave_install_root }}/.compose-applied"
+    state: touch
+    owner: root
+    group: root
+    mode: "0600"
+    modification_time: preserve
+    access_time: preserve
+
+- name: Recreate selfsteal nginx
+  community.docker.docker_compose_v2:
+    project_src: "{{ remnawave_install_root }}"
+    files: [compose.yml]
+    services: [nginx-selfsteal]
+    state: present
+    recreate: always
+    wait: true
+    wait_timeout: 60
+
+- name: Reload selfsteal nginx
+  ansible.builtin.command:
+    argv: [docker, exec, "{{ remnawave_nginx_container }}", nginx, -s, reload]
+  changed_when: true
+
+- name: Restart RemnaNode
+  community.docker.docker_compose_v2:
+    project_src: "{{ remnawave_install_root }}"
+    files: [compose.yml]
+    services: [remnanode]
+    state: restarted
+
+- name: Reload systemd
+  ansible.builtin.systemd_service:
+    daemon_reload: true

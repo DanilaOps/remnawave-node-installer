@@ -1,0 +1,129 @@
+---
+- name: Build active inbound UUID list for Node
+  ansible.builtin.set_fact:
+    remnawave_node_active_inbounds: >-
+      {{ remnawave_managed_inbound_uuids +
+         ([remnawave_inbound_uuid_map[bridge_spec.tag]] if bridge_spec.enabled | default(false) | bool else []) }}
+
+- name: List Nodes
+  ansible.builtin.uri:
+    url: "{{ remnawave_api_base }}/nodes"
+    method: GET
+    headers:
+      Authorization: "Bearer {{ remnawave_panel_token }}"
+    return_content: true
+    status_code: 200
+    timeout: "{{ remnawave_api_timeout }}"
+    validate_certs: "{{ remnawave_panel_validate_certs }}"
+  register: remnawave_nodes_response
+  delegate_to: localhost
+  become: false
+  no_log: true
+  changed_when: false
+
+- name: Match Node by stable name, then by address
+  ansible.builtin.set_fact:
+    remnawave_node_name_matches: >-
+      {{ remnawave_nodes_response.json.response | selectattr('name', 'equalto', node_name) | list }}
+    remnawave_node_address_matches: >-
+      {{ remnawave_nodes_response.json.response | selectattr('address', 'equalto', node_public_ip) | list }}
+
+- name: Select Node candidates
+  ansible.builtin.set_fact:
+    remnawave_node_matches: >-
+      {{ remnawave_node_name_matches if remnawave_node_name_matches | length > 0 else remnawave_node_address_matches }}
+
+- name: Reject ambiguous Nodes
+  ansible.builtin.assert:
+    that:
+      - remnawave_node_matches | length <= 1
+    fail_msg: "Multiple Nodes match name {{ node_name }} or address {{ node_public_ip }}."
+
+- name: Build desired Node payload
+  ansible.builtin.set_fact:
+    remnawave_desired_node:
+      name: "{{ node_name }}"
+      address: "{{ node_public_ip }}"
+      port: "{{ remnawave_node_port | int }}"
+      countryCode: "{{ node_country | upper }}"
+      configProfile:
+        activeConfigProfileUuid: "{{ remnawave_config_profile_uuid }}"
+        activeInbounds: "{{ remnawave_node_active_inbounds }}"
+
+- name: Determine whether Node needs an update
+  ansible.builtin.set_fact:
+    remnawave_node_needs_update: >-
+      {{ remnawave_node_matches | length == 0 or
+         not (remnawave_desired_node | remnawave_is_subset(remnawave_node_matches[0] | default({}), ['uuid'])) }}
+
+- name: Create Node
+  ansible.builtin.uri:
+    url: "{{ remnawave_api_base }}/nodes"
+    method: POST
+    headers:
+      Authorization: "Bearer {{ remnawave_panel_token }}"
+    body_format: json
+    body: "{{ remnawave_desired_node }}"
+    return_content: true
+    status_code: 201
+    timeout: "{{ remnawave_api_timeout }}"
+    validate_certs: "{{ remnawave_panel_validate_certs }}"
+  register: remnawave_node_create
+  delegate_to: localhost
+  become: false
+  no_log: true
+  changed_when: true
+  when: remnawave_node_matches | length == 0
+
+- name: Store created or existing Node UUID
+  ansible.builtin.set_fact:
+    remnawave_node_uuid: >-
+      {{ remnawave_node_create.json.response.uuid
+         if remnawave_node_create is not skipped | default(false) else remnawave_node_matches[0].uuid }}
+
+- name: Update Node only when managed fields differ
+  ansible.builtin.uri:
+    url: "{{ remnawave_api_base }}/nodes"
+    method: PATCH
+    headers:
+      Authorization: "Bearer {{ remnawave_panel_token }}"
+    body_format: json
+    body: "{{ remnawave_desired_node | combine({'uuid': remnawave_node_uuid}) }}"
+    return_content: true
+    status_code: 200
+    timeout: "{{ remnawave_api_timeout }}"
+    validate_certs: "{{ remnawave_panel_validate_certs }}"
+  register: remnawave_node_update
+  delegate_to: localhost
+  become: false
+  no_log: true
+  changed_when: true
+  when:
+    - remnawave_node_matches | length == 1
+    - remnawave_node_needs_update | bool
+
+- name: Read reconciled Node
+  ansible.builtin.uri:
+    url: "{{ remnawave_api_base }}/nodes/{{ remnawave_node_uuid }}"
+    method: GET
+    headers:
+      Authorization: "Bearer {{ remnawave_panel_token }}"
+    return_content: true
+    status_code: 200
+    timeout: "{{ remnawave_api_timeout }}"
+    validate_certs: "{{ remnawave_panel_validate_certs }}"
+  register: remnawave_node_final
+  delegate_to: localhost
+  become: false
+  no_log: true
+  changed_when: false
+
+- name: Verify Node profile and active inbound links
+  ansible.builtin.assert:
+    that:
+      - remnawave_node_final.json.response.configProfile.activeConfigProfileUuid == remnawave_config_profile_uuid
+      - >-
+        remnawave_node_active_inbounds | difference(
+          remnawave_node_final.json.response.configProfile.activeInbounds | remnawave_uuid_list) | length == 0
+    fail_msg: Panel did not retain the expected Config Profile or active inbounds on the Node.
+

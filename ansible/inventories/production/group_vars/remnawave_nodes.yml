@@ -1,0 +1,14 @@
+---
+# Copy reviewed values from staging, then keep secrets in group_vars/all/vault.yml.
+ansible_user: deployer
+ansible_port: 22
+management_cidrs: []
+remnawave_panel_cidrs: []
+remnawave_panel_url: https://panel.example.com
+remnawave_panel_token: "{{ vault_remnawave_panel_token }}"
+remnawave_node_image: ghcr.io/remnawave/node:3.3.2
+remnawave_node_port: 2222
+verify_require_tunnel_probe: true
+verify_tunnel_probe_command: []
+verify_require_node_port_denied_probe: true
+verify_node_port_untrusted_probe_host: ""

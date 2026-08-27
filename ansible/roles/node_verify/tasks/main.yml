@@ -1,0 +1,32 @@
+---
+- name: Verify Remnawave Panel state and wait for Xray startup
+  ansible.builtin.import_tasks: panel.yml
+
+- name: Verify local runtime and security state
+  ansible.builtin.import_tasks: local.yml
+
+- name: Verify external selfsteal and tunnel behavior
+  ansible.builtin.import_tasks: external.yml
+
+- name: Verify bridge end to end
+  ansible.builtin.import_tasks: bridge.yml
+  when: bridge_spec.enabled | default(false) | bool
+
+- name: Publish final deployment result
+  ansible.builtin.set_stats:
+    data:
+      node_id: "{{ node_id }}"
+      node_uuid: "{{ remnawave_node_uuid }}"
+      config_profile_uuid: "{{ remnawave_config_profile_uuid }}"
+      inbound_uuids: "{{ remnawave_managed_inbound_uuids }}"
+      host_uuids: "{{ remnawave_host_uuids }}"
+      internal_squad_uuid: "{{ remnawave_internal_squad_uuid | default('') }}"
+      node_public_ip: "{{ node_public_ip }}"
+      selfsteal_domain: "{{ selfsteal_domain }}"
+      bridge_id: "{{ bridge_spec.id | default('') }}"
+      remnanode_image: "{{ remnawave_node_image }}"
+      xray_version: "{{ xray_version }}"
+      nginx_version: "{{ remnawave_verify_nginx_version.stdout | trim }}"
+      subscription_refresh_required: "{{ subscription_refresh_required }}"
+      deployment_status: ready
+    per_host: true

@@ -1,0 +1,55 @@
+---
+- name: Build bridge user's additive Squad membership
+  ansible.builtin.set_fact:
+    remnawave_bridge_user_squads: >-
+      {{ ((remnawave_bridge_user_lookup.json.response.activeInternalSquads | default([]) | remnawave_uuid_list)
+          + [remnawave_internal_squad_uuid | default('')]) | unique }}
+  no_log: true
+
+- name: Create bridge service user
+  ansible.builtin.uri:
+    url: "{{ remnawave_api_base }}/users"
+    method: POST
+    headers:
+      Authorization: "Bearer {{ remnawave_panel_token }}"
+    body_format: json
+    body:
+      username: "{{ bridge_spec.user }}"
+      status: ACTIVE
+      ssPassword: "{{ remnawave_bridge_secret }}"
+      trafficLimitBytes: 0
+      expireAt: "{{ bridge_user_expire_at }}"
+      activeInternalSquads: "{{ remnawave_bridge_user_squads }}"
+    return_content: true
+    status_code: 201
+    timeout: "{{ remnawave_api_timeout }}"
+    validate_certs: "{{ remnawave_panel_validate_certs }}"
+  delegate_to: localhost
+  become: false
+  no_log: true
+  changed_when: true
+  when: not remnawave_bridge_user_exists | bool
+
+- name: Update bridge service user's Squad membership only when needed
+  ansible.builtin.uri:
+    url: "{{ remnawave_api_base }}/users"
+    method: PATCH
+    headers:
+      Authorization: "Bearer {{ remnawave_panel_token }}"
+    body_format: json
+    body:
+      username: "{{ bridge_spec.user }}"
+      activeInternalSquads: "{{ remnawave_bridge_user_squads }}"
+    return_content: true
+    status_code: 200
+    timeout: "{{ remnawave_api_timeout }}"
+    validate_certs: "{{ remnawave_panel_validate_certs }}"
+  delegate_to: localhost
+  become: false
+  no_log: true
+  changed_when: true
+  when:
+    - remnawave_bridge_user_exists | bool
+    - >-
+      remnawave_bridge_user_lookup.json.response.activeInternalSquads | default([]) | remnawave_uuid_list | sort
+      != remnawave_bridge_user_squads | sort

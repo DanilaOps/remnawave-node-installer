@@ -1,0 +1,29 @@
+destroy table inet {{ node_firewall_table }}
+table inet {{ node_firewall_table }} {
+  chain input {
+    type filter hook input priority -10; policy drop;
+
+    ct state invalid drop
+    ct state established,related accept
+    iifname "lo" accept
+    ip protocol icmp accept
+    ip6 nexthdr ipv6-icmp accept
+
+{% for cidr in management_cidrs %}
+    {{ 'ip6' if ':' in cidr else 'ip' }} saddr {{ cidr }} tcp dport {{ ansible_port | default(22) }} accept
+{% endfor %}
+{% for cidr in remnawave_panel_cidrs %}
+    {{ 'ip6' if ':' in cidr else 'ip' }} saddr {{ cidr }} tcp dport {{ remnawave_node_port }} accept
+{% endfor %}
+{% if bridge_spec.enabled | default(false) %}
+    {{ 'ip6' if ':' in bridge_spec.entry_address else 'ip' }} saddr {{ bridge_spec.entry_address }} tcp dport {{ bridge_spec.port }} accept
+    {{ 'ip6' if ':' in bridge_spec.entry_address else 'ip' }} saddr {{ bridge_spec.entry_address }} udp dport {{ bridge_spec.port }} accept
+{% endif %}
+{% if node_public_tcp_ports | length > 0 %}
+    tcp dport { {{ node_public_tcp_ports | unique | join(', ') }} } accept
+{% endif %}
+{% if node_public_udp_ports | length > 0 %}
+    udp dport { {{ node_public_udp_ports | unique | join(', ') }} } accept
+{% endif %}
+  }
+}

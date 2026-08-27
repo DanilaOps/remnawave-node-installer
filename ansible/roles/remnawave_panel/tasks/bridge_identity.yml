@@ -1,0 +1,53 @@
+---
+- name: Validate bridge identity fields
+  ansible.builtin.assert:
+    that:
+      - bridge_spec.id | default('') | length > 0
+      - bridge_spec.user | default('') is match('^[A-Za-z0-9_-]{3,36}$')
+      - bridge_spec.tag | default('') is match('^[A-Z0-9_:]+$')
+      - bridge_spec.port | default(0) | int > 0
+      - bridge_spec.method | default('') | length > 0
+    fail_msg: An enabled bridge requires stable id, user, tag, port and method fields.
+
+- name: Read existing bridge service user
+  ansible.builtin.uri:
+    url: "{{ remnawave_api_base }}/users/by-username/{{ bridge_spec.user | urlencode }}"
+    method: GET
+    headers:
+      Authorization: "Bearer {{ remnawave_panel_token }}"
+    return_content: true
+    status_code: [200, 404]
+    timeout: "{{ remnawave_api_timeout }}"
+    validate_certs: "{{ remnawave_panel_validate_certs }}"
+  register: remnawave_bridge_user_lookup
+  delegate_to: localhost
+  become: false
+  no_log: true
+  changed_when: false
+
+- name: Reject a bridge user without a reusable Shadowsocks password
+  ansible.builtin.assert:
+    that:
+      - remnawave_bridge_user_lookup.json.response.ssPassword | default('') | length > 0
+    fail_msg: The existing bridge user has no ssPassword; refusing to rotate the bridge identity implicitly.
+  when: remnawave_bridge_user_lookup.status == 200
+  no_log: true
+
+- name: Generate a new bridge secret only for a new service user
+  ansible.builtin.command:
+    argv: [openssl, rand, -hex, "16"]
+  register: remnawave_generated_bridge_secret
+  changed_when: true
+  no_log: true
+  when:
+    - remnawave_bridge_user_lookup.status == 404
+    - bridge_secret | length == 0
+
+- name: Select stable bridge secret
+  ansible.builtin.set_fact:
+    remnawave_bridge_secret: >-
+      {{ remnawave_bridge_user_lookup.json.response.ssPassword
+         if remnawave_bridge_user_lookup.status == 200 else
+         (bridge_secret if bridge_secret | length > 0 else remnawave_generated_bridge_secret.stdout | trim) }}
+    remnawave_bridge_user_exists: "{{ remnawave_bridge_user_lookup.status == 200 }}"
+  no_log: true

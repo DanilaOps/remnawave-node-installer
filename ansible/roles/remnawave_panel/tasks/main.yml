@@ -1,0 +1,46 @@
+---
+- name: Validate Panel role inputs
+  ansible.builtin.assert:
+    that:
+      - inbound_specs | length > 0
+      - host_specs | length > 0
+      - inbound_specs | map(attribute='tag') | list | unique | length == inbound_specs | length
+      - inbound_specs | map(attribute='port') | map('int') | select('ge', 1) | list | length == inbound_specs | length
+      - internal_squad_uuid | length > 0 or internal_squad_name | length > 0
+      - not (selfsteal_domain | lower is search('apple|icloud'))
+    fail_msg: Panel inputs must contain unique inbounds, at least one Host and an Internal Squad identity.
+
+- name: Authenticate to Remnawave Panel and obtain the node key
+  ansible.builtin.import_tasks: authenticate.yml
+
+- name: Resolve bridge identity before rendering the profile
+  ansible.builtin.import_tasks: bridge_identity.yml
+  when: bridge_spec.enabled | default(false) | bool
+
+- name: Reconcile Config Profile and inbounds
+  ansible.builtin.import_tasks: profile.yml
+
+- name: Reconcile Node
+  ansible.builtin.import_tasks: node.yml
+
+- name: Reconcile Hosts
+  ansible.builtin.import_tasks: hosts.yml
+
+- name: Reconcile Internal Squad
+  ansible.builtin.import_tasks: squad.yml
+
+- name: Reconcile bridge service user
+  ansible.builtin.import_tasks: bridge_user.yml
+  when: bridge_spec.enabled | default(false) | bool
+
+- name: Publish Panel reconciliation facts
+  ansible.builtin.set_stats:
+    data:
+      node_uuid: "{{ remnawave_node_uuid | default('') }}"
+      config_profile_uuid: "{{ remnawave_config_profile_uuid | default('') }}"
+      inbound_uuids: "{{ remnawave_managed_inbound_uuids | default([]) }}"
+      host_uuids: "{{ remnawave_host_uuids | default([]) }}"
+      internal_squad_uuid: "{{ remnawave_internal_squad_uuid | default('') }}"
+      bridge_id: "{{ bridge_spec.id | default('') }}"
+      subscription_refresh_required: "{{ subscription_refresh_required | default(false) }}"
+    per_host: true

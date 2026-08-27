@@ -1,0 +1,126 @@
+---
+- name: Validate supported platform and required values
+  ansible.builtin.assert:
+    that:
+      - ansible_facts.distribution in node_base_supported_os
+      - ansible_facts.distribution_major_version in node_base_supported_os[ansible_facts.distribution]
+      - ansible_facts.architecture in node_base_supported_architectures
+      - node_country is match('^[A-Za-z]{2}$')
+      - (node_public_ip | ansible.utils.ipaddr) != false
+      - selfsteal_domain is match('^(?=.{1,253}$)([A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,63}$')
+      - remnawave_panel_url is match('^https://')
+      - remnawave_node_port | int >= 1
+      - remnawave_node_port | int <= 65535
+      - management_cidrs | length > 0
+      - remnawave_panel_cidrs | length > 0
+      - internal_squad_uuid | default('') | length > 0 or internal_squad_name | default('') | length > 0
+    fail_msg: >-
+      Unsupported platform or invalid required variables. Supported systems are Debian 12, Debian 13 and Ubuntu 24.04;
+      management/panel CIDRs and an Internal Squad identity are mandatory.
+
+- name: Validate all management CIDRs
+  ansible.builtin.assert:
+    that:
+      - (item | ansible.utils.ipaddr) != false
+    fail_msg: "Invalid management CIDR: {{ item }}"
+  loop: "{{ management_cidrs + remnawave_panel_cidrs }}"
+  loop_control:
+    label: "{{ item }}"
+
+- name: Detect the source address of the active Ansible SSH session
+  ansible.builtin.set_fact:
+    node_base_observed_ssh_source: "{{ ansible_env.SSH_CONNECTION.split()[0] }}"
+
+- name: Require management CIDRs to include the source seen by sshd
+  ansible.builtin.assert:
+    that:
+      - node_base_observed_ssh_source | remnawave_ip_in_cidrs(management_cidrs)
+    fail_msg: >-
+      sshd sees this Controller as {{ node_base_observed_ssh_source }}, but management_cidrs does not include it.
+      This commonly happens behind a provider TCP proxy; refusing to apply a firewall that would lock out Ansible.
+
+- name: Validate bridge input
+  ansible.builtin.assert:
+    that:
+      - bridge_spec.entry_address | default('') | length > 0
+      - bridge_spec.port | default(0) | int >= 1
+      - bridge_spec.port | default(0) | int <= 65535
+      - bridge_spec.method | default('') | length > 0
+      - bridge_spec.user | default('') is match('^[A-Za-z0-9_-]{3,36}$')
+    fail_msg: bridge_spec must define entry_address, port, method and a valid service user.
+  when: bridge_spec.enabled | default(false) | bool
+
+- name: Check root filesystem capacity
+  ansible.builtin.assert:
+    that:
+      - >-
+        (ansible_facts.mounts | selectattr('mount', 'equalto', '/') | map(attribute='size_available') | first | int)
+        >= (node_base_minimum_free_mb | int * 1024 * 1024)
+    fail_msg: "At least {{ node_base_minimum_free_mb }} MiB must be free on /."
+
+- name: Resolve the selfsteal domain from the node
+  ansible.builtin.command:
+    argv: [getent, ahostsv4, "{{ selfsteal_domain }}"]
+  register: node_base_dns_result
+  changed_when: false
+  failed_when: node_base_dns_result.rc != 0
+  check_mode: false
+  when: preflight_check_dns | bool
+
+- name: Require DNS to point to this VPS
+  ansible.builtin.assert:
+    that:
+      - node_public_ip in (node_base_dns_result.stdout | regex_findall('(?m)^([0-9.]+)\s+'))
+    fail_msg: "{{ selfsteal_domain }} does not resolve to {{ node_public_ip }} from the new node."
+  when: preflight_check_dns | bool
+
+- name: Verify panel connectivity and token scope
+  ansible.builtin.uri:
+    url: "{{ remnawave_panel_url | regex_replace('/+$', '') }}/api/nodes"
+    method: GET
+    headers:
+      Authorization: "Bearer {{ remnawave_panel_token }}"
+    return_content: false
+    status_code: 200
+    timeout: "{{ remnawave_api_timeout }}"
+    validate_certs: "{{ remnawave_panel_validate_certs }}"
+  delegate_to: localhost
+  become: false
+  no_log: true
+  changed_when: false
+  check_mode: false
+  when: preflight_check_panel | bool
+
+- name: Check NTP synchronization state
+  ansible.builtin.command:
+    argv: [timedatectl, show, --property=NTPSynchronized, --value]
+  register: node_base_ntp_state
+  changed_when: false
+  failed_when: preflight_require_ntp_sync | bool and node_base_ntp_state.stdout | trim != 'yes'
+  check_mode: false
+
+- name: Detect an existing managed compose project
+  ansible.builtin.stat:
+    path: /opt/remnawave-node/compose.yml
+  register: node_base_existing_compose
+
+- name: Read listeners before a first installation
+  ansible.builtin.command:
+    argv: [ss, -H, -lnt]
+  register: node_base_listeners
+  changed_when: false
+  check_mode: false
+  when:
+    - preflight_check_ports | bool
+    - not node_base_existing_compose.stat.exists
+
+- name: Reject conflicting public listeners on a new node
+  ansible.builtin.assert:
+    that:
+      - >-
+        node_base_listeners.stdout is not regex('(?m)(^|\s)(0\.0\.0\.0|\[::\]|\*):' ~ item ~ '\s')
+    fail_msg: "Required public port {{ item }} is already occupied before installation."
+  loop: "{{ (node_public_tcp_ports + [remnawave_node_port | int]) | unique }}"
+  when:
+    - preflight_check_ports | bool
+    - not node_base_existing_compose.stat.exists

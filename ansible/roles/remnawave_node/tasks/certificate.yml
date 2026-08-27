@@ -1,0 +1,112 @@
+---
+- name: Collect all selfsteal certificate names
+  ansible.builtin.set_fact:
+    remnawave_certificate_domains: >-
+      {{ selfsteal_virtual_hosts | map(attribute='server_names') | flatten | unique }}
+
+- name: Validate certificate configuration
+  ansible.builtin.assert:
+    that:
+      - acme_email | length > 0
+      - certificate_name | length > 0
+      - remnawave_certificate_domains | length > 0
+      - certificate_mode != 'cloudflare_dns' or cloudflare_token | length > 0
+      - certificate_renew_before_days | int >= 1
+      - certificate_renew_before_days | int <= 30
+    fail_msg: >-
+      ACME email, domains and DNS credentials for the selected mode are required;
+      certificate_renew_before_days must be between 1 and Certbot's standard 30-day renewal window.
+  no_log: true
+
+- name: Install Cloudflare DNS Certbot plugin
+  ansible.builtin.apt:
+    name: python3-certbot-dns-cloudflare
+    state: present
+    lock_timeout: 300
+  when: certificate_mode == 'cloudflare_dns'
+
+- name: Store Cloudflare DNS credentials
+  ansible.builtin.copy:
+    content: "dns_cloudflare_api_token = {{ cloudflare_token }}\n"
+    dest: "{{ cloudflare_credentials_path }}"
+    owner: root
+    group: root
+    mode: "0600"
+  no_log: true
+  when: certificate_mode == 'cloudflare_dns'
+
+- name: Check existing certificate
+  ansible.builtin.stat:
+    path: "/etc/letsencrypt/live/{{ certificate_name }}/fullchain.pem"
+  register: remnawave_certificate_file
+
+- name: Inspect existing certificate validity
+  community.crypto.x509_certificate_info:
+    path: "/etc/letsencrypt/live/{{ certificate_name }}/fullchain.pem"
+    valid_at:
+      renewal_threshold: "+{{ certificate_renew_before_days }}d"
+  register: remnawave_certificate_info
+  when: remnawave_certificate_file.stat.exists
+
+- name: Decide whether certificate issuance is required
+  ansible.builtin.set_fact:
+    remnawave_certificate_needs_issue: >-
+      {{ not remnawave_certificate_file.stat.exists or
+         not remnawave_certificate_info.valid_at.renewal_threshold | default(false) }}
+
+- name: Inspect existing nginx container before standalone ACME
+  community.docker.docker_container_info:
+    name: "{{ remnawave_nginx_container }}"
+  register: remnawave_nginx_before_acme
+  when:
+    - remnawave_certificate_needs_issue | bool
+    - certificate_mode == 'http01'
+
+- name: Build Certbot command
+  ansible.builtin.set_fact:
+    remnawave_certbot_argv: >-
+      {{ ['certbot', 'certonly', '--non-interactive', '--agree-tos', '--keep-until-expiring',
+          '--email', acme_email, '--cert-name', certificate_name]
+         + (['--standalone', '--preferred-challenges', 'http'] if certificate_mode == 'http01' else
+            ['--dns-cloudflare', '--dns-cloudflare-credentials', cloudflare_credentials_path,
+             '--dns-cloudflare-propagation-seconds', certificate_dns_propagation_seconds | string])
+         + (remnawave_certificate_domains | map('regex_replace', '^(.*)$', '-d=\\1') | list) }}
+  when: remnawave_certificate_needs_issue | bool
+
+- name: Issue or renew the selfsteal certificate safely
+  when: remnawave_certificate_needs_issue | bool
+  block:
+    - name: Stop nginx only while standalone ACME owns port 80
+      community.docker.docker_container:
+        name: "{{ remnawave_nginx_container }}"
+        state: stopped
+      when:
+        - certificate_mode == 'http01'
+        - remnawave_nginx_before_acme.exists | default(false)
+        - remnawave_nginx_before_acme.container.State.Running | default(false)
+
+    - name: Run bounded Certbot issuance
+      ansible.builtin.command:
+        argv: "{{ remnawave_certbot_argv }}"
+      register: remnawave_certbot_result
+      changed_when: "'Certificate not yet due for renewal' not in remnawave_certbot_result.stdout"
+      no_log: "{{ certificate_mode == 'cloudflare_dns' }}"
+
+  always:
+    - name: Restore nginx after standalone ACME
+      community.docker.docker_container:
+        name: "{{ remnawave_nginx_container }}"
+        state: started
+      when:
+        - certificate_mode == 'http01'
+        - remnawave_nginx_before_acme.exists | default(false)
+        - remnawave_nginx_before_acme.container.State.Running | default(false)
+
+- name: Verify certificate and private key exist
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  loop:
+    - "/etc/letsencrypt/live/{{ certificate_name }}/fullchain.pem"
+    - "/etc/letsencrypt/live/{{ certificate_name }}/privkey.pem"
+  register: remnawave_certificate_artifacts
+  failed_when: not remnawave_certificate_artifacts.stat.exists

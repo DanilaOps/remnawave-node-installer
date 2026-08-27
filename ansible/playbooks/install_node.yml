@@ -1,0 +1,17 @@
+---
+- name: Install Remnawave nodes
+  hosts: remnawave_nodes
+  become: true
+  gather_facts: true
+  any_errors_fatal: true
+
+  roles:
+    - role: node_base
+      tags: [node_base]
+    - role: remnawave_panel
+      tags: [remnawave_panel]
+    - role: remnawave_node
+      tags: [remnawave_node]
+    - role: node_verify
+      tags: [node_verify]
+

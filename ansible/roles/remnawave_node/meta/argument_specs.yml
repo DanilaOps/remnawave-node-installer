@@ -1,0 +1,37 @@
+---
+argument_specs:
+  main:
+    short_description: Install Xray, RemnaNode, nginx selfsteal and node maintenance
+    options:
+      remnawave_node_image:
+        type: str
+        required: true
+      remnawave_node_port:
+        type: int
+        required: true
+      remnawave_node_env_path:
+        type: path
+      selfsteal_domain:
+        type: str
+        required: true
+      selfsteal_virtual_hosts:
+        type: list
+        elements: dict
+        required: true
+      xray_version:
+        type: str
+        required: true
+      xray_checksums:
+        type: dict
+        required: true
+      certificate_enabled:
+        type: bool
+      certificate_mode:
+        type: str
+        choices: [http01, cloudflare_dns]
+      geodata_files:
+        type: list
+        elements: dict
+      node_plugins:
+        type: list
+        elements: dict

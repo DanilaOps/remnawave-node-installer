@@ -1,0 +1,8 @@
+[sshd]
+enabled = true
+port = {{ ansible_port | default(22) }}
+backend = systemd
+findtime = 10m
+maxretry = 5
+bantime = 1h
+

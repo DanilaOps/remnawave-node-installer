@@ -1,0 +1,32 @@
+---
+- name: Select the managed Host returned by Panel
+  ansible.builtin.set_fact:
+    remnawave_verify_host_matches: >-
+      {{ remnawave_verify_hosts_response |
+         selectattr('uuid', 'equalto', remnawave_host_uuids[remnawave_verify_host_index]) | list }}
+    remnawave_verify_host_spec: "{{ host_specs[remnawave_verify_host_index] }}"
+
+- name: Require exactly one managed Host response
+  ansible.builtin.assert:
+    that:
+      - remnawave_verify_host_matches | length == 1
+    fail_msg: >-
+      Panel did not return exactly one Host with UUID {{ remnawave_host_uuids[remnawave_verify_host_index] }}.
+
+- name: Verify exact Host identity, inbound and Node relationships
+  ansible.builtin.assert:
+    that:
+      - remnawave_verify_host_matches[0].inbound.configProfileUuid == remnawave_config_profile_uuid
+      - >-
+        remnawave_verify_host_matches[0].inbound.configProfileInboundUuid
+        == remnawave_inbound_uuid_map[remnawave_verify_host_spec.inbound_tag]
+      - remnawave_verify_host_matches[0].address == remnawave_verify_host_spec.address
+      - remnawave_verify_host_matches[0].port | int == remnawave_verify_host_spec.port | int
+      - >-
+        remnawave_verify_host_matches[0].sni
+        == remnawave_verify_host_spec.sni | default(selfsteal_domain)
+      - >-
+        remnawave_verify_host_matches[0].nodes | default([]) | remnawave_uuid_list | sort
+        == remnawave_verify_host_spec.node_uuids | default([remnawave_node_uuid]) | sort
+    fail_msg: >-
+      Host {{ remnawave_verify_host_spec.remark }} does not match its declared profile inbound, address, SNI, port or Nodes.
