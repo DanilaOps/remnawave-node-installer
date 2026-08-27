@@ -49,7 +49,9 @@ jobs:
           python -m unittest discover -s tests -p 'test_*.py'
 
       - name: Run Ansible syntax check
-        run: ansible-playbook -i inventories/staging/hosts.yml playbooks/install_node.yml --syntax-check
+        run: |
+          ansible-playbook -i inventories/staging/hosts.yml playbooks/install_node.yml --syntax-check
+          ansible-playbook -i inventories/staging/hosts.yml playbooks/bootstrap.yml --syntax-check
 
       - name: Render core templates
         run: |

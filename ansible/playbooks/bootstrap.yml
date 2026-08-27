@@ -1,0 +1,88 @@
+---
+# Turns a freshly created VPS into a host this project can manage:
+# trust its SSH host key, create the managed account with the controller's key
+# and password-less sudo, then prove that account can log in and escalate.
+# Run once per node, before install_node.yml.
+
+- name: Trust the SSH host key of a new node
+  hosts: remnawave_nodes
+  connection: local
+  gather_facts: false
+  become: false
+
+  tasks:
+    - name: Refuse to trust a host key that nobody verified
+      ansible.builtin.assert:
+        that:
+          - bootstrap_trust_new_host_keys | default(false) | bool
+        fail_msg: >-
+          {{ inventory_hostname }} has no entry in known_hosts. Either add its fingerprint
+          from the provider console with ssh-keyscan, or set
+          bootstrap_trust_new_host_keys=true to accept the key presented on first contact
+          (trust on first use - acceptable on a freshly created VPS, not on an existing one).
+
+    - name: Read the host key presented by the node
+      ansible.builtin.command:
+        argv:
+          - ssh-keyscan
+          - -T
+          - "10"
+          - -p
+          - "{{ ansible_port | default(22) }}"
+          - "{{ ansible_host | default(inventory_hostname) }}"
+      register: bootstrap_host_key
+      changed_when: false
+      failed_when: bootstrap_host_key.stdout | length == 0
+
+    - name: Store the host key for later runs
+      ansible.builtin.known_hosts:
+        name: >-
+          {{ ('[' ~ (ansible_host | default(inventory_hostname)) ~ ']:' ~ ansible_port)
+             if ansible_port | default(22) | int != 22
+             else ansible_host | default(inventory_hostname) }}
+        key: "{{ item }}"
+        path: "{{ bootstrap_known_hosts_path | default(omit) }}"
+        state: present
+      loop: "{{ bootstrap_host_key.stdout_lines | reject('match', '^#') | list }}"
+      loop_control:
+        label: "{{ item.split(' ')[1] | default('key') }}"
+
+- name: Create the managed account on a fresh VPS
+  hosts: remnawave_nodes
+  gather_facts: false
+  any_errors_fatal: true
+  vars:
+    ansible_user: "{{ bootstrap_ssh_user | default('root') }}"
+    ansible_password: "{{ bootstrap_ssh_password | default(omit) }}"
+    ansible_ssh_private_key_file: "{{ bootstrap_ssh_private_key_file | default(omit) }}"
+    ansible_become: false
+
+  roles:
+    - role: node_bootstrap
+      tags: [bootstrap]
+
+- name: Verify the managed account can log in and escalate
+  hosts: remnawave_nodes
+  gather_facts: true
+  become: true
+  any_errors_fatal: true
+
+  tasks:
+    - name: Confirm privilege escalation works for the managed account
+      ansible.builtin.command:
+        argv: [id, -un]
+      register: bootstrap_escalation_check
+      changed_when: false
+
+    - name: Require root privileges through the managed account
+      ansible.builtin.assert:
+        that:
+          - bootstrap_escalation_check.stdout | trim == 'root'
+          - ansible_user_id is defined
+        fail_msg: >-
+          Could not escalate to root as {{ ansible_user | default('the inventory user') }};
+          install_node.yml would fail at its first privileged task.
+
+    - name: Report readiness
+      ansible.builtin.debug:
+        msg: "{{ inventory_hostname }} is ready for playbooks/install_node.yml"

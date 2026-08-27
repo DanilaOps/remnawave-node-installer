@@ -7,7 +7,16 @@ import sys
 
 ROOT = pathlib.Path(__file__).parents[1]
 ROLES = ROOT / "roles"
-EXPECTED_ROLES = {"node_base", "remnawave_panel", "remnawave_node", "node_verify"}
+# node_bootstrap is the only role that runs before the managed account exists:
+# it connects as root, may have no Python on the target yet and never escalates.
+# Those connection semantics cannot live inside node_base.
+EXPECTED_ROLES = {
+    "node_bootstrap",
+    "node_base",
+    "remnawave_panel",
+    "remnawave_node",
+    "node_verify",
+}
 
 
 def fail(message: str) -> None:

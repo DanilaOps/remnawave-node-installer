@@ -66,6 +66,39 @@ class ProductionRegressionTests(unittest.TestCase):
         self.assertIn("--force-renewal", tasks)
         self.assertIn("Require the installed certificate to match", tasks)
 
+    def test_hosts_are_bound_to_the_shared_profile(self) -> None:
+        defaults = yaml.safe_load(self.read("roles/remnawave_panel/defaults/main.yml"))
+        profile = self.read("roles/remnawave_panel/tasks/profile.yml")
+        hosts = self.read("roles/remnawave_panel/tasks/hosts.yml")
+        host_item = self.read("roles/remnawave_panel/tasks/host_item.yml")
+        self.assertEqual(defaults["config_profile_mode"], "shared")
+        self.assertEqual(defaults["profile_name"], "Default August")
+        self.assertFalse(defaults["config_profile_create"])
+        self.assertTrue(defaults["config_profile_require_routing"])
+        # The shared profile is merged, never overwritten, and is never invented.
+        self.assertIn("remnawave_upsert_inbounds", profile)
+        self.assertIn("Require the shared Config Profile to exist", profile)
+        self.assertIn("Require the managed profile to carry routing rules", profile)
+        self.assertIn("Confirm the reconciled profile is the one named in inventory", profile)
+        self.assertIn("configProfileUuid", host_item)
+        self.assertIn("Guarantee every managed Host is published", hosts)
+
+    def test_node_and_host_comparisons_are_normalized(self) -> None:
+        node = self.read("roles/remnawave_panel/tasks/node.yml")
+        host_item = self.read("roles/remnawave_panel/tasks/host_item.yml")
+        # The panel returns activeInbounds and nodes as objects; comparing them
+        # against uuid strings made every run report a change.
+        self.assertIn("remnawave_normalize_node_links", node)
+        self.assertIn("remnawave_normalize_host_links", host_item)
+        self.assertNotIn('port: "{{ remnawave_node_port | int }}"', node)
+
+    def test_bootstrap_does_not_fight_node_base_over_sshd(self) -> None:
+        tasks = self.read("roles/node_bootstrap/tasks/main.yml")
+        self.assertIn("bootstrap_authorized_keys", tasks)
+        self.assertIn("visudo -cf %s", tasks)
+        # sshd policy has exactly one owner: node_base.
+        self.assertNotIn("sshd_config", tasks)
+        self.assertNotIn("PasswordAuthentication", tasks)
 
     def test_bridge_patch_uses_supported_user_identity(self) -> None:
         bridge = self.read("roles/remnawave_panel/tasks/bridge_user.yml")

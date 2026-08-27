@@ -1,0 +1,24 @@
+---
+argument_specs:
+  main:
+    short_description: Prepare a fresh VPS so Ansible can manage it without manual SSH
+    options:
+      bootstrap_user:
+        type: str
+        required: true
+        description: Unprivileged account Ansible uses for all later runs.
+      bootstrap_authorized_keys:
+        type: list
+        elements: str
+        required: true
+        description: Public keys authorized for bootstrap_user on the node.
+      bootstrap_user_groups:
+        type: list
+        elements: str
+      bootstrap_user_shell:
+        type: path
+      bootstrap_sudoers_path:
+        type: path
+      bootstrap_packages:
+        type: list
+        elements: str
