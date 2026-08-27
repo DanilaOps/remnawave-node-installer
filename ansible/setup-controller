@@ -1,0 +1,182 @@
+#!/usr/bin/env bash
+#
+# One-time preparation of this machine as the Ansible controller:
+#
+#   ./setup-controller
+#
+# Everything it does is local and idempotent - it never touches a node and never
+# overwrites an existing file without asking. Run it again after pulling changes
+# to refresh dependencies.
+set -euo pipefail
+
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$here"
+
+inventory_dir="${REMNAWAVE_INVENTORY_DIR:-inventories/production}"
+vault_pass_file="${ANSIBLE_VAULT_PASSWORD_FILE:-$HOME/.config/remnawave/vault-pass}"
+ssh_key="${REMNAWAVE_SSH_KEY:-$HOME/.ssh/id_ed25519}"
+
+die() { printf '\n%s\n' "error: $*" >&2; exit 1; }
+step() { printf '\n== %s\n' "$*"; }
+ok() { printf '   ok  %s\n' "$*"; }
+todo() { printf '   ->  %s\n' "$*"; }
+
+ask() { # ask <prompt> <default>
+  local answer
+  read -rp "   $1${2:+ [$2]}: " answer
+  printf '%s' "${answer:-$2}"
+}
+
+step "Python and virtualenv"
+command -v python3 >/dev/null || die "python3 is required"
+python3 - <<'PY' || die "Python 3.11-3.13 is required for the pinned ansible-core"
+import sys
+if not (3, 11) <= sys.version_info[:2] <= (3, 13):
+    print(f"   found python {sys.version.split()[0]}", file=sys.stderr)
+    raise SystemExit(1)
+PY
+ok "python $(python3 -c 'import sys; print(sys.version.split()[0])')"
+if [[ ! -d .venv ]]; then
+  python3 -m venv .venv
+  ok "created .venv"
+else
+  ok ".venv already present"
+fi
+# shellcheck disable=SC1091
+. .venv/bin/activate
+
+step "Python dependencies"
+pip install --quiet --upgrade pip
+pip install --quiet -r requirements.txt
+ok "requirements.txt installed ($(ansible --version | head -1))"
+
+step "Ansible collections"
+ansible-galaxy collection install -r collections/requirements.yml >/dev/null
+ok "collections installed"
+
+step "sshpass (needed only to log in with a root password)"
+if command -v sshpass >/dev/null 2>&1; then
+  ok "present"
+else
+  todo "not installed - install it with: sudo apt install -y sshpass"
+  todo "without it a new server can only be bootstrapped with an existing SSH key"
+fi
+
+step "SSH key for the managed account"
+if [[ -f "$ssh_key" ]]; then
+  ok "$ssh_key"
+elif [[ -f "$HOME/.ssh/id_rsa" ]]; then
+  ssh_key="$HOME/.ssh/id_rsa"
+  ok "$ssh_key"
+else
+  todo "no key found, generating $ssh_key"
+  ssh-keygen -q -t ed25519 -N '' -f "$ssh_key"
+  ok "generated $ssh_key"
+fi
+
+step "Vault password file"
+if [[ -f "$vault_pass_file" ]]; then
+  ok "$vault_pass_file (provision-node will use it, no prompt)"
+else
+  todo "no vault password file yet"
+  if [[ "$(ask 'store the vault password in a file so runs stop prompting? (y/n)' y)" == "y" ]]; then
+    mkdir -p "$(dirname "$vault_pass_file")"
+    chmod 700 "$(dirname "$vault_pass_file")"
+    read -rsp "   vault password: " vault_password; printf '\n'
+    [[ -n "$vault_password" ]] || die "empty vault password"
+    printf '%s' "$vault_password" > "$vault_pass_file"
+    chmod 600 "$vault_pass_file"
+    unset vault_password
+    ok "written to $vault_pass_file (outside the repository)"
+  else
+    todo "runs will ask for the vault password each time"
+  fi
+fi
+export ANSIBLE_VAULT_PASSWORD_FILE="$vault_pass_file"
+
+step "Fleet configuration ($inventory_dir)"
+mkdir -p "$inventory_dir/group_vars/all"
+panel_file="$inventory_dir/group_vars/all/panel.yml"
+if [[ -f "$panel_file" ]]; then
+  ok "$panel_file already present, leaving it alone"
+else
+  panel_url="$(ask 'Remnawave panel URL' 'https://panel.example.com')"
+  panel_host="${panel_url#*://}"; panel_host="${panel_host%%/*}"
+  panel_ip="$(getent hosts "$panel_host" 2>/dev/null | awk '{print $1; exit}' || true)"
+  panel_cidr="$(ask 'panel address allowed to reach NODE_PORT' "${panel_ip:+$panel_ip/32}")"
+  zone="$(ask 'DNS zone all node domains live in' 'example.com')"
+  acme_email="$(ask "Let's Encrypt account email" 'ops@example.com')"
+  squad="$(ask 'Internal Squad name' 'Default')"
+  profile="$(ask 'shared Config Profile name' 'Default August')"
+  cat > "$panel_file" <<PANEL
+---
+# Written by ./setup-controller. One panel serves every node, so panel-wide
+# values live here instead of being repeated per node.
+remnawave_panel_url: $panel_url
+remnawave_panel_token: "{{ vault_remnawave_panel_token }}"
+
+config_profile_mode: shared
+profile_name: $profile
+config_profile_create: false
+config_profile_require_routing: true
+
+# The controller's own address is discovered from the live SSH connection; add
+# stable addresses that must keep access even when nobody runs from them.
+management_cidrs_extra: []
+remnawave_panel_cidrs:
+  - $panel_cidr
+
+node_domain_zone: $zone
+
+acme_email: $acme_email
+internal_squad_name: $squad
+PANEL
+  ok "wrote $panel_file"
+fi
+
+vault_file="$inventory_dir/group_vars/all/vault.yml"
+if [[ -f "$vault_file" ]]; then
+  ok "$vault_file already present, leaving it alone"
+else
+  todo "no vault yet - creating one with the panel token"
+  read -rsp "   Remnawave panel API token: " panel_token; printf '\n'
+  [[ -n "$panel_token" ]] || die "empty panel token"
+  umask 077
+  cat > "$vault_file" <<VAULT
+---
+vault_remnawave_panel_token: $panel_token
+# Root passwords are not stored here: ./provision-node asks for one only when a
+# server still needs bootstrapping, and it never reaches the disk.
+vault_node_root_password: ""
+vault_regru_username: ""
+vault_regru_password: ""
+vault_cloudflare_token: ""
+vault_bridge_secret: ""
+VAULT
+  unset panel_token
+  ansible-vault encrypt "$vault_file" >/dev/null
+  ok "wrote and encrypted $vault_file"
+fi
+
+step "Self-check"
+ansible-playbook -i "$inventory_dir/hosts.yml" playbooks/provision_node.yml --syntax-check >/dev/null 2>&1 \
+  && ok "playbooks parse against $inventory_dir/hosts.yml" \
+  || todo "could not syntax-check yet (add a host to $inventory_dir/hosts.yml first)"
+
+cat <<NEXT
+
+Controller ready. To add a node:
+
+  1. buy the VPS and point <name>.$( [[ -f "$panel_file" ]] && grep -m1 '^node_domain_zone:' "$panel_file" | awk '{print $2}' ) at its address
+  2. add two lines to $inventory_dir/hosts.yml:
+
+        ee01:
+          ansible_host: 203.0.113.10
+          node_host_remark: "Estonia"
+
+  3. ./provision-node ee01
+
+Public key that will be installed on the managed account:
+
+$(cat "${ssh_key}.pub")
+NEXT

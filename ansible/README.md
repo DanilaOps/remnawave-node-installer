@@ -7,37 +7,92 @@ site and the acceptance checks — is owned here.
 
 ## One command per node
 
+Once, on the machine that will run Ansible:
+
+```bash
+./setup-controller
+```
+
+It creates the virtualenv, installs the pinned dependencies and collections,
+generates an SSH key if there is none, stores the vault password outside the
+repository so later runs stop asking, and writes the fleet configuration
+(`panel.yml`) and the encrypted vault from what you answer. It is idempotent, so
+run it again after pulling changes; it never touches a node.
+
+Then, for every node, forever:
+
 ```yaml
 # inventories/production/hosts.yml
 ee01:
-  ansible_host: 203.0.113.10
-  node_id: ee_01
+  ansible_host: 13.143.176.179
+  node_host_remark: "🇪🇪 Estonia"
 ```
 
 ```bash
-ansible-playbook playbooks/provision_node.yml --limit ee01 --ask-vault-pass
+./provision-node ee01
 ```
 
-`provision_node.yml` runs bootstrap and installation in order and is safe to re-run: it
-decides for itself whether the managed account still has to be created. `bootstrap.yml`
-and `install_node.yml` remain separately runnable for debugging and maintenance.
+That is the whole flow: buy the VPS, point `ee01.<zone>` at it, add two lines,
+run one command. The wrapper only prepares the local environment — virtualenv,
+vault password, and a one-off root password prompt when the server has not been
+bootstrapped yet — then runs `playbooks/provision_node.yml`. Running that
+playbook directly does exactly the same thing, and every flag passes through:
 
-Everything else is derived from those two facts in
-`inventories/*/group_vars/remnawave_nodes.yml`:
+```bash
+./provision-node ee01 --check
+./provision-node ee01 --tags preflight --check
+./provision-node ee01 --tags certificate -v
+```
+
+The root password is read into the process environment and never written to
+disk, never placed in the command line and never needed again: bootstrap
+installs the controller's key on the managed account, and the next run of the
+same command finds that account already working and skips bootstrap entirely.
+For unattended runs the password may instead live in the vault as
+`vault_node_root_password`.
+
+Everything else about a node is derived from the inventory hostname:
 
 | Derived value | From |
 |---|---|
-| `node_name` (`EE-01`) | `node_id` uppercased, `_` to `-` |
-| `node_country` (`EE`) | first segment of `node_id` |
+| `node_id` (`ee_01`) | inventory hostname |
+| `node_name` (`EE-01`) | inventory hostname |
+| `node_country` (`EE`) | leading letters of the hostname |
 | `node_public_ip` | `ansible_host` |
-| `selfsteal_domain` (`ee01.<zone>`) | `node_id` without `_`, plus `node_domain_zone` |
+| `selfsteal_domain` (`ee01.<zone>`) | hostname plus `node_domain_zone` |
 | `inbound_specs[0].tag` (`EE_01_REALITY`) | `node_name` |
 | `host_specs[0]` | `node_name`, `selfsteal_domain`, `node_country` |
 | `selfsteal_virtual_hosts` | `selfsteal_domain` |
-| the entire decoy site | `node_id` (see below) |
+| the entire decoy site | `node_id` |
+| `management_cidrs` | the live SSH connection (see below) |
 
-Any derivation can be overridden per host — a node whose domain does not follow the zone
-pattern simply declares `selfsteal_domain` in its own block.
+A host that does not follow the `ee01` pattern declares what it needs — usually
+just `selfsteal_domain` — in its own block; preflight rejects a hostname it
+cannot parse rather than guessing. `tests/inventory_derivation.yml` asserts that
+a two-line host really does expand to a complete node definition.
+
+## Checks that run before anything changes
+
+The operator is not asked to verify anything by hand. `node_base` starts with a
+read-only preflight, and it is the first role that touches the node, so all of
+this fails while the server is still untouched:
+
+the platform is Debian 12/13 or Ubuntu 24.04 on a supported architecture; the
+inventory hostname parses into a usable identity; the root filesystem has room;
+NTP is synchronised; `selfsteal_domain` resolves to this node's address **from
+the node itself**; the panel answers and the token has scope; the shared Config
+Profile exists and carries routing rules; no other profile already owns this
+node's inbound tag; the panel holds no conflicting Node for this name or
+address, and no ambiguous Host; ports 80, 443 and `NODE_PORT` are free on a
+fresh install; and the address sshd reports for the controller is inside the
+management allow list.
+
+That last one no longer has to be maintained: the controller's own address is
+taken from the live SSH connection, so a controller with a changing address
+cannot lock itself out. Addresses that must keep SSH access even when nobody is
+running from them — a second operator, a jump host — go in
+`management_cidrs_extra`. Setting `management_cidrs` explicitly opts out of the
+discovery and is still validated against what sshd reports.
 
 ## Roles and execution order
 
@@ -148,21 +203,34 @@ or reject.
 
 ## Certificates
 
-`certificate_mode: http01` is the production mode. Certbot answers the challenge from
-`certificate_webroot_path`, which nginx already serves at `/.well-known/acme-challenge/`,
-so neither the first issuance nor a renewal takes the masking site offline. Standalone is
-used only when nginx is not running yet, which is the very first installation — there is
-nothing to interrupt in that case either. The renewal timer stays idle until the
-certificate enters the renewal window, never stops nginx, and reloads it only when the
-certificate actually changed.
+`certificate_mode: http01` is the production mode. Certbot answers the challenge
+from `certificate_webroot_path`, which nginx already serves at
+`/.well-known/acme-challenge/`, so neither the first issuance nor a renewal takes
+the masking site offline. Standalone is used only when nginx is not running yet,
+which is the very first installation — there is nothing to interrupt in that case
+either. The renewal timer stays idle until the certificate enters the renewal
+window, never stops nginx, and reloads it only when the certificate changed.
 
-`certificate_acme_environment` selects the CA: `staging` for iteration (untrusted
-certificates, no production rate limits) and `production` for real nodes. Switching
-environments is detected from the certificate issuer and forces a clean re-issue, and the
-run fails if the installed certificate does not match the requested environment — a
-staging certificate can never quietly reach production.
+`certificate_acme_environment` defaults to `auto`, which needs no second command:
 
-`cloudflare_dns` mode still exists but is unused while the zones live at REG.RU.
+* a node with no certificate is issued a **staging** certificate first and a
+  **production** one immediately after. The staging attempt costs nothing, and it
+  proves DNS, port 80 and the challenge path actually work — so a misconfigured
+  node cannot spend Let's Encrypt's production failure budget (5 per hostname per
+  hour) discovering that its A record is wrong;
+* a node already holding a valid production certificate issues nothing;
+* a staging certificate found on the node is replaced with a production one.
+
+Each phase verifies what it installed — the certificate exists and its issuer
+matches the environment that phase requested — before the next phase runs, and
+the role fails rather than leaving an unexpected certificate in place. Full HTTPS
+verification against the public address happens at the end, in `node_verify`:
+during the first installation nginx is not running yet, so there is nothing to
+probe between the two issuances.
+
+`staging` and `production` still force a single environment for development or
+recovery, and `certificate_force_reissue=true` re-issues a certificate that is
+still valid.
 
 ## What Ansible obtains or creates automatically
 
@@ -179,11 +247,12 @@ deployment does not claim clients have cut over before they refresh their subscr
 
 ## Controller prerequisites
 
-A Linux controller with Python 3.11–3.13 and OpenSSH, able to reach the registrar API, the
-Panel, the node's SSH port and the public selfsteal address. Password-based SSH
-additionally needs `sshpass` on the controller; it is not installed on the managed node.
-All paths in this project are relative to this directory, so the same code runs from a
-laptop and, later, from Semaphore.
+`./setup-controller` does all of this; the manual equivalent is here so nothing
+is hidden. A Linux controller with Python 3.11–3.13 and OpenSSH, able to reach
+the registrar API, the Panel, the node's SSH port and the public selfsteal
+address. `sshpass` is additionally needed to log in with a root password; it is
+not installed on the managed node. All paths in this project are relative to this
+directory, so the same code runs from a laptop and, later, from Semaphore.
 
 ```bash
 python3 -m venv .venv
@@ -211,36 +280,42 @@ Files that hold real addresses are git-ignored — `inventories/test/`,
 example file must never end in `.yml`: Ansible loads every `.yml` file in `group_vars`, so
 `vault.example.yml` would define real variables. A regression test enforces that.
 
-Copy `group_vars/all/vault.yml.example` to `vault.yml`, fill it in and encrypt it with
-`ansible-vault encrypt`. The Panel token, registrar credentials, root password,
-`SECRET_KEY`, Reality private key, bridge password and Cloudflare token belong there and
-nowhere else:
+`./setup-controller` writes and encrypts the vault; the manual path is to copy
+`group_vars/all/vault.yml.example` to `vault.yml`, fill it in and run
+`ansible-vault encrypt`. The Panel token, registrar credentials, `SECRET_KEY`,
+Reality private key, bridge password and Cloudflare token belong there and nowhere
+else:
 
 ```yaml
 vault_remnawave_panel_token: ...
 vault_regru_username: ...
 vault_regru_password: ...
-vault_node_root_password: ...
+vault_node_root_password: ""   # optional: ./provision-node prompts instead
 ```
+
+Store the vault password in a file outside the repository (`setup-controller`
+offers to) and runs stop prompting for it:
+`export ANSIBLE_VAULT_PASSWORD_FILE=~/.config/remnawave/vault-pass`.
 
 A node that must keep root/password access sets `ansible_user: root`,
 `ansible_password: "{{ vault_node_root_password }}"`, `ansible_become: false` and
 `node_ssh_allow_root_password: true` in its host block. Root/password access is off by
 default and, when enabled, is still limited to `management_cidrs`.
 
-`bootstrap.yml` needs the controller's public key in `bootstrap_authorized_keys` and, for
-a server that only accepts a root password, `bootstrap_ssh_password` (or `--ask-pass`).
-A brand new VPS has no entry in `known_hosts`; set `bootstrap_trust_new_host_keys=true`
-to accept the key presented on first contact, or add the fingerprint from the provider
-console beforehand. That flag is trust-on-first-use — right for a server created minutes
+`bootstrap.yml` finds the controller's public key itself
+(`~/.ssh/id_ed25519.pub`, then `~/.ssh/id_rsa.pub`; override
+`bootstrap_authorized_key_files` to be explicit). A brand new VPS has no entry in
+`known_hosts`; set `bootstrap_trust_new_host_keys=true` to accept the key
+presented on first contact, or add the fingerprint from the provider console
+beforehand. That flag is trust-on-first-use — right for a server created minutes
 ago, wrong for one that has been running.
 
 ## Required data beyond the two facts
 
-Per fleet, set once in `group_vars/all/panel.yml`: Panel URL and token, `management_cidrs`
-(the address sshd actually sees — preflight refuses to apply a firewall that would lock
-the controller out), `remnawave_panel_cidrs`, `node_domain_zone`, `acme_email` and the
-Internal Squad name or UUID.
+Per fleet, set once in `group_vars/all/panel.yml` (written by
+`./setup-controller`): Panel URL and token, `remnawave_panel_cidrs`,
+`node_domain_zone`, `acme_email` and the Internal Squad name or UUID. The
+controller's own address is discovered, not configured.
 
 `host_specs` is a data model, not a one-Host-per-Node shortcut: a declaration can be
 direct, hidden or virtual and can carry an explicit `node_uuids` list. Remnawave 3.3.2
@@ -257,7 +332,7 @@ an inventory host whose source IP is outside `remnawave_panel_cidrs`; it proves
 ## Scoped runs
 
 ```bash
-ansible-playbook playbooks/provision_node.yml --limit ee01
+./provision-node ee01
 ansible-playbook playbooks/install_node.yml --syntax-check
 ansible-playbook playbooks/install_node.yml --tags preflight --check
 ansible-playbook playbooks/install_node.yml --tags dns
@@ -272,7 +347,8 @@ Nothing here points at a specific machine, needs an interactive prompt or reads 
 from outside the vault, so the move is configuration only: point the Semaphore repository
 at this repo, set the playbook path to `ansible/playbooks/provision_node.yml`, add the
 vault password as a Semaphore secret, and either commit an inventory that carries no real
-addresses or paste the inventory into Semaphore. The controller address changes when the
+addresses or paste the inventory into Semaphore. The wrappers are for humans; Semaphore
+runs the playbook directly, which is why no decision about a node lives in them. The controller address changes when the
 runner does, so `management_cidrs` and the registrar's API allow-list must then contain the
 Semaphore host's address — preflight will say so plainly if the first does not.
 
@@ -287,6 +363,7 @@ Static checks need no VPS:
 ```bash
 yamllint -c .yamllint.yml .
 ansible-playbook -i inventories/staging/hosts.yml playbooks/provision_node.yml --syntax-check
+ansible-playbook -i inventories/staging/hosts.yml tests/inventory_derivation.yml
 ansible-lint
 python -m unittest discover -s tests -p 'test_*.py'
 ansible-playbook -i localhost, -c local tests/render_templates.yml

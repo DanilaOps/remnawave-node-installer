@@ -54,6 +54,9 @@ jobs:
           ansible-playbook -i inventories/staging/hosts.yml playbooks/install_node.yml --syntax-check
           ansible-playbook -i inventories/staging/hosts.yml playbooks/bootstrap.yml --syntax-check
 
+      - name: Verify a two-line host expands to a full node definition
+        run: ansible-playbook -i inventories/staging/hosts.yml tests/inventory_derivation.yml
+
       - name: Render core templates
         run: |
           sudo apt-get update -qq

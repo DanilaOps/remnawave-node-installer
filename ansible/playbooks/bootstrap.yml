@@ -87,7 +87,10 @@
   any_errors_fatal: true
   vars:
     ansible_user: "{{ bootstrap_ssh_user | default('root') }}"
-    ansible_password: "{{ bootstrap_ssh_password | default(omit) }}"
+    ansible_password: >-
+      {{ bootstrap_ssh_password | trim
+         if bootstrap_ssh_password | default('') | trim | length > 0
+         else omit }}
     ansible_ssh_private_key_file: "{{ bootstrap_ssh_private_key_file | default(omit) }}"
     ansible_become: false
 

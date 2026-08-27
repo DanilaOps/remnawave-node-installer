@@ -47,24 +47,32 @@ class ProductionRegressionTests(unittest.TestCase):
         self.assertNotIn("docker stop", helper)
 
     def test_certificate_issuance_prefers_webroot_over_stopping_nginx(self) -> None:
-        tasks = self.read("roles/remnawave_node/tasks/certificate.yml")
-        self.assertNotIn("state: stopped", tasks)
-        self.assertIn("remnawave_certificate_authenticator", tasks)
+        plan = self.read("roles/remnawave_node/tasks/certificate.yml")
+        issue = self.read("roles/remnawave_node/tasks/certificate_issue.yml")
+        self.assertNotIn("state: stopped", plan)
+        self.assertNotIn("state: stopped", issue)
+        self.assertIn("remnawave_certificate_authenticator", issue)
         # Standalone is only reachable when nginx is not running yet.
         self.assertIn(
             "{{ 'webroot'\n         if (remnawave_nginx_before_acme.container.State.Running",
-            tasks,
+            issue,
         )
 
-    def test_acme_environment_switch_forces_a_clean_reissue(self) -> None:
+    def test_acme_auto_mode_issues_staging_before_production(self) -> None:
         defaults = yaml.safe_load(self.read("roles/remnawave_node/defaults/main.yml"))
         tasks = self.read("roles/remnawave_node/tasks/certificate.yml")
-        self.assertEqual(defaults["certificate_acme_environment"], "production")
-        self.assertIn("staging", defaults["certificate_acme_directories"])
+        issue = self.read("roles/remnawave_node/tasks/certificate_issue.yml")
+        self.assertEqual(defaults["certificate_acme_environment"], "auto")
         self.assertIn("acme-staging-v02", defaults["certificate_acme_directories"]["staging"])
-        self.assertIn("remnawave_certificate_environment_mismatch", tasks)
-        self.assertIn("--force-renewal", tasks)
-        self.assertIn("Require the installed certificate to match", tasks)
+        # A node with no certificate proves the challenge path against the staging
+        # CA before spending a production issuance; anything else is one phase.
+        self.assertIn("['staging', 'production']", tasks)
+        self.assertIn("remnawave_certificate_phases", tasks)
+        self.assertIn("Require the installed certificate to match the target ACME environment", tasks)
+        # Each phase verifies what it installed before the next one runs.
+        self.assertIn("--force-renewal", issue)
+        self.assertIn("Require the installed certificate to match phase", issue)
+        self.assertNotIn("state: stopped", issue)
 
     def test_hosts_are_bound_to_the_shared_profile(self) -> None:
         defaults = yaml.safe_load(self.read("roles/remnawave_panel/defaults/main.yml"))
@@ -165,6 +173,85 @@ class ProductionRegressionTests(unittest.TestCase):
         self.assertIn("ansible.builtin.wait_for_connection", firewall)
         self.assertNotIn("ansible.builtin.wait_for:\n", firewall)
         self.assertIn("node_base_observed_ssh_source", preflight)
+
+
+class OperatorWorkflowTests(unittest.TestCase):
+    """The cost of adding a node must stay at two lines and one command."""
+
+    def read(self, relative: str) -> str:
+        return (ROOT / relative).read_text(encoding="utf-8")
+
+    def test_a_new_host_needs_only_address_and_label(self) -> None:
+        hosts = yaml.safe_load(self.read("inventories/staging/hosts.yml"))
+        block = hosts["all"]["children"]["remnawave_nodes"]["hosts"]["ee01"]
+        self.assertEqual(set(block), {"ansible_host", "node_host_remark"})
+
+    def test_identity_is_derived_from_the_inventory_hostname(self) -> None:
+        for inventory in ("staging", "production"):
+            group_vars = self.read(f"inventories/{inventory}/group_vars/remnawave_nodes.yml")
+            self.assertIn("inventory_hostname | regex_replace", group_vars)
+            self.assertIn('selfsteal_domain: "{{ inventory_hostname }}.{{ node_domain_zone }}"', group_vars)
+            # Nothing identity-shaped may be required per host any more.
+            self.assertNotIn("\nnode_id: ee_01", group_vars)
+
+    def test_derivation_block_does_not_drift_between_inventories(self) -> None:
+        def derivation(text: str) -> str:
+            start = text.index("# --- Derived identity")
+            end = text.index("# --- Runtime")
+            return text[start:end]
+
+        staging = derivation(self.read("inventories/staging/group_vars/remnawave_nodes.yml"))
+        production = derivation(self.read("inventories/production/group_vars/remnawave_nodes.yml"))
+        self.assertEqual(staging, production)
+
+    def test_bootstrap_credentials_are_not_stored_in_inventory(self) -> None:
+        defaults = self.read("roles/node_bootstrap/defaults/main.yml")
+        # The root password is read from the environment (the wrapper prompts for
+        # it) and only falls back to the vault; it never lands in inventory.
+        self.assertIn("lookup('env', 'NODE_ROOT_PASSWORD')", defaults)
+        self.assertIn("vault_node_root_password", defaults)
+        self.assertIn("first_found", defaults)
+        for inventory in ("staging", "production"):
+            group_vars = self.read(f"inventories/{inventory}/group_vars/remnawave_nodes.yml")
+            self.assertNotIn("bootstrap_ssh_password", group_vars)
+            self.assertNotIn("bootstrap_authorized_keys", group_vars)
+
+    def test_controller_address_is_discovered_not_configured(self) -> None:
+        preflight = self.read("roles/node_base/tasks/preflight.yml")
+        panel = self.read("inventories/staging/group_vars/all/panel.yml")
+        self.assertIn("Resolve the management allow list", preflight)
+        self.assertIn("management_cidrs_extra", preflight)
+        self.assertIn("management_cidrs_extra: []", panel)
+        # An explicitly configured list must still win, and still be validated.
+        self.assertIn("Require the management allow list to include the source seen by sshd", preflight)
+
+    def test_panel_state_is_checked_before_the_node_is_touched(self) -> None:
+        preflight = self.read("roles/node_base/tasks/preflight.yml")
+        main = self.read("roles/node_base/tasks/main.yml")
+        # preflight is the first thing node_base does, and node_base is the first
+        # mutating role, so these checks run while the server is still untouched.
+        self.assertLess(main.index("preflight.yml"), main.index("system.yml"))
+        for check in (
+            "Reject a conflicting Node in the panel",
+            "Require the shared Config Profile to exist before the node is touched",
+            "Require the target Config Profile to carry routing rules",
+            "Reject an inbound tag that another Config Profile already owns",
+            "Reject ambiguous Hosts in the panel",
+        ):
+            self.assertIn(check, preflight)
+
+    def test_wrappers_stay_thin(self) -> None:
+        for name in ("provision-node", "setup-controller"):
+            script = self.read(name)
+            self.assertTrue(script.startswith("#!/usr/bin/env bash"))
+            # Infrastructure logic belongs in the playbooks, not in the wrapper.
+            for forbidden in ("nft ", "certbot", "docker run", "/api/nodes", "iptables"):
+                self.assertNotIn(forbidden, script, f"{name} must not contain {forbidden!r}")
+        wrapper = self.read("provision-node")
+        self.assertIn("playbooks/provision_node.yml", wrapper)
+        self.assertIn("NODE_ROOT_PASSWORD", wrapper)
+        # The probe must not silently record trust in a new server's host key.
+        self.assertIn("UserKnownHostsFile=/dev/null", wrapper)
 
 
 if __name__ == "__main__":
