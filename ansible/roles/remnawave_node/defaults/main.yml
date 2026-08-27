@@ -65,19 +65,32 @@ acme_email: ""
 cloudflare_token: ""
 cloudflare_credentials_path: /etc/letsencrypt/cloudflare.ini
 
-# ACME environment. staging issues untrusted certificates from Let's Encrypt's
-# staging CA and does not consume the production rate limits, so repeated test
-# runs cannot lock a domain out for a week. Switching between environments is
-# detected from the certificate issuer and forces a clean re-issue.
-certificate_acme_environment: production
+# ACME environment.
+#
+#   auto (default) - a node with no certificate is issued a staging certificate
+#     first and a production one immediately after. The staging attempt costs
+#     nothing and proves DNS, port 80 and the challenge path actually work, so a
+#     misconfigured node cannot burn the production failure limit (5 per hostname
+#     per hour) on its first install. A node that already holds a valid
+#     production certificate issues nothing.
+#   staging / production - force one environment, for development or recovery.
+#
+# The environment of the installed certificate is detected from its issuer, so a
+# switch always produces a clean re-issue and a staging certificate can never be
+# left in place on a production node.
+certificate_acme_environment: auto
 certificate_acme_directories:
   staging: https://acme-staging-v02.api.letsencrypt.org/directory
   production: https://acme-v02.api.letsencrypt.org/directory
 certificate_acme_directory: ""
+# The environment the node must end up in, and therefore what the renewal timer
+# renews against.
+certificate_acme_target_environment: >-
+  {{ 'production' if certificate_acme_environment == 'auto' else certificate_acme_environment }}
 remnawave_acme_directory: >-
   {{ certificate_acme_directory
      if certificate_acme_directory | length > 0
-     else certificate_acme_directories[certificate_acme_environment] }}
+     else certificate_acme_directories[certificate_acme_target_environment | trim] }}
 certificate_force_reissue: false
 
 # HTTP-01 is answered from this directory, which nginx serves at

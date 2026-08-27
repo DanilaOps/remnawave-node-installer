@@ -49,8 +49,10 @@ argument_specs:
         choices: [http01, cloudflare_dns]
       certificate_acme_environment:
         type: str
-        choices: [staging, production]
-        description: staging uses the Let's Encrypt test CA and avoids production rate limits.
+        choices: [auto, staging, production]
+        description: >-
+          auto issues a staging certificate first on a node that has none, then the production one.
+          staging and production force a single environment.
       certificate_acme_directory:
         type: str
         description: Explicit ACME directory URL; overrides certificate_acme_environment.
