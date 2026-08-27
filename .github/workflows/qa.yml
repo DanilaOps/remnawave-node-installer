@@ -19,3 +19,55 @@ jobs:
 
       - name: Validate mirror installer
         run: bash check-mirror.sh ./install-mirror.sh
+
+  ansible-checks:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ansible
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install Ansible test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          ansible-galaxy collection install -r collections/requirements.yml
+
+      - name: Validate YAML
+        run: yamllint -c .yamllint.yml .
+
+      - name: Validate role structure and filters
+        run: |
+          python tests/validate_structure.py
+          python -m unittest discover -s tests -p 'test_*.py'
+
+      - name: Run Ansible syntax check
+        run: ansible-playbook -i inventories/staging/hosts.yml playbooks/install_node.yml --syntax-check
+
+      - name: Render core templates
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq nftables
+          ansible-playbook -i localhost, -c local tests/render_templates.yml
+          sudo nft -c -f /tmp/remnawave-filter-test.nft
+
+      - name: Verify Panel API idempotency against stateful mock
+        run: |
+          bash tests/test_panel_idempotency.sh
+          bash tests/test_panel_bridge_idempotency.sh
+          bash tests/test_panel_errors.sh
+
+      - name: Test system roles on Debian 12, Debian 13 and Ubuntu 24.04
+        run: |
+          (cd roles/node_base && molecule test)
+          (cd roles/remnawave_node && molecule test)
+
+      - name: Run Ansible lint
+        run: ansible-lint

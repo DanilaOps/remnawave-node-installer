@@ -152,6 +152,8 @@ priv=$(grep -nE 'BEGIN (RSA |OPENSSH |EC )?PRIVATE KEY' "$TARGET" || true)
 hdr "10. Remnawave 3.3.2 compatibility"
 grep -qE '^INSTALLER_VERSION="3\.3\.2-[^"]+"$' "$TARGET" \
   && pass "installer version targets 3.3.2" || fail "INSTALLER_VERSION is not a 3.3.2 build"
+grep -qE '^INSTALLER_VERSION="3\.3\.2-rw3"$' "$TARGET" \
+  && pass "installer release includes native Torrent Blocker" || fail "installer is not the Torrent Blocker release (rw3)"
 grep -qE '^NODE_IMAGE=.*ghcr\.io/remnawave/node:3\.3\.2' "$TARGET" \
   && pass "default RemnaNode image is pinned to 3.3.2" || fail "default RemnaNode image is not 3.3.2"
 grep -qE '^XRAY_CORE_VERSION="26\.6\.27"$' "$TARGET" \
@@ -170,6 +172,22 @@ grep -qF ':/var/log/xray' "$TARGET" \
   && pass "RemnaNode Xray logs are mounted at /var/log/xray" || fail "missing /var/log/xray mount"
 grep -qF ':/var/log/supervisor' "$TARGET" \
   && fail "obsolete /var/log/supervisor mount is still present" || pass "obsolete supervisor log mount removed"
+grep -qF 'cap_add: [ NET_ADMIN ]' "$TARGET" \
+  && pass "node container receives NET_ADMIN for plugins" || fail "missing NET_ADMIN capability for node plugins"
+grep -qF 'curl jq openssl socat ca-certificates iproute2 cron unzip nftables' "$TARGET" \
+  && pass "base packages include nftables" || fail "nftables is not installed with base packages"
+grep -qF 'kernel_supports_node_plugins' "$TARGET" \
+  && pass "Torrent Blocker enforces Linux kernel >= 5.7" || fail "missing Torrent Blocker kernel gate"
+grep -qF 'panel_req POST /api/node-plugins' "$TARGET" \
+  && grep -qF 'panel_req PATCH /api/node-plugins' "$TARGET" \
+  && pass "node-plugin profile is created and updated through the panel API" \
+  || fail "missing node-plugin create/update API wiring"
+grep -qF 'activePluginUuid:$p' "$TARGET" \
+  && pass "Torrent Blocker plugin is attached through activePluginUuid" \
+  || fail "missing activePluginUuid attachment"
+grep -qF 'destOverride: ["http","tls","quic"]' "$TARGET" \
+  && pass "generated inbounds enable sniffing required by Torrent Blocker" \
+  || fail "required Torrent Blocker sniffing destOverride is missing"
 
 # ── 11. misc pitfalls ────────────────────────────────────────────────────────
 hdr "11. misc pitfalls"

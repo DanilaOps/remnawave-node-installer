@@ -23,6 +23,14 @@ state/
 ssl/
 keys/
 *.zip
+ansible/.venv/
+ansible/.cache/
+.ansible/
+.molecule/
+__pycache__/
+*.py[cod]
+ansible/inventories/**/group_vars/vault.yml
+ansible/inventories/**/group_vars/**/vault.yml
 
 # Session working notes — contain real IPs/keys/domains, not for publication
 PROJECT-STATE.md

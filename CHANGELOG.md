@@ -1,5 +1,17 @@
 # Changelog
 
+## 3.3.2-rw3
+
+- Enable Remnawave's native Torrent Blocker by default with a dedicated,
+  per-node plugin profile created and attached through `/api/node-plugins`.
+- Preserve an existing node-plugin configuration by copying it before the node is
+  switched to its dedicated Torrent Blocker profile.
+- Add CLI controls for block duration, ignored IPs/users, additional routing
+  `ruleTag` values, plugin profile name, and explicit opt-out.
+- Install and verify nftables, require the running Linux kernel to be at least
+  5.7, retain `NET_ADMIN`, and document the required panel API scopes.
+- Add idempotency, sniffing, capability, and API-wiring assertions to static QA.
+
 ## 3.3.2-rw2
 
 - Pin the runtime Xray core to `26.6.27` independently of the core bundled in the
