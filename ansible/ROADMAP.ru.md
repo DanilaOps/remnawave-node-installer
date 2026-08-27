@@ -62,31 +62,44 @@ sshd не трогает — им владеет `node_base`.
 любой `.yml` из `group_vars`, и такой файл определял бы реальные переменные — на это есть
 регрессионный тест.
 
+**Уникальная заглушка на каждой ноде.** Сайт-заглушка генерируется из стабильного seed
+ноды: тот же узел получает байт-в-байт тот же сайт всегда, разные узлы — разный бренд,
+тексты, набор и порядок секций, вёрстку, палитру, шрифты, имена CSS-классов, имена
+файлов ассетов, favicon, набор security-заголовков и размер ответа. Значения берутся из
+SHA-256 от `seed | метка поля`, а не из одного потока `random`: поток зависит от версии
+интерпретатора, а последовательная выборка означала бы, что добавление одного нового поля
+сдвигает все следующие и перегенерирует сайты всего парка при правке шаблона. Ассеты
+пишутся под именами из того же seed, файлы от предыдущего seed удаляются из document root.
+`node_verify` требует, чтобы публичная страница содержала бренд, классы и имена ассетов
+именно этой ноды.
+
+**DNS-автоматизация.** Роль `dns` с провайдер-абстракцией (`dns_provider: regru|none`)
+владеет ровно одной записью — A-записью selfsteal — и не трогает в зоне больше ничего.
+Читает зону, сравнивает, создаёт при отсутствии, перенаправляет при неверном IP, при
+корректном состоянии не меняет ничего. Вторая A-запись с тем же именем не угадывается, а
+сообщается; удалить лишние можно только явным `dns_prune_extra_records=true`. После
+изменения прогон ждёт, пока публичные резолверы начнут отдавать нужный адрес — ACME и
+preflight самой ноды оба разрешают это имя. Логика решения провайдер-независима и покрыта
+юнит-тестами плюс мок-регистратором.
+
+**Один entry point.** `playbooks/provision_node.yml` выполняет bootstrap и установку
+подряд и безопасен для повторного запуска: `bootstrap.yml` сам определяет, нужно ли ещё
+создавать управляемый аккаунт (пробный коннект под `deployer`, `ignore_unreachable`).
+`bootstrap.yml` и `install_node.yml` остаются отдельно запускаемыми для отладки.
+
 **Тесты.** Общий профиль в mock-панели засеян чужим инбаундом и routing-правилами, тест
 проверяет слияние, сохранность чужого ключа, привязку Host и Node и `changed=0` на втором
 прогоне. Добавлены юнит-тесты новых фильтров и рендер всех трёх транспортов (raw, xhttp,
 grpc-tls). `yamllint`, `ansible-lint` (профиль production), `validate_structure`,
-`render_templates`, три панельных сценария — зелёные.
+`render_templates`, три панельных сценария, мок-регистратор DNS и валидация nginx-конфига
+— зелёные. `nginx -t` в пиннутом образе гоняется в CI (в среде разработки нет docker), а
+локально конфиг проверяется парсером crossplane.
 
 ---
 
 ## Осталось
 
-### 1. Decoy-шаблоны: скачивание и рандомизация (приоритет №1)
-
-В bash: `fetch_template` (codeload tarball, fallback на git sparse-checkout) и
-`randomize_template` (удаление provenance, случайный brand/title/description, hue-rotate,
-удаление google-fonts, нейтрализация beacon `api.ipify.org`, favicon, cache-busting,
-байтовый шум). В Ansible — только статичный `index.html.j2`: все ноды отдают
-байт-в-байт одинаковую страницу, по её хешу парк связывается в один кластер.
-
-Делаем: `selfsteal_template`/`selfsteal_template_repo`/`selfsteal_template_ref`/
-`selfsteal_randomize`; скачивание на контроллер с кэшем по ref; мутатор отдельным
-Python-модулем, а не цепочкой `sed`; **seed детерминированный** (`hash(node_id + template
-+ ref)`), иначе каждый прогон меняет сайт и ломает идемпотентность; маркер
-`state/selfsteal-template.json`; fallback на встроенный шаблон с предупреждением.
-
-### 2. RKN/DPI hardening — доделать
+### 1. RKN/DPI hardening — доделать
 
 Есть: sysctl (`tcp_rfc1337`, syncookies, redirects, `rp_filter`, BBR+fq), отключение
 dccp/sctp/rds/tipc, fail2ban, sshd-политика с проверкой через `sshd -T`.
@@ -98,26 +111,26 @@ dccp/sctp/rds/tipc, fail2ban, sshd-политика с проверкой чер
 Риск: TTL=128 ставится после Docker NAT — проверить на Molecule и на живой ноде, что не
 ломается трафик контейнеров и правило не дублируется при повторном прогоне.
 
-### 3. Torrent Blocker
+### 2. Torrent Blocker
 
 В bash `setup_torrent_blocker` копирует текущий `pluginConfig` перед переключением и
 мержит `.torrentBlocker`. В Ansible generic-CRUD node-plugin есть, но PATCH перезаписывает
 `pluginConfig` целиком (теряются `webhookUrl`, `rulePlacement`) и нет копирования текущего
 профиля. Делаем структуру `torrent_blocker` с merge-семантикой и тестом в mock-панели.
 
-### 4. XHTTP / gRPC-TLS — обвязка
+### 3. XHTTP / gRPC-TLS — обвязка
 
 Шаблоны уже поддерживают `raw`, `xhttp` и `grpc-tls`, рендер всех трёх покрыт тестом.
 Осталось: валидация портов (в bash `xhttp_port_reserved` запрещает коллизии с
 80/443/NODE_PORT/selfsteal/SSH/45876), ветки в `node_verify`, примеры в inventory,
 описание режима `both`.
 
-### 5. Sysctl и лимиты из `optimize`
+### 4. Sysctl и лимиты из `optimize`
 
 Сверить с текущим `node_sysctl` и добавить недостающее: `somaxconn`,
 `netdev_max_backlog`, `nf_conntrack_max`, `fs.file-max`, `nofile` для docker.
 
-### 6. Операционные плейбуки
+### 5. Операционные плейбуки
 
 | Плейбук | Назначение |
 |---|---|
@@ -131,20 +144,7 @@ dccp/sctp/rds/tipc, fail2ban, sshd-политика с проверкой чер
 `replace_node.yml` уже опирается на готовый механизм: `inbound_prune_tags` убирает из
 общего профиля инбаунд, который нода больше не обслуживает.
 
-### 7. DNS: reg.ru
-
-API: `https://api.reg.ru/api/regru2`, методы `zone/*` — `zone/add_alias` (A-запись),
-`zone/add_aaaa`, `zone/add_txt`, `zone/remove_record`, `zone/get_resource_records`.
-Авторизация логином и паролем аккаунта (либо отдельным API-паролем); нужно включить API в
-личном кабинете и внести IP контроллера в белый список. Имена методов и лимиты сверяем с
-документацией при реализации.
-
-Делаем роль `dns` (`dns_provider: regru|none`) с одной идемпотентной задачей «A-запись
-домена = `node_public_ip`», запуск **до** preflight — сейчас preflight падает, если записи
-нет. Пароль только в vault, задачи с `no_log: true`. Сертификаты остаются на `http01`,
-для ACME reg.ru не нужен.
-
-### 8. august-routing-updater — отдельный плейбук
+### 6. august-routing-updater — отдельный плейбук
 
 Updater общается только с API панели (Response Rules, заголовок `routing` по User-Agent),
 тянет JSONSUB-профили RoscomVPN для HAPP и INCY, крутится на хосте subscription page. К
@@ -153,11 +153,14 @@ Updater общается только с API панели (Response Rules, за�
 `playbooks/routing_updater.yml` + группу `subscription_page`, с сохранением текущего
 hardening unit'а и токеном из vault.
 
-### 9. Тест на живой ноде
+### 7. Тест на живой ноде (следующий milestone)
 
-Molecule и панельные сценарии зелёные, но ни одна строка ещё не проверялась на реальной
-системе. Порядок: CI зелёный → тестовая VPS и тестовая панель по `TESTING.ru.md` с
-`certificate_acme_environment: staging` → правки → прод.
+Все статические и мок-проверки зелёные, но ни одна строка ещё не проверялась на реальной
+системе, поэтому конвейер не production-ready. Новых возможностей до живого теста не
+добавляем. Проверяем полный путь на чистом VPS: bootstrap → firewall → Docker → DNS →
+ACME → nginx и заглушка → Remnawave API → `Default August` → Node → Host → Squad → Xray →
+online → verification → повторный запуск с `changed=0`. ACME на первом прогоне — staging,
+затем переключение на production (роль должна сама перевыпустить сертификат).
 
 ---
 

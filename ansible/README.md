@@ -1,14 +1,11 @@
 # Ansible deployment for Remnawave nodes
 
 This directory is the non-interactive replacement for `remnawave-node.sh`. It does not
-create a VPS and does not diagnose TSPU blocking: a reachable Debian 12, Debian 13 or
-Ubuntu 24.04 server, its DNS record and its provider firewall come from outside. Ansible
-owns everything after that — the operating system, the Remnawave Panel resources, the node
-runtime and the acceptance checks.
+create a VPS and does not diagnose TSPU blocking. Everything after the server exists —
+DNS, the operating system, the Remnawave Panel resources, the node runtime, the masking
+site and the acceptance checks — is owned here.
 
-## The pipeline
-
-Adding a node is meant to be three facts and two commands.
+## One command per node
 
 ```yaml
 # inventories/production/hosts.yml
@@ -18,15 +15,14 @@ ee01:
 ```
 
 ```bash
-ansible-playbook -i inventories/production/hosts.yml playbooks/bootstrap.yml --ask-vault-pass
-ansible-playbook -i inventories/production/hosts.yml playbooks/install_node.yml --ask-vault-pass
+ansible-playbook playbooks/provision_node.yml --limit ee01 --ask-vault-pass
 ```
 
-`bootstrap.yml` runs once per server and turns a freshly created VPS into a host this
-project can manage. `install_node.yml` is idempotent and is the only command needed for
-every later change; a second run with unchanged inventory reports no managed changes.
+`provision_node.yml` runs bootstrap and installation in order and is safe to re-run: it
+decides for itself whether the managed account still has to be created. `bootstrap.yml`
+and `install_node.yml` remain separately runnable for debugging and maintenance.
 
-Everything else is derived from those three facts in
+Everything else is derived from those two facts in
 `inventories/*/group_vars/remnawave_nodes.yml`:
 
 | Derived value | From |
@@ -38,24 +34,27 @@ Everything else is derived from those three facts in
 | `inbound_specs[0].tag` (`EE_01_REALITY`) | `node_name` |
 | `host_specs[0]` | `node_name`, `selfsteal_domain`, `node_country` |
 | `selfsteal_virtual_hosts` | `selfsteal_domain` |
+| the entire decoy site | `node_id` (see below) |
 
 Any derivation can be overridden per host — a node whose domain does not follow the zone
 pattern simply declares `selfsteal_domain` in its own block.
 
 ## Roles and execution order
 
-`install_node.yml` contains no deployment tasks and runs four roles in order.
+`install_node.yml` contains no deployment tasks and runs five roles in order.
 
-`node_base` validates the host, installs base packages and Docker, then applies a
-rollback-protected nftables policy. `remnawave_panel` reconciles the shared Config
-Profile, this node's inbound, the Node, its Hosts, the Internal Squad and the optional
-bridge identity through the Remnawave 3.x API. `remnawave_node` installs the pinned Xray
-binary, the certificate, the nginx selfsteal virtual hosts, RemnaNode, optional
-geodata/plugins and the maintenance units. `node_verify` changes nothing and confirms the
-real containers, listeners, certificate, firewall, public selfsteal response, Panel links
-and optional bridge/tunnel probes.
+`dns` reconciles the node's A record at the registrar from the controller, then waits
+until public resolvers agree. It runs first because the node's own preflight resolves the
+selfsteal name and ACME needs the record to be live. `node_base` validates the host,
+installs base packages and Docker, then applies a rollback-protected nftables policy.
+`remnawave_panel` reconciles the shared Config Profile, this node's inbound, the Node, its
+Hosts, the Internal Squad and the optional bridge identity through the Remnawave 3.x API.
+`remnawave_node` installs the pinned Xray binary, the certificate, the generated masking
+site, RemnaNode, optional geodata/plugins and the maintenance units. `node_verify` changes
+nothing and confirms the real containers, listeners, certificate, firewall, published
+page, Panel links and optional bridge/tunnel probes.
 
-`node_bootstrap` is the fifth role and belongs to `bootstrap.yml` only. It is separate
+`node_bootstrap` is the sixth role and belongs to `bootstrap.yml` only. It is separate
 because it is the one role that runs before the managed account exists: it connects as
 root, may find no Python on the target and never escalates. It creates the account with
 the controller's public key and password-less sudo — and nothing else. sshd policy has
@@ -63,6 +62,65 @@ exactly one owner, `node_base`, which writes the highest-priority drop-in and th
 verifies the effective policy with `sshd -T`.
 
 Small components are task files inside those roles, not additional roles.
+
+## The generated masking site
+
+The node serves a real-looking site in front of Reality. Two failure modes matter and pull
+in opposite directions: an identical page on every node links the whole fleet with a single
+scan (page hash, DOM shape, class names, favicon, asset names, response size), while a page
+that changes on every run destroys idempotency and produces pointless churn.
+
+The site is therefore a pure function of a stable per-node seed. The same node keeps a
+byte-identical site forever; different nodes get a different brand, tagline, body copy,
+section selection and order, layout, palette, font stack, CSS class names, asset file
+names, favicon shape, security-header set and response size.
+
+```yaml
+selfsteal_decoy_seed: "{{ node_id }}"   # stable identity, not a timestamp
+selfsteal_decoy_salt: ""                # reroll one node, e.g. after it was blocked
+selfsteal_decoy_generation: 1           # bump to reroll the whole fleet
+```
+
+Values come from SHA-256 of `seed | field-label`, deliberately not from one
+`random.Random` stream. A stream's output is an interpreter implementation detail, and
+drawing fields in sequence means adding one new field shifts every value after it — which
+would re-randomise every node's site on an unrelated template change. Labelled hashing
+keeps existing fields stable when a new one is added.
+
+Assets are written under names derived from the same seed, and files left over from a
+previous seed are removed from the document root so an old page cannot be fetched by its
+old asset name. The page loads nothing from third parties.
+
+`node_verify` fetches the public page and requires it to carry this node's brand, class
+names and asset names — a shared default page fails the run.
+
+## DNS
+
+```yaml
+dns_provider: regru        # or none, when the record is managed elsewhere
+```
+
+The role owns exactly one record per node — the selfsteal A record — and touches nothing
+else in the zone. It reads the zone, compares, and then creates the record if it is
+missing or retargets it if it points elsewhere; a correct record produces no change. A
+second A record for the same name is reported rather than guessed at, and only
+`dns_prune_extra_records=true` allows removing the ones that do not match. Records
+belonging to other names or other types are never modified.
+
+After a change the run waits until every resolver in `dns_wait_resolvers` returns the
+managed address, because ACME and the node's own preflight both resolve the name.
+
+REG.RU specifics: the API is `POST https://api.reg.ru/api/regru2/<method>` with a JSON
+document in the `input_data` form field, using `zone/get_resource_records`,
+`zone/add_alias` and `zone/remove_record`. Credentials are an account username and
+password (or an API-specific password) and come from the vault as `vault_regru_username`
+and `vault_regru_password`. REG.RU additionally requires API access to be enabled for the
+account and the controller's public address to be allow-listed — the same address that
+belongs in `management_cidrs`.
+
+Provider logic lives in `roles/dns/tasks/providers/`; the decision (create, retarget,
+leave alone) is provider-independent and unit-tested. Adding Cloudflare later means one
+more file there, not a change to the node installation.
 
 ## One shared Config Profile
 
@@ -92,7 +150,7 @@ or reject.
 
 `certificate_mode: http01` is the production mode. Certbot answers the challenge from
 `certificate_webroot_path`, which nginx already serves at `/.well-known/acme-challenge/`,
-so neither the first issuance nor a renewal takes the decoy site offline. Standalone is
+so neither the first issuance nor a renewal takes the masking site offline. Standalone is
 used only when nginx is not running yet, which is the very first installation — there is
 nothing to interrupt in that case either. The renewal timer stays idle until the
 certificate enters the renewal window, never stops nginx, and reloads it only when the
@@ -104,27 +162,28 @@ environments is detected from the certificate issuer and forces a clean re-issue
 run fails if the installed certificate does not match the requested environment — a
 staging certificate can never quietly reach production.
 
-`cloudflare_dns` mode still exists but is unused while the zones live at reg.ru.
+`cloudflare_dns` mode still exists but is unused while the zones live at REG.RU.
 
-## What Ansible obtains or creates through the Panel API
+## What Ansible obtains or creates automatically
 
-The node's `SECRET_KEY` (once, then reused from the managed `.env`), the Reality keypair
-and short ID, this node's inbound and its panel UUID inside the shared profile, the Node
-object with its active inbound, every declared Host, the Internal Squad membership and,
-when enabled, the bridge service user and the Node Plugin profile. Deliberate rotation of
-the node identity requires the explicit one-run variable
-`remnawave_rotate_node_secret_key=true`; Reality rotation requires
-`reality_rotate_keys=true`. Neither happens as a side effect of a normal run.
+The DNS A record. The node's `SECRET_KEY` (once, then reused from the managed `.env`), the
+Reality keypair and short ID, this node's inbound and its panel UUID inside the shared
+profile, the Node object with its active inbound, every declared Host, the Internal Squad
+membership and, when enabled, the bridge service user and the Node Plugin profile. The
+certificate. The entire masking site. Deliberate rotation of the node identity requires
+the explicit one-run variable `remnawave_rotate_node_secret_key=true`; Reality rotation
+requires `reality_rotate_keys=true`. Neither happens as a side effect of a normal run.
 
 Profile or Host changes set `subscription_refresh_required=true` in `set_stats`. The
 deployment does not claim clients have cut over before they refresh their subscription.
 
 ## Controller prerequisites
 
-A Linux controller with Python 3.11–3.13 and OpenSSH, able to reach the Panel, the node's
-SSH port and the public selfsteal address. Password-based SSH additionally needs `sshpass`
-on the controller; it is not installed on the managed node. All paths in this project are
-relative to this directory, so the same code runs from a laptop and, later, from Semaphore.
+A Linux controller with Python 3.11–3.13 and OpenSSH, able to reach the registrar API, the
+Panel, the node's SSH port and the public selfsteal address. Password-based SSH
+additionally needs `sshpass` on the controller; it is not installed on the managed node.
+All paths in this project are relative to this directory, so the same code runs from a
+laptop and, later, from Semaphore.
 
 ```bash
 python3 -m venv .venv
@@ -137,7 +196,7 @@ ansible-galaxy collection install -r collections/requirements.yml
 
 ```text
 inventories/<env>/
-  hosts.yml                      # three facts per node
+  hosts.yml                      # two facts per node
   group_vars/
     all/
       panel.yml                  # panel URL/token, shared profile, CIDRs, ACME email, zone
@@ -153,8 +212,16 @@ example file must never end in `.yml`: Ansible loads every `.yml` file in `group
 `vault.example.yml` would define real variables. A regression test enforces that.
 
 Copy `group_vars/all/vault.yml.example` to `vault.yml`, fill it in and encrypt it with
-`ansible-vault encrypt`. The Panel token, root password, `SECRET_KEY`, Reality private
-key, bridge password and Cloudflare token belong there and nowhere else.
+`ansible-vault encrypt`. The Panel token, registrar credentials, root password,
+`SECRET_KEY`, Reality private key, bridge password and Cloudflare token belong there and
+nowhere else:
+
+```yaml
+vault_remnawave_panel_token: ...
+vault_regru_username: ...
+vault_regru_password: ...
+vault_node_root_password: ...
+```
 
 A node that must keep root/password access sets `ansible_user: root`,
 `ansible_password: "{{ vault_node_root_password }}"`, `ansible_become: false` and
@@ -168,7 +235,7 @@ to accept the key presented on first contact, or add the fingerprint from the pr
 console beforehand. That flag is trust-on-first-use — right for a server created minutes
 ago, wrong for one that has been running.
 
-## Required data beyond the three facts
+## Required data beyond the two facts
 
 Per fleet, set once in `group_vars/all/panel.yml`: Panel URL and token, `management_cidrs`
 (the address sshd actually sees — preflight refuses to apply a firewall that would lock
@@ -190,22 +257,24 @@ an inventory host whose source IP is outside `remnawave_panel_cidrs`; it proves
 ## Scoped runs
 
 ```bash
+ansible-playbook playbooks/provision_node.yml --limit ee01
 ansible-playbook playbooks/install_node.yml --syntax-check
 ansible-playbook playbooks/install_node.yml --tags preflight --check
+ansible-playbook playbooks/install_node.yml --tags dns
 ansible-playbook playbooks/install_node.yml --tags certificate
+ansible-playbook playbooks/install_node.yml --tags selfsteal
 ansible-playbook playbooks/install_node.yml --tags node_verify
-ansible-playbook playbooks/install_node.yml --limit ee01
 ```
 
 ## Running from Semaphore later
 
-Nothing in this project points at a specific machine, so the move is configuration only:
-point the Semaphore repository at this repo, set the playbook path to
-`ansible/playbooks/install_node.yml`, add the vault password as a Semaphore secret, and
-either commit an inventory that carries no real addresses or paste the inventory into
-Semaphore itself. The controller address changes when the runner does, so
-`management_cidrs` must then contain the Semaphore host's IP — the preflight check will say
-so plainly if it does not.
+Nothing here points at a specific machine, needs an interactive prompt or reads a secret
+from outside the vault, so the move is configuration only: point the Semaphore repository
+at this repo, set the playbook path to `ansible/playbooks/provision_node.yml`, add the
+vault password as a Semaphore secret, and either commit an inventory that carries no real
+addresses or paste the inventory into Semaphore. The controller address changes when the
+runner does, so `management_cidrs` and the registrar's API allow-list must then contain the
+Semaphore host's address — preflight will say so plainly if the first does not.
 
 ## Verification and tests
 
@@ -217,8 +286,7 @@ Static checks need no VPS:
 
 ```bash
 yamllint -c .yamllint.yml .
-ansible-playbook -i inventories/staging/hosts.yml playbooks/install_node.yml --syntax-check
-ansible-playbook -i inventories/staging/hosts.yml playbooks/bootstrap.yml --syntax-check
+ansible-playbook -i inventories/staging/hosts.yml playbooks/provision_node.yml --syntax-check
 ansible-lint
 python -m unittest discover -s tests -p 'test_*.py'
 ansible-playbook -i localhost, -c local tests/render_templates.yml
@@ -226,6 +294,8 @@ python tests/validate_structure.py
 bash tests/test_panel_idempotency.sh
 bash tests/test_panel_bridge_idempotency.sh
 bash tests/test_panel_errors.sh
+bash tests/test_dns_idempotency.sh
+bash tests/validate_nginx.sh
 (cd roles/node_base && molecule test)
 (cd roles/remnawave_node && molecule test)
 ```
@@ -233,12 +303,20 @@ bash tests/test_panel_errors.sh
 `test_panel_idempotency.sh` starts from a seeded shared profile that already holds another
 node's inbound and the routing rules, then proves the second run changes nothing, the
 foreign inbound keeps its UUID and Reality key, the routing survives, and the Host and Node
-are bound to the shared profile. Molecule exercises base provisioning and pinned Xray
-installation on Debian 12, Debian 13 and Ubuntu 24.04 in privileged containers.
+are bound to the shared profile. `test_dns_idempotency.sh` runs the DNS role against a
+stateful mock registrar and covers create, retarget, no-op, an ambiguous name and an
+unknown zone, asserting that foreign records survive. The decoy tests assert that one seed
+gives a byte-identical site, that 64 different nodes produce 64 different pages, class name
+sets, asset names and response sizes, and that a re-render reports no change.
+`validate_nginx.sh` renders the configuration against a throwaway certificate and checks it
+with `nginx -t` in the pinned image, falling back to a local nginx binary and then to a
+crossplane syntax check — it prints which path it took, because only the first two check
+directive semantics.
 
 Full acceptance still requires a real VPS, DNS, ACME, a test Panel, a valid test
 subscription and, for bridge mode, an entry node. Those external checks are enforced by
-`node_verify` rather than replaced with a passing stub.
+`node_verify` rather than replaced with a passing stub. **Nothing in this project has been
+run against a real server yet, so it is not production-ready.**
 
 ## Operational behavior
 

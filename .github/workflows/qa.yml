@@ -50,6 +50,7 @@ jobs:
 
       - name: Run Ansible syntax check
         run: |
+          ansible-playbook -i inventories/staging/hosts.yml playbooks/provision_node.yml --syntax-check
           ansible-playbook -i inventories/staging/hosts.yml playbooks/install_node.yml --syntax-check
           ansible-playbook -i inventories/staging/hosts.yml playbooks/bootstrap.yml --syntax-check
 
@@ -65,6 +66,12 @@ jobs:
           bash tests/test_panel_idempotency.sh
           bash tests/test_panel_bridge_idempotency.sh
           bash tests/test_panel_errors.sh
+
+      - name: Verify DNS reconciliation against stateful mock registrar
+        run: bash tests/test_dns_idempotency.sh
+
+      - name: Validate the rendered nginx configuration in the pinned image
+        run: bash tests/validate_nginx.sh
 
       - name: Test system roles on Debian 12, Debian 13 and Ubuntu 24.04
         run: |
