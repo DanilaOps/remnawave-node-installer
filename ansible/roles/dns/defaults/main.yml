@@ -1,0 +1,28 @@
+---
+# Provider-agnostic DNS reconciliation. The role owns exactly one record per
+# node - the selfsteal A record - and never touches anything else in the zone.
+dns_provider: none
+
+dns_zone: "{{ node_domain_zone | default('') }}"
+dns_record_fqdn: "{{ selfsteal_domain }}"
+dns_record_type: A
+dns_record_value: "{{ node_public_ip }}"
+dns_record_ttl: 300
+
+# A second A record for the same name would make the node reachable at an
+# address this deployment does not manage, so it is reported instead of guessed.
+dns_prune_extra_records: false
+
+# ACME and the node's own preflight both resolve the name, so the run waits for
+# public resolvers to agree before continuing.
+dns_wait_for_resolution: true
+dns_wait_resolvers:
+  - 1.1.1.1
+  - 8.8.8.8
+dns_wait_retries: 30
+dns_wait_delay: 10
+
+dns_api_timeout: 45
+regru_api_url: https://api.reg.ru/api/regru2
+regru_username: "{{ vault_regru_username | default('') }}"
+regru_password: "{{ vault_regru_password | default('') }}"

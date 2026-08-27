@@ -6,6 +6,13 @@
   any_errors_fatal: true
 
   roles:
+    # DNS runs first and against the provider API from the controller: node_base's
+    # preflight resolves the selfsteal name from the node itself and ACME needs the
+    # record to be live, so nothing after this point can start before it resolves.
+    - role: dns
+      become: false
+      tags: [dns]
+      when: dns_provider | default('none') != 'none'
     - role: node_base
       tags: [node_base]
     - role: remnawave_panel
@@ -14,4 +21,3 @@
       tags: [remnawave_node]
     - role: node_verify
       tags: [node_verify]
-

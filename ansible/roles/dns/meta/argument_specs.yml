@@ -1,0 +1,36 @@
+---
+argument_specs:
+  main:
+    short_description: Reconcile the selfsteal DNS record for one node
+    options:
+      dns_provider:
+        type: str
+        choices: [none, regru]
+        required: true
+        description: none skips the role entirely and expects the record to exist.
+      dns_zone:
+        type: str
+        description: Zone the record lives in, for example example.com.
+      dns_record_fqdn:
+        type: str
+        description: Fully qualified name to point at this node.
+      dns_record_value:
+        type: str
+        description: Address the record must resolve to.
+      dns_record_type:
+        type: str
+        choices: [A]
+      dns_record_ttl:
+        type: int
+      dns_prune_extra_records:
+        type: bool
+        description: Allow removing additional records of the same name and type.
+      dns_wait_for_resolution:
+        type: bool
+      dns_wait_resolvers:
+        type: list
+        elements: str
+      dns_wait_retries:
+        type: int
+      dns_wait_delay:
+        type: int

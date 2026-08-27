@@ -1,0 +1,45 @@
+---
+- name: Validate DNS inputs
+  ansible.builtin.assert:
+    that:
+      - dns_provider in ['none', 'regru']
+      - dns_zone | length > 0
+      - dns_record_fqdn | length > 0
+      - dns_record_type == 'A'
+      - (dns_record_value | ansible.utils.ipaddr) != false
+      - dns_record_ttl | int >= 60
+    fail_msg: >-
+      DNS reconciliation needs a zone, a fully qualified record name, a valid IPv4
+      address and a TTL of at least 60 seconds.
+
+- name: Derive the record name inside the zone
+  ansible.builtin.set_fact:
+    dns_record_name: "{{ dns_record_fqdn | remnawave_dns_subdomain(dns_zone) }}"
+
+- name: Reconcile the record at REG.RU
+  ansible.builtin.import_tasks: providers/regru.yml
+  when: dns_provider == 'regru'
+
+- name: Wait until public resolvers return the managed address
+  ansible.builtin.set_fact:
+    dns_observed: >-
+      {{ query('community.general.dig', dns_record_fqdn, '@' ~ item, 'qtype=' ~ dns_record_type) }}
+  loop: "{{ dns_wait_resolvers }}"
+  loop_control:
+    label: "{{ item }}"
+  delegate_to: localhost
+  become: false
+  until: dns_record_value in dns_observed
+  retries: "{{ dns_wait_retries }}"
+  delay: "{{ dns_wait_delay }}"
+  changed_when: false
+  when: dns_wait_for_resolution | bool
+
+- name: Publish the reconciled record
+  ansible.builtin.set_stats:
+    data:
+      dns_provider: "{{ dns_provider }}"
+      dns_record: "{{ dns_record_fqdn }}"
+      dns_value: "{{ dns_record_value }}"
+      dns_changed: "{{ dns_record_changed | default(false) }}"
+    per_host: true

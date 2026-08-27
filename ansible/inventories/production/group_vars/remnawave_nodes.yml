@@ -50,6 +50,11 @@ xray_checksums:
   x86_64: b3e5902d06d6282fe53cfa2fc426058b9aeaa429b2c812e20887cd47f26d08bf
   aarch64: 13a251379bea366c2cf10363ad71e75734193d401f26f518bf0c25e5c8f8c931
 
+# --- DNS ---------------------------------------------------------------------
+dns_provider: regru
+# A second A record for the same name is reported, not guessed at.
+dns_prune_extra_records: false
+
 # --- Certificate ------------------------------------------------------------
 # http01 is answered from the webroot nginx already serves, so issuance and
 # renewal never take the decoy site down. Use staging while iterating.

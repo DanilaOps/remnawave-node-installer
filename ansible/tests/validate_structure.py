@@ -12,6 +12,7 @@ ROLES = ROOT / "roles"
 # Those connection semantics cannot live inside node_base.
 EXPECTED_ROLES = {
     "node_bootstrap",
+    "dns",
     "node_base",
     "remnawave_panel",
     "remnawave_node",
