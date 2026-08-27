@@ -1,0 +1,14 @@
+---
+# One command for a new node:
+#
+#   ansible-playbook playbooks/provision_node.yml --limit ee01
+#
+# bootstrap.yml decides for itself whether the managed account still has to be
+# created, so this playbook is safe to re-run on an already installed node and is
+# the only command needed after the VPS exists. The two playbooks stay separately
+# runnable for debugging and maintenance.
+- name: Prepare SSH access for a new node
+  ansible.builtin.import_playbook: bootstrap.yml
+
+- name: Install and verify the node
+  ansible.builtin.import_playbook: install_node.yml

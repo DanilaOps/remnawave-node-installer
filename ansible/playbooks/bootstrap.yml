@@ -4,6 +4,37 @@
 # and password-less sudo, then prove that account can log in and escalate.
 # Run once per node, before install_node.yml.
 
+- name: Detect whether the managed account already works
+  hosts: remnawave_nodes
+  gather_facts: false
+  become: false
+  ignore_unreachable: true
+
+  tasks:
+    - name: Probe the managed account
+      ansible.builtin.raw: /bin/true
+      register: bootstrap_probe
+      changed_when: false
+      failed_when: false
+
+    - name: Decide whether bootstrap has to run
+      # Delegated to the controller so an unreachable node can still be given a
+      # fact: this play is exactly the case where the node cannot be logged into.
+      ansible.builtin.set_fact:
+        bootstrap_required: "{{ bootstrap_probe.unreachable | default(false) | bool }}"
+      delegate_to: localhost
+      become: false
+      changed_when: false
+
+    - name: Report the decision
+      ansible.builtin.debug:
+        msg: >-
+          {{ inventory_hostname }}:
+          {{ 'bootstrap required' if bootstrap_required else
+             'already reachable as ' ~ (ansible_user | default('the inventory user')) ~
+             ', skipping bootstrap' }}
+      delegate_to: localhost
+
 - name: Trust the SSH host key of a new node
   hosts: remnawave_nodes
   connection: local
@@ -20,6 +51,7 @@
           from the provider console with ssh-keyscan, or set
           bootstrap_trust_new_host_keys=true to accept the key presented on first contact
           (trust on first use - acceptable on a freshly created VPS, not on an existing one).
+      when: bootstrap_required | default(true) | bool
 
     - name: Read the host key presented by the node
       ansible.builtin.command:
@@ -33,6 +65,7 @@
       register: bootstrap_host_key
       changed_when: false
       failed_when: bootstrap_host_key.stdout | length == 0
+      when: bootstrap_required | default(true) | bool
 
     - name: Store the host key for later runs
       ansible.builtin.known_hosts:
@@ -43,9 +76,10 @@
         key: "{{ item }}"
         path: "{{ bootstrap_known_hosts_path | default(omit) }}"
         state: present
-      loop: "{{ bootstrap_host_key.stdout_lines | reject('match', '^#') | list }}"
+      loop: "{{ bootstrap_host_key.stdout_lines | default([]) | reject('match', '^#') | list }}"
       loop_control:
         label: "{{ item.split(' ')[1] | default('key') }}"
+      when: bootstrap_required | default(true) | bool
 
 - name: Create the managed account on a fresh VPS
   hosts: remnawave_nodes
@@ -60,6 +94,7 @@
   roles:
     - role: node_bootstrap
       tags: [bootstrap]
+      when: bootstrap_required | default(true) | bool
 
 - name: Verify the managed account can log in and escalate
   hosts: remnawave_nodes
