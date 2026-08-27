@@ -4,9 +4,10 @@
 #
 #   ./setup-controller
 #
-# Everything it does is local and idempotent - it never touches a node and never
-# overwrites an existing file without asking. Run it again after pulling changes
-# to refresh dependencies.
+# Works on a laptop and on a freshly created Debian/Ubuntu VPS: it names the
+# system packages it needs and installs them only on a yes. Everything it does is
+# local and idempotent - it never touches a node and never overwrites an existing
+# file without asking. Run it again after pulling changes to refresh dependencies.
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -27,6 +28,53 @@ ask() { # ask <prompt> <default>
   printf '%s' "${answer:-$2}"
 }
 
+step "System packages"
+# A freshly created VPS has none of this. Nothing is installed behind the
+# operator's back: missing packages are named, and installed only on a yes.
+# python3, its venv module and an SSH client are required; sshpass is needed only
+# to log in with a root password and git only to update this checkout, so a
+# machine without them is usable, just less convenient.
+declare -a required=() optional=()
+command -v python3 >/dev/null 2>&1 || required+=(python3)
+python3 -c 'import ensurepip, venv' >/dev/null 2>&1 || required+=(python3-venv)
+{ command -v ssh >/dev/null 2>&1 && command -v ssh-keygen >/dev/null 2>&1; } || required+=(openssh-client)
+command -v sshpass >/dev/null 2>&1 || optional+=(sshpass)
+command -v git >/dev/null 2>&1 || optional+=(git)
+
+install_packages() { # install_packages <package...>
+  local sudo_prefix=""
+  [[ "$(id -u)" -eq 0 ]] || sudo_prefix="sudo "
+  command -v apt-get >/dev/null 2>&1 || return 1
+  if [[ "$(ask "install ${*} now with '${sudo_prefix}apt-get install -y ${*}'? (y/n)" y)" != "y" ]]; then
+    return 1
+  fi
+  ${sudo_prefix}apt-get update -qq
+  # shellcheck disable=SC2068
+  DEBIAN_FRONTEND=noninteractive ${sudo_prefix}apt-get install -y -qq $@
+}
+
+if [[ ${#required[@]} -eq 0 ]]; then
+  ok "python3, venv and openssh-client present"
+else
+  todo "required packages missing: ${required[*]}"
+  install_packages "${required[@]}" \
+    || die "install them and run this again: apt-get install -y ${required[*]}"
+  ok "installed ${required[*]}"
+fi
+
+if [[ ${#optional[@]} -eq 0 ]]; then
+  ok "sshpass and git present"
+else
+  todo "optional packages missing: ${optional[*]}"
+  if install_packages "${optional[@]}"; then
+    ok "installed ${optional[*]}"
+  else
+    todo "continuing without them"
+    printf '%s\n' "${optional[@]}" | grep -qx sshpass \
+      && todo "without sshpass a new server can only be bootstrapped with an existing SSH key"
+  fi
+fi
+
 step "Python and virtualenv"
 command -v python3 >/dev/null || die "python3 is required"
 python3 - <<'PY' || die "Python 3.11-3.13 is required for the pinned ansible-core"
@@ -37,7 +85,8 @@ if not (3, 11) <= sys.version_info[:2] <= (3, 13):
 PY
 ok "python $(python3 -c 'import sys; print(sys.version.split()[0])')"
 if [[ ! -d .venv ]]; then
-  python3 -m venv .venv
+  python3 -m venv .venv 2>/tmp/venv-error \
+    || die "python3 -m venv failed: $(tr -d '\n' </tmp/venv-error). On Debian and Ubuntu this is usually the missing python3-venv package."
   ok "created .venv"
 else
   ok ".venv already present"
@@ -53,14 +102,6 @@ ok "requirements.txt installed ($(ansible --version | head -1))"
 step "Ansible collections"
 ansible-galaxy collection install -r collections/requirements.yml >/dev/null
 ok "collections installed"
-
-step "sshpass (needed only to log in with a root password)"
-if command -v sshpass >/dev/null 2>&1; then
-  ok "present"
-else
-  todo "not installed - install it with: sudo apt install -y sshpass"
-  todo "without it a new server can only be bootstrapped with an existing SSH key"
-fi
 
 step "SSH key for the managed account"
 if [[ -f "$ssh_key" ]]; then
@@ -165,7 +206,10 @@ ansible-playbook -i "$inventory_dir/hosts.yml" playbooks/provision_node.yml --sy
 
 cat <<NEXT
 
-Controller ready. To add a node:
+Controller ready.
+
+Its own address is what the nodes will allow through their firewall, and what
+REG.RU has to allow for the DNS API, so keep it stable. To add a node:
 
   1. buy the VPS and point <name>.$( [[ -f "$panel_file" ]] && grep -m1 '^node_domain_zone:' "$panel_file" | awk '{print $2}' ) at its address
   2. add two lines to $inventory_dir/hosts.yml:
