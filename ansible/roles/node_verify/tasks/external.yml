@@ -29,6 +29,33 @@
       - remnawave_verify_selfsteal.content | length > 100
     fail_msg: Public 443 did not return the expected real selfsteal website.
 
+- name: Require the page served publicly to be this node's generated decoy
+  ansible.builtin.assert:
+    that:
+      - remnawave_verify_selfsteal.content is search(remnawave_verify_decoy.brand | regex_escape)
+      - remnawave_verify_selfsteal.content is search(remnawave_verify_decoy.assets.css | regex_escape)
+      - remnawave_verify_selfsteal.content is search(remnawave_verify_decoy.classes.page | regex_escape)
+    fail_msg: >-
+      Public 443 served a page that is not this node's generated site. Every node must
+      serve its own brand, class names and asset names, otherwise one scan links the
+      whole fleet by page hash.
+  vars:
+    remnawave_verify_decoy: >-
+      {{ remnawave_decoy_profiles[selfsteal_virtual_hosts[0].name] }}
+  when: verify_require_unique_decoy | bool
+
+- name: Fetch the generated stylesheet the page advertises
+  ansible.builtin.uri:
+    url: "https://{{ selfsteal_domain }}/{{ remnawave_decoy_profiles[selfsteal_virtual_hosts[0].name].assets.css }}"
+    method: GET
+    status_code: 200
+    timeout: "{{ verify_external_timeout }}"
+    return_content: false
+  delegate_to: localhost
+  become: false
+  changed_when: false
+  when: verify_require_unique_decoy | bool
+
 - name: Require an independent source for the negative NODE_PORT probe
   ansible.builtin.assert:
     that:

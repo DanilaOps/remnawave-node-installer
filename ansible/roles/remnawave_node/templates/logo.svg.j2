@@ -1,0 +1,12 @@
+{% set f = decoy.favicon %}
+{% set p = decoy.palette %}
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" role="img">
+{% if f.shape == 'circle' %}
+  <circle cx="16" cy="16" r="14" fill="hsl({{ p.hue }}, {{ p.saturation }}%, 42%)"/>
+{% elif f.shape == 'hex' %}
+  <polygon points="16,2 29,9 29,23 16,30 3,23 3,9" fill="hsl({{ p.hue }}, {{ p.saturation }}%, 42%)"/>
+{% else %}
+  <rect width="32" height="32" rx="{{ [p.radius, 10] | min }}" fill="hsl({{ p.hue }}, {{ p.saturation }}%, 42%)"/>
+{% endif %}
+  <path d="M9 21 L16 10 L23 21 Z" fill="hsl({{ (p.hue + p.accent_shift) % 360 }}, {{ p.saturation }}%, 88%)"/>
+</svg>

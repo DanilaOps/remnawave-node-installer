@@ -24,6 +24,24 @@ argument_specs:
       xray_checksums:
         type: dict
         required: true
+      selfsteal_decoy_seed:
+        type: str
+        description: Stable per-node seed for the generated decoy site.
+      selfsteal_decoy_salt:
+        type: str
+        description: Extra seed input to reroll one node's site without changing node_id.
+      selfsteal_decoy_generation:
+        type: int
+        description: Bump to reroll the generated site across the whole fleet.
+      selfsteal_refresh_content:
+        type: bool
+        description: Overwrite generated site files; a no-op unless the seed changed.
+      certificate_live_dir:
+        type: path
+        description: Directory nginx reads the certificate from.
+      remnawave_nginx_user:
+        type: str
+        description: User the pinned nginx image runs as.
       certificate_enabled:
         type: bool
       certificate_mode:

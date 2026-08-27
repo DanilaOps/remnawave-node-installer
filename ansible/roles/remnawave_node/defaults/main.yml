@@ -14,6 +14,9 @@ remnawave_node_container: remnanode
 remnawave_node_port: 2222
 remnawave_nginx_image: nginx:1.29.3-alpine
 remnawave_nginx_container: nginx-selfsteal
+# The user the pinned nginx image runs as. Overridable so the rendered config can
+# be validated outside that image.
+remnawave_nginx_user: nginx
 
 xray_version: 26.6.27
 xray_release_repository: XTLS/Xray-core
@@ -29,7 +32,20 @@ xray_binary_path: "{{ xray_install_dir }}/xray"
 selfsteal_domain: ""
 selfsteal_local_port: 9443
 selfsteal_socket: ""
-selfsteal_refresh_content: false
+
+# The decoy site is generated per node from a stable seed: the same node keeps a
+# byte-identical site forever, different nodes get visibly different brand, copy,
+# layout, palette, class names, asset names and response size. Bump
+# selfsteal_decoy_generation to reroll the whole fleet; set selfsteal_decoy_salt
+# on one node to reroll only that node (for example after it was blocked).
+selfsteal_decoy_seed: "{{ node_id }}"
+selfsteal_decoy_salt: ""
+selfsteal_decoy_generation: 1
+remnawave_decoy_seed: >-
+  {{ selfsteal_decoy_seed }}|{{ selfsteal_decoy_salt }}|{{ selfsteal_decoy_generation }}
+# Generated content is a pure function of the seed, so overwriting it is a no-op
+# on every rerun. Set to false only to preserve hand edits made on the node.
+selfsteal_refresh_content: true
 selfsteal_virtual_hosts:
   - name: primary
     server_names: ["{{ selfsteal_domain }}"]
@@ -39,6 +55,10 @@ selfsteal_virtual_hosts:
 certificate_enabled: true
 certificate_mode: http01
 certificate_name: "{{ selfsteal_domain }}"
+# Directory nginx reads the certificate from. Certbot always writes to
+# /etc/letsencrypt/live/<cert-name>; this variable exists so the rendered nginx
+# configuration can be validated against a throwaway certificate.
+certificate_live_dir: "/etc/letsencrypt/live/{{ certificate_name }}"
 certificate_renew_before_days: 30
 certificate_dns_propagation_seconds: 60
 acme_email: ""

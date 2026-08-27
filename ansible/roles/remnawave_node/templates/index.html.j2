@@ -1,19 +1,83 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width,initial-scale=1">
-  <meta name="robots" content="index,follow">
-  <title>{{ selfsteal_site.title | default('Cloud Infrastructure') }}</title>
-  <style>
-    body{margin:0;background:#0b1220;color:#dbeafe;font:16px/1.6 system-ui,sans-serif}
-    main{max-width:920px;margin:12vh auto;padding:48px;border:1px solid #1e3a5f;border-radius:18px;background:#111c30}
-    h1{font-size:2.5rem;margin:0 0 16px;color:#f8fafc}.grid{display:grid;grid-template-columns:repeat(3,1fr);gap:18px;margin-top:36px}
-    section{padding:20px;background:#0d1728;border-radius:12px}@media(max-width:700px){.grid{grid-template-columns:1fr}main{margin:4vh 16px;padding:28px}}
-  </style>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{ decoy.title }}</title>
+<meta name="description" content="{{ decoy.description }}">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/{{ decoy.assets.css }}">
 </head>
-<body><main><h1>{{ selfsteal_site.title | default('Cloud Infrastructure') }}</h1>
-<p>Reliable compute, managed networking and observability for distributed services.</p>
-<div class="grid"><section>Managed hosting</section><section>Global networking</section><section>24/7 monitoring</section></div>
-</main></body></html>
+<body class="{{ decoy.classes.page }}">
+<header class="{{ decoy.classes.bar }}">
+  <a class="{{ decoy.classes.logo }}" href="/">
+    <img src="/{{ decoy.assets.logo }}" width="28" height="28" alt="">
+    <span>{{ decoy.brand }}</span>
+  </a>
+  <nav class="{{ decoy.classes.nav }}">
+{% for entry in decoy.nav %}
+    <a href="/{{ entry|lower }}">{{ entry }}</a>
+{% endfor %}
+  </nav>
+</header>
 
+<main>
+  <section class="{{ decoy.classes.hero }}">
+    <h1>{{ decoy.tagline }}</h1>
+    <p class="{{ decoy.classes.lead }}">{{ decoy.description }}</p>
+    <p class="{{ decoy.classes.cta }}">
+      <a href="/signup">{{ decoy.cta_primary }}</a>
+      <a href="/docs">{{ decoy.cta_secondary }}</a>
+    </p>
+  </section>
+
+{% for section in decoy.sections %}
+{% if section == 'features' %}
+  <section class="{{ decoy.classes.section }}" id="features">
+    <h2>What you get</h2>
+    <div class="{{ decoy.classes.grid }}">
+{% for feature in decoy.features %}
+      <article class="{{ decoy.classes.card }}">
+        <h3>{{ feature.title }}</h3>
+        <p>{{ feature.text }}</p>
+      </article>
+{% endfor %}
+    </div>
+  </section>
+{% elif section == 'about' %}
+  <section class="{{ decoy.classes.section }}" id="about">
+    <h2>About {{ decoy.brand_short }}</h2>
+    <p>{{ decoy.about }}</p>
+    <p>Operating since {{ decoy.established }}.</p>
+  </section>
+{% elif section == 'status' %}
+  <section class="{{ decoy.classes.section }}" id="status">
+    <h2>Service status</h2>
+    <ul class="{{ decoy.classes.status }}">
+{% for service, state in decoy.status %}
+      <li class="{{ decoy.classes.row }}"><span>{{ service }}</span><span class="{{ decoy.classes.badge }}">{{ state }}</span></li>
+{% endfor %}
+    </ul>
+  </section>
+{% elif section == 'contact' %}
+  <section class="{{ decoy.classes.section }}" id="contact">
+    <h2>Contact</h2>
+    <p>Support requests are answered during business hours. Existing customers can
+       reach the team from the dashboard.</p>
+    <p><a href="/support">Open a support request</a></p>
+  </section>
+{% endif %}
+{% endfor %}
+</main>
+
+<footer class="{{ decoy.classes.foot }}">
+  <p>&copy; {{ decoy.established }}&ndash;{{ decoy.established + 5 }} {{ decoy.brand }}. {{ decoy.footer_note }}</p>
+</footer>
+{% if decoy.assets.js %}
+<script src="/{{ decoy.assets.js }}"></script>
+{% endif %}
+<!--
+{{ decoy | remnawave_decoy_filler }}
+-->
+</body>
+</html>

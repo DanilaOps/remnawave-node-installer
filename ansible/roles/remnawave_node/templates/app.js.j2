@@ -1,0 +1,11 @@
+(function () {
+  "use strict";
+  var year = document.querySelector(".{{ decoy.classes.foot }} p");
+  if (!year) { return; }
+  var nav = document.querySelectorAll(".{{ decoy.classes.nav }} a");
+  for (var i = 0; i < nav.length; i += 1) {
+    if (nav[i].getAttribute("href") === window.location.pathname) {
+      nav[i].setAttribute("aria-current", "page");
+    }
+  }
+})();

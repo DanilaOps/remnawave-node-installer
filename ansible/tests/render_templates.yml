@@ -53,6 +53,11 @@
         server_names: [node-de-01.example.com]
         root: /opt/remnawave-node/selfsteal/html/primary
         title: Cloud Infrastructure
+    certificate_live_dir: /etc/letsencrypt/live/node-de-01.example.com
+    remnawave_nginx_user: nginx
+    remnawave_decoy_seed: de_01||1
+    remnawave_decoy_profiles:
+      primary: "{{ 'de_01||1' | remnawave_decoy_profile('primary') }}"
   tasks:
     - name: Render Xray profile into a fact
       ansible.builtin.set_fact:
@@ -142,6 +147,87 @@
           - "'/opt/remnawave-node/acme-webroot' in (rendered_renew.content | b64decode)"
           - "'docker stop' not in (rendered_renew.content | b64decode)"
         fail_msg: Renewal must answer HTTP-01 from the webroot without stopping nginx.
+
+    - name: Create a scratch document root for the generated decoy
+      ansible.builtin.file:
+        path: /tmp/remnawave-decoy-test
+        state: directory
+        mode: "0755"
+
+    - name: Render the generated decoy site
+      ansible.builtin.template:
+        src: "{{ playbook_dir }}/../roles/remnawave_node/templates/{{ item.src }}"
+        dest: "/tmp/remnawave-decoy-test/{{ item.dest }}"
+        mode: "0644"
+      loop:
+        - src: index.html.j2
+          dest: index.html
+        - src: site.css.j2
+          dest: "{{ remnawave_decoy_profiles.primary.assets.css }}"
+        - src: favicon.svg.j2
+          dest: favicon.svg
+        - src: logo.svg.j2
+          dest: "{{ remnawave_decoy_profiles.primary.assets.logo }}"
+        - src: robots.txt.j2
+          dest: robots.txt
+      loop_control:
+        label: "{{ item.dest }}"
+      vars:
+        decoy: "{{ remnawave_decoy_profiles.primary }}"
+
+    - name: Re-render the decoy index to prove a second run changes nothing
+      ansible.builtin.template:
+        src: "{{ playbook_dir }}/../roles/remnawave_node/templates/index.html.j2"
+        dest: /tmp/remnawave-decoy-test/index.html
+        mode: "0644"
+      vars:
+        decoy: "{{ remnawave_decoy_profiles.primary }}"
+      register: remnawave_decoy_rerender
+
+    - name: Require the decoy to be stable across runs
+      ansible.builtin.assert:
+        that:
+          - not remnawave_decoy_rerender.changed
+        fail_msg: >-
+          The generated decoy site is not stable for a fixed seed; a second Ansible run
+          would rewrite it and churn every node's masking page.
+
+    - name: Render the decoy for a different node
+      ansible.builtin.template:
+        src: "{{ playbook_dir }}/../roles/remnawave_node/templates/index.html.j2"
+        dest: /tmp/remnawave-decoy-other.html
+        mode: "0644"
+      vars:
+        decoy: "{{ 'nl_09||1' | remnawave_decoy_profile('primary') }}"
+
+    - name: Read both generated pages
+      ansible.builtin.slurp:
+        src: "{{ item }}"
+      loop:
+        - /tmp/remnawave-decoy-test/index.html
+        - /tmp/remnawave-decoy-other.html
+      register: remnawave_decoy_pages
+
+    - name: Require different nodes to serve visibly different pages
+      ansible.builtin.assert:
+        that:
+          - remnawave_decoy_pages.results[0].content != remnawave_decoy_pages.results[1].content
+          - >-
+            (remnawave_decoy_pages.results[0].content | b64decode | length) !=
+            (remnawave_decoy_pages.results[1].content | b64decode | length)
+          - "'<!DOCTYPE html>' in (remnawave_decoy_pages.results[0].content | b64decode)"
+        fail_msg: Two different nodes produced the same masking page.
+
+    - name: Require the nginx configuration to carry the per-node decoy settings
+      ansible.builtin.assert:
+        that:
+          - remnawave_decoy_profiles.primary.headers.referrer_policy in rendered_nginx_text
+          - (certificate_live_dir ~ '/fullchain.pem') in rendered_nginx_text
+          - ('user ' ~ remnawave_nginx_user ~ ';') in rendered_nginx_text
+          - remnawave_decoy_profiles.primary.classes.page not in rendered_nginx_text
+        fail_msg: The rendered nginx configuration lost its per-node decoy settings.
+      vars:
+        rendered_nginx_text: "{{ lookup('file', '/tmp/remnawave-nginx-test.conf') }}"
 
     - name: Render nftables template
       ansible.builtin.template:

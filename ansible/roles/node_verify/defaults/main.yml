@@ -12,3 +12,5 @@ verify_bridge_probe_command: []
 verify_bridge_probe_no_log: true
 verify_fatal_log_pattern: "(?i)(fatal|panic|configuration error|failed to start)"
 verify_required_certificate_days: 7
+# The decoy must be the one generated for this node, not a shared default.
+verify_require_unique_decoy: true
