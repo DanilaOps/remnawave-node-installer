@@ -1,211 +1,175 @@
 # План доведения Ansible-установщика до продакшена
 
-Обновлено 2026-08-27 после уточнений. Ветка `feature/ansible-automation` (не запушена).
+Обновлено 2026-08-27. Ветка `feature/ansible-automation` (не запушена).
 
 ## Вводные
 
-- Terraform не используется, VPS создаются руками, IP вносится в реестр вручную.
-- Панель Remnawave — **одна**.
-- Все домены на **reg.ru**.
-- Основной протокол — **VLESS + TCP/raw + Reality + Vision**. Критично: выпущенный
-  сертификат на домен и правдоподобный сайт-заглушка, за которым идёт маскировка.
-- SNI-mirror и front-gate в прод-схему пока не входят → бэклог.
-- Запуск с устройства (`ansible-playbook` + vault-пароль).
+- Terraform не используется, VPS создаются руками, IP вносится в inventory вручную.
+- Панель Remnawave — одна. Общий Xray-профиль — `Default August`, в нём routing.
+- Все домены на reg.ru.
+- Основной протокол — VLESS + TCP/raw + Reality + Vision. Критично: сертификат на домен
+  и правдоподобный сайт-заглушка, за которым идёт маскировка.
+- SNI-mirror и front-gate в прод-схему не входят → бэклог.
+- Запуск с устройства сейчас, Semaphore UI следующим этапом. Абсолютных путей в проекте
+  нет, поэтому переезд — это только конфигурация.
+- Модель безопасности ноды: nftables со своей изолированной таблицей и таймером откатa,
+  `management_cidrs`, fail2ban и минимум открытых портов. Ничего поверх этого не ставим.
 
 ---
 
-## Этап 1. То, за чем прячемся: сертификат и заглушка
+## Сделано
 
-### 1.1. Decoy-шаблоны: скачивание + рандомизация (приоритет №1)
+**Сертификаты без простоя.** Certbot переведён с `--standalone` на `--webroot`: HTTP-01
+отвечает из каталога, который nginx уже отдаёт на `/.well-known/acme-challenge/`.
+Standalone остаётся только для самой первой установки, когда nginx ещё не запущен и
+прерывать нечего. Таймер обновления больше не останавливает nginx и перезагружает его
+только когда сертификат реально изменился.
 
-**В bash:** `fetch_template` (codeload tarball, fallback на git sparse-checkout),
-`randomize_template` (удаление provenance-файлов, случайный brand/title/description,
-hue-rotate CSS, удаление google-fonts, нейтрализация beacon `api.ipify.org`, подмена
-favicon, cache-busting `?v=`, байтовый шум в css/js), `setup_decoy_content` с громким
-предупреждением при откате на stub.
+**ACME staging/production.** `certificate_acme_environment` выбирает CA. Переключение
+между окружениями определяется по issuer сертификата и вызывает чистый перевыпуск, а
+установка падает, если поставленный сертификат не соответствует запрошенному окружению —
+staging-сертификат не может незаметно попасть в прод.
 
-**В Ansible:** только статичный `index.html.j2`. Все ноды отдают байт-в-байт
-одинаковую страницу — по хешу страницы весь парк связывается в один кластер, а сама
-страница не похожа на настоящий сайт. Для схемы, где маскировка — основа, это главный
-недостаток текущего кода.
+**Привязка Hosts к `Default August`.** Панельная роль больше не создаёт профиль на каждую
+ноду. Она читает общий профиль, вливает в него инбаунд этой ноды по тегу и записывает
+обратно: чужие инбаунды сохраняют свои UUID и свои Reality-ключи, `routing`, `dns`,
+`outbounds` и `policy` переносятся без изменений. Reality-ключ ноды ищется по её
+собственному тегу, поэтому нода не может подобрать ключ соседа. Node активирует только
+свой инбаунд, каждый Host публикуется на UUID общего профиля и UUID своего инбаунда, и
+после реконсиляции Hosts перечитываются с проверкой этой привязки. Отсутствующий общий
+профиль не создаётся молча — прогон останавливается с объяснением.
 
-**Делаем:**
-- переменные `selfsteal_template` (папка в `sni-templates`), `selfsteal_template_repo`,
-  `selfsteal_template_ref`, `selfsteal_randomize` (default `true`);
-- скачивание архива на **контроллер** (`get_url` + `unarchive` + кэш по ref), не на ноду;
-- мутатор — Python-модуль/filter в `filter_plugins`, не цепочка `sed` в `shell`;
-- **seed рандомизации детерминированный** (`hash(node_id + template + ref)`), иначе
-  каждый прогон меняет сайт и ломает идемпотентность. Смена — только явной переменной;
-- маркер `state/selfsteal-template.json` (шаблон, ref, seed) → пересборка только при
-  смене входных данных или `selfsteal_refresh_content=true`;
-- fallback на встроенный `index.html.j2` с предупреждением в отчёте, как в bash.
+**Идемпотентность.** Второй прогон панельной роли давал `changed=2` и до этого не
+проверялся ни разу. Причины: тестовый плейбук перезаписывал `.env`, который роль пишет
+сама; `activeInbounds` и `nodes` панель возвращает объектами, а сравнивались они со
+строками UUID; `port` уходил в payload строкой. Исправлено, второй прогон даёт
+`changed=0` и в обычном, и в bridge-сценарии.
 
-**Тесты:** unit на мутатор (детерминированность при одном seed, различие при разных,
-валидность HTML), `render_templates.yml`, проверка в `node_verify`, что публичная
-страница не равна встроенному stub.
+**Bootstrap.** Роль `node_bootstrap` и `playbooks/bootstrap.yml`: доверие host key,
+python3 через `raw`, создание `deployer` с ключом контроллера и sudo без пароля, затем
+отдельный play, который заходит уже этим аккаунтом и проверяет, что escalation работает.
+sshd не трогает — им владеет `node_base`.
 
-### 1.2. Аудит сертификатной цепочки
+**Минимум переменных на ноду.** На новую ноду в inventory нужны три факта:
+`ansible_host`, `node_id`, и домен (если он не выводится из зоны). `node_name`,
+`node_country`, `node_public_ip`, `selfsteal_domain`, тег инбаунда, `host_specs` и
+`selfsteal_virtual_hosts` выводятся в `group_vars`. Отдельный файл-реестр `nodes.yml`
+больше не нужен: `hosts.yml` и есть реестр.
 
-Прочитал `roles/remnawave_node/tasks/certificate.yml`. Логика в целом верная
-(проверка срока через `x509_certificate_info`, `block`/`always` с восстановлением
-nginx, `--keep-until-expiring`), но есть три конкретных проблемы:
+**Реальные адреса убраны из git.** `inventories/test/`, `inventories/local/`,
+`inventories/production/hosts.yml` и `production/group_vars/all/panel.yml` в `.gitignore`,
+в git лежат `*.yml.example`. Пример не может называться `*.example.yml`: Ansible грузит
+любой `.yml` из `group_vars`, и такой файл определял бы реальные переменные — на это есть
+регрессионный тест.
 
-1. **Используется `certbot --standalone` с остановкой nginx**, хотя вся обвязка для
-   webroot уже есть: в `nginx.conf.j2` отдаётся
-   `location ^~ /.well-known/acme-challenge/`, каталог `acme-webroot` создаётся.
-   → Переходим на `--webroot -w`: нет остановки nginx, нет окна, в котором сайт-заглушка
-   не отвечает (а именно в этот момент нода наиболее заметна), проще таймер обновления.
-2. **Нет режима ACME staging.** При отладке на живой VPS легко упереться в лимиты
-   Let's Encrypt (5 неудач в час, 50 сертификатов в неделю на домен). → Переменная
-   `certificate_acme_directory`, в `inventories/test` по умолчанию staging.
-3. **`certificate_mode: cloudflare_dns` бесполезен**, пока зоны на reg.ru. Оставляем
-   как есть, но в документации фиксируем: рабочий режим — `http01`. Полноценный DNS-01
-   для reg.ru потребует не certbot (плагина под reg.ru нет), а acme.sh (`dns_regru`)
-   или manual-hook. Нужен только под wildcard — сейчас не требуется.
+**Тесты.** Общий профиль в mock-панели засеян чужим инбаундом и routing-правилами, тест
+проверяет слияние, сохранность чужого ключа, привязку Host и Node и `changed=0` на втором
+прогоне. Добавлены юнит-тесты новых фильтров и рендер всех трёх транспортов (raw, xhttp,
+grpc-tls). `yamllint`, `ansible-lint` (профиль production), `validate_structure`,
+`render_templates`, три панельных сценария — зелёные.
 
-### 1.3. RKN/DPI hardening — доделать
+---
 
-**Уже есть:** sysctl (`tcp_rfc1337`, syncookies, redirects, `rp_filter`, BBR+fq),
-отключение dccp/sctp/rds/tipc, fail2ban, sshd-конфиг.
+## Осталось
 
-**Нет:** нормализация TTL/hoplimit=128 в postrouting mangle (в bash — таблица
-`inet rknnode`); подавление SSH-баннера (`DebianBanner no`, `Banner none`);
-`icmp_echo_ignore_broadcasts`, `icmp_ignore_bogus_error_responses`,
-`accept_source_route=0`.
+### 1. Decoy-шаблоны: скачивание и рандомизация (приоритет №1)
 
-**Делаем:** флаг `node_rkn_hardening_enabled`, отдельная nft-таблица с `nft -c` и
-systemd-unit, доп. ключи sysctl, проверка баннера в `node_verify`.
+В bash: `fetch_template` (codeload tarball, fallback на git sparse-checkout) и
+`randomize_template` (удаление provenance, случайный brand/title/description, hue-rotate,
+удаление google-fonts, нейтрализация beacon `api.ipify.org`, favicon, cache-busting,
+байтовый шум). В Ansible — только статичный `index.html.j2`: все ноды отдают
+байт-в-байт одинаковую страницу, по её хешу парк связывается в один кластер.
 
-**Риск:** TTL=128 ставится в postrouting **после** Docker NAT. Проверить на Molecule и
-на живой ноде, что не ломается трафик контейнеров и что правило не дублируется при
-повторном прогоне (в bash для этого create-then-delete идиома).
+Делаем: `selfsteal_template`/`selfsteal_template_repo`/`selfsteal_template_ref`/
+`selfsteal_randomize`; скачивание на контроллер с кэшем по ref; мутатор отдельным
+Python-модулем, а не цепочкой `sed`; **seed детерминированный** (`hash(node_id + template
++ ref)`), иначе каждый прогон меняет сайт и ломает идемпотентность; маркер
+`state/selfsteal-template.json`; fallback на встроенный шаблон с предупреждением.
 
-### 1.4. Torrent Blocker (панельный node-plugin)
+### 2. RKN/DPI hardening — доделать
 
-**В bash:** `setup_torrent_blocker` находит/создаёт node-plugin, **копирует текущий
-`pluginConfig` ноды перед переключением**, мержит `.torrentBlocker`
-(`enabled`, `blockDuration`, `ignoreLists.ip/userId`, `includeRuleTags`), PATCH,
-привязка к ноде, затем перечитывает `activePluginUuid` и падает при расхождении.
+Есть: sysctl (`tcp_rfc1337`, syncookies, redirects, `rp_filter`, BBR+fq), отключение
+dccp/sctp/rds/tipc, fail2ban, sshd-политика с проверкой через `sshd -T`.
 
-**В Ansible:** generic-CRUD node-plugin есть, но PATCH перезаписывает `pluginConfig`
-целиком → теряются `webhookUrl`, `rulePlacement` и прочие поля, которых нет в
-объявлении; нет копирования текущего профиля; нет пресета и валидации; жёсткое
-требование ровно одного плагина.
+Нет: нормализация TTL/hoplimit=128 в postrouting mangle (в bash — таблица `inet rknnode`),
+подавление SSH-баннера (`DebianBanner no`, `Banner none`), `icmp_echo_ignore_broadcasts`,
+`icmp_ignore_bogus_error_responses`, `accept_source_route=0`.
 
-**Делаем:** структура `torrent_blocker` → рендер в `plugin_config`; merge поверх
-существующего конфига; копирование текущего профиля при первом создании; assert на
-типы и `kernel >= 5.7` (уже есть); тесты в mock-панели на повторный прогон и сохранение
-чужих полей.
+Риск: TTL=128 ставится после Docker NAT — проверить на Molecule и на живой ноде, что не
+ломается трафик контейнеров и правило не дублируется при повторном прогоне.
 
-### 1.5. XHTTP / gRPC-TLS — реализованы, нужна обвязка
+### 3. Torrent Blocker
 
-**Факт (проверено):** `xray-config.json.j2` поддерживает `raw`, `xhttp` (packet-up,
-path, extra) и `grpc-tls` (listen 127.0.0.1, security none); `nginx.conf.j2` делает
-`grpc_pass`; socket-режим есть.
+В bash `setup_torrent_blocker` копирует текущий `pluginConfig` перед переключением и
+мержит `.torrentBlocker`. В Ansible generic-CRUD node-plugin есть, но PATCH перезаписывает
+`pluginConfig` целиком (теряются `webhookUrl`, `rulePlacement`) и нет копирования текущего
+профиля. Делаем структуру `torrent_blocker` с merge-семантикой и тестом в mock-панели.
 
-**Нет:** валидации портов (в bash `xhttp_port_reserved` запрещает коллизии с
-80/443/NODE_PORT/selfsteal/SSH/45876); проверок в `node_verify`; примеров в inventory;
-рендер-тестов. Основной протокол — raw/Reality, поэтому это дешёвая страховка, а не
-приоритет: делаем после 1.1–1.4.
+### 4. XHTTP / gRPC-TLS — обвязка
 
-### 1.6. Sysctl/лимиты из `optimize`
+Шаблоны уже поддерживают `raw`, `xhttp` и `grpc-tls`, рендер всех трёх покрыт тестом.
+Осталось: валидация портов (в bash `xhttp_port_reserved` запрещает коллизии с
+80/443/NODE_PORT/selfsteal/SSH/45876), ветки в `node_verify`, примеры в inventory,
+описание режима `both`.
+
+### 5. Sysctl и лимиты из `optimize`
 
 Сверить с текущим `node_sysctl` и добавить недостающее: `somaxconn`,
-`netdev_max_backlog`, `nf_conntrack_max`, `fs.file-max`, `nofile` для docker-сервиса.
+`netdev_max_backlog`, `nf_conntrack_max`, `fs.file-max`, `nofile` для docker.
 
----
-
-## Этап 2. Операционные плейбуки
-
-Сейчас есть только `install_node.yml`.
+### 6. Операционные плейбуки
 
 | Плейбук | Назначение |
 |---|---|
-| `bootstrap.yml` | свежая VPS: root+пароль → `deployer` с ключом и NOPASSWD sudo, python3, `known_hosts`, отключение парольного входа. **Делаем первым** — без него любой тест начинается с ручного SSH |
 | `update_node.yml` | обновление образа RemnaNode/Xray/geodata, `serial: 1`, проверка после каждой ноды |
 | `rotate_keys.yml` | явная и раздельная ротация Reality-ключей, `SECRET_KEY`, bridge-секрета |
 | `replace_node.yml` | замена при блокировке: новая нода → установка → перенос `host_specs` → старая в decommission |
 | `decommission.yml` | снять Hosts, удалить Node из панели, погасить сервисы |
-| `healthcheck.yml` | только `node_verify`, для регулярного прогона по парку |
+| `healthcheck.yml` | только `node_verify`, регулярный прогон по парку |
 | `uninstall.yml` | паритет с `cmd_uninstall` из bash-CLI |
 
----
+`replace_node.yml` уже опирается на готовый механизм: `inbound_prune_tags` убирает из
+общего профиля инбаунд, который нода больше не обслуживает.
 
-## Этап 3. Реестр нод вместо Terraform
+### 7. DNS: reg.ru
 
-Один файл `nodes.yml` — источник истины. На ноду задаём только уникальное: `node_id`,
-страна, провайдер, регион, публичный IP, домен, роль. Выводим: `node_name` (счётчик по
-стране — логика `panel_next_sequence` из bash; панель одна, но номер всё равно берём из
-реестра, чтобы имя не зависело от порядка запуска), `profile_name`, тег инбаунда,
-`host_specs`, `selfsteal_virtual_hosts`.
+API: `https://api.reg.ru/api/regru2`, методы `zone/*` — `zone/add_alias` (A-запись),
+`zone/add_aaaa`, `zone/add_txt`, `zone/remove_record`, `zone/get_resource_records`.
+Авторизация логином и паролем аккаунта (либо отдельным API-паролем); нужно включить API в
+личном кабинете и внести IP контроллера в белый список. Имена методов и лимиты сверяем с
+документацией при реализации.
 
-Панель одна → `remnawave_panel_url`/`remnawave_panel_token` переезжают в
-`group_vars/all`, из `remnawave_nodes.yml` уходят.
+Делаем роль `dns` (`dns_provider: regru|none`) с одной идемпотентной задачей «A-запись
+домена = `node_public_ip`», запуск **до** preflight — сейчас preflight падает, если записи
+нет. Пароль только в vault, задачи с `no_log: true`. Сертификаты остаются на `http01`,
+для ACME reg.ru не нужен.
 
-Сейчас на ноду копируется ~40 строк YAML, из которых уникальны 6.
+### 8. august-routing-updater — отдельный плейбук
 
----
+Updater общается только с API панели (Response Rules, заголовок `routing` по User-Agent),
+тянет JSONSUB-профили RoscomVPN для HAPP и INCY, крутится на хосте subscription page. К
+нодам отношения не имеет и в `install_node.yml` не попадает — иначе N нод станут N
+ежедневными писателями в один ресурс панели. Делаем роль `routing_updater` +
+`playbooks/routing_updater.yml` + группу `subscription_page`, с сохранением текущего
+hardening unit'а и токеном из vault.
 
-## Этап 4. DNS: reg.ru
+### 9. Тест на живой ноде
 
-API: база `https://api.reg.ru/api/regru2`, методы группы `zone/*` —
-`zone/add_alias` (A-запись), `zone/add_aaaa`, `zone/add_txt`, `zone/remove_record`,
-`zone/get_resource_records`. Авторизация логином и паролем аккаунта (либо отдельным
-API-паролем); нужно включить доступ к API в личном кабинете и внести IP контроллера в
-белый список. Точные имена методов и лимиты сверяем с документацией при реализации.
-
-**Делаем:** роль `dns` с абстракцией `dns_provider: regru|none` и одной идемпотентной
-задачей «A-запись домена = `node_public_ip`» (`get_resource_records` → сравнение →
-`add_alias`/`remove_record`), запуск **до** preflight (сейчас preflight падает, если
-записи нет). Пароль только в vault, все задачи `no_log: true`.
-
-Сертификаты остаются на `http01` — reg.ru для ACME не нужен.
-
----
-
-## Этап 5. august-routing-updater — отдельный плейбук, не часть установки ноды
-
-Разобрал: updater общается **только с API панели** (Response Rules / заголовок
-`routing` по User-Agent), тянет JSONSUB-профили RoscomVPN для HAPP и INCY
-(`hydraponique/roscomvpn-routing`), проверяет структуру и доступность
-`geoip.dat`/`geosite.dat`, сохраняет чужие Response Rules, при ошибке не меняет ничего.
-Таймер — раз в сутки 04:20 UTC с разбросом 2 часа. Крутится на хосте subscription page.
-
-**Вывод:** к нодам он отношения не имеет и в `install_node.yml` попадать не должен —
-иначе N нод станут N ежедневными писателями в один и тот же ресурс панели.
-
-**Делаем:** роль `routing_updater` + `playbooks/routing_updater.yml`, группа inventory
-`subscription_page` (один хост). Шаблонами: `/opt/august-routing-updater/*.py`, unit,
-timer, `/etc/august-routing-updater.env`, токен в отдельном файле `0600` из vault.
-Сохранить текущий hardening unit'а (`ProtectSystem=strict`, `NoNewPrivileges`,
-`UMask=0077`, `ReadOnlyPaths`). Прогон `--check`-режима скрипта в `node_verify`-стиле:
-после установки один раз запустить без `--apply` и убедиться, что профили валидны.
+Molecule и панельные сценарии зелёные, но ни одна строка ещё не проверялась на реальной
+системе. Порядок: CI зелёный → тестовая VPS и тестовая панель по `TESTING.ru.md` с
+`certificate_acme_environment: staging` → правки → прод.
 
 ---
 
-## Этап 6. Тест на живой ноде
-
-1. Зелёные `yamllint` / `ansible-lint` / unit / mock-панель / Molecule — сейчас CI ни
-   разу не гонялся.
-2. Тестовая VPS + тестовая панель по `TESTING.ru.md` (15 разделов: preflight,
-   восстановление после прерванной установки, два строгих прогона с `changed=0`,
-   VPN E2E, bridge, проверка логов на утечку секретов). ACME — staging (п. 1.2).
-3. Правки по результатам → прод.
-
-До этого шага ни одна строка Ansible не проверялась на реальной системе.
-
----
-
-## Бэклог (не входит в текущий объём)
+## Бэклог
 
 - **Front-gate (`--front-ip`)** — таблица `inet mirror_gate`, 443 только с адресов фронта.
 - **Роль `sni_mirror`** (`install-mirror.sh`) — nginx stream + `ssl_preread`, свой SNI →
   backend:443, неизвестный SNI → reset, open relay только по явному флагу. Обе связки
   (`front_ips` на бэкенде и `backend_ip`/`sni` на фронте) обязаны выводиться из одной
-  записи реестра, иначе при замене фронта нода станет недоступной.
-- **CrowdSec** — см. решение ниже: не ставим по умолчанию.
+  записи inventory, иначе при замене фронта нода станет недоступной.
 - **`node-accelerator` как внешний вызов** — не портируем. Своя таблица
   `remnawave_filter` с `nft -c` и таймером откатa функционально заменяет `na_filter` и
   safety-timer; запуск чужого bash-инсталлятора из Ansible запрещён ТЗ и создаёт двух
-  владельцев firewall. В README зафиксировать, что на нодах, миграированных с bash,
-  `na_filter` нужно снять, иначе будет два набора правил.
+  владельцев firewall. На нодах, миграированных с bash, `na_filter` нужно снять, иначе
+  будет два набора правил.

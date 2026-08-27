@@ -92,13 +92,16 @@ ansible-lint --offline
 
 ## 4. Отдельный test inventory
 
+`inventories/test/` целиком в `.gitignore`: в нём реальные IP, домены и URL панели, которым нельзя попадать в публичный репозиторий. Для тестовых прогонов ставьте `certificate_acme_environment: staging`, иначе повторные попытки упрутся в лимиты Let's Encrypt.
+
 Не подставляйте реальные значения в staging-пример. Создайте отдельный inventory:
 
 ```bash
 mkdir -p inventories/test/group_vars/all
 cp inventories/staging/hosts.yml inventories/test/hosts.yml
+cp inventories/staging/group_vars/all/panel.yml inventories/test/group_vars/all/panel.yml
 cp inventories/staging/group_vars/remnawave_nodes.yml inventories/test/group_vars/remnawave_nodes.yml
-cp inventories/staging/group_vars/all/vault.example.yml inventories/test/group_vars/all/vault.yml
+cp inventories/staging/group_vars/all/vault.yml.example inventories/test/group_vars/all/vault.yml
 ansible-vault encrypt inventories/test/group_vars/all/vault.yml
 ansible-vault edit inventories/test/group_vars/all/vault.yml
 ```
