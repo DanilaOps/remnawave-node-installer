@@ -45,6 +45,26 @@ acme_email: ""
 cloudflare_token: ""
 cloudflare_credentials_path: /etc/letsencrypt/cloudflare.ini
 
+# ACME environment. staging issues untrusted certificates from Let's Encrypt's
+# staging CA and does not consume the production rate limits, so repeated test
+# runs cannot lock a domain out for a week. Switching between environments is
+# detected from the certificate issuer and forces a clean re-issue.
+certificate_acme_environment: production
+certificate_acme_directories:
+  staging: https://acme-staging-v02.api.letsencrypt.org/directory
+  production: https://acme-v02.api.letsencrypt.org/directory
+certificate_acme_directory: ""
+remnawave_acme_directory: >-
+  {{ certificate_acme_directory
+     if certificate_acme_directory | length > 0
+     else certificate_acme_directories[certificate_acme_environment] }}
+certificate_force_reissue: false
+
+# HTTP-01 is answered from this directory, which nginx serves at
+# /.well-known/acme-challenge/. Certbot writes here while nginx keeps running,
+# so issuance and renewal never take the decoy site offline.
+certificate_webroot_path: "{{ remnawave_install_root }}/acme-webroot"
+
 geodata_enabled: false
 geodata_update_enabled: false
 geodata_update_calendar: "*-*-* 03:00:00"

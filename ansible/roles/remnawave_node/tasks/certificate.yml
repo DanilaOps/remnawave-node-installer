@@ -13,9 +13,12 @@
       - certificate_mode != 'cloudflare_dns' or cloudflare_token | length > 0
       - certificate_renew_before_days | int >= 1
       - certificate_renew_before_days | int <= 30
+      - certificate_acme_environment in certificate_acme_directories
+      - remnawave_acme_directory is match('^https://')
     fail_msg: >-
       ACME email, domains and DNS credentials for the selected mode are required;
-      certificate_renew_before_days must be between 1 and Certbot's standard 30-day renewal window.
+      certificate_renew_before_days must be between 1 and Certbot's standard 30-day renewal
+      window, and certificate_acme_environment must be staging or production.
   no_log: true
 
 - name: Install Cloudflare DNS Certbot plugin
@@ -35,12 +38,21 @@
   no_log: true
   when: certificate_mode == 'cloudflare_dns'
 
+- name: Create the HTTP-01 webroot served by nginx
+  ansible.builtin.file:
+    path: "{{ certificate_webroot_path }}/.well-known/acme-challenge"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  when: certificate_mode == 'http01'
+
 - name: Check existing certificate
   ansible.builtin.stat:
     path: "/etc/letsencrypt/live/{{ certificate_name }}/fullchain.pem"
   register: remnawave_certificate_file
 
-- name: Inspect existing certificate validity
+- name: Inspect existing certificate validity and issuer
   community.crypto.x509_certificate_info:
     path: "/etc/letsencrypt/live/{{ certificate_name }}/fullchain.pem"
     valid_at:
@@ -48,16 +60,40 @@
   register: remnawave_certificate_info
   when: remnawave_certificate_file.stat.exists
 
+- name: Classify the existing certificate against the requested ACME environment
+  ansible.builtin.set_fact:
+    remnawave_certificate_environment_mismatch: >-
+      {{ remnawave_certificate_file.stat.exists and
+         ((remnawave_certificate_info.issuer.organizationName | default('') ~ ' ' ~
+           remnawave_certificate_info.issuer.commonName | default('')) is search('(?i)staging'))
+         != (certificate_acme_environment == 'staging') }}
+
 - name: Decide whether certificate issuance is required
   ansible.builtin.set_fact:
     remnawave_certificate_needs_issue: >-
       {{ not remnawave_certificate_file.stat.exists or
-         not remnawave_certificate_info.valid_at.renewal_threshold | default(false) }}
+         not remnawave_certificate_info.valid_at.renewal_threshold | default(false) or
+         remnawave_certificate_environment_mismatch | bool or
+         certificate_force_reissue | bool }}
 
-- name: Inspect existing nginx container before standalone ACME
+- name: Inspect the nginx container before choosing an ACME authenticator
   community.docker.docker_container_info:
     name: "{{ remnawave_nginx_container }}"
   register: remnawave_nginx_before_acme
+  when:
+    - remnawave_certificate_needs_issue | bool
+    - certificate_mode == 'http01'
+
+- name: Choose the ACME authenticator
+  ansible.builtin.set_fact:
+    # A running nginx already answers /.well-known/acme-challenge/ from the shared
+    # webroot, so HTTP-01 is served without touching it. Standalone is used only
+    # when nginx is not running yet, which is the very first installation - there
+    # is nothing to interrupt in that case either.
+    remnawave_certificate_authenticator: >-
+      {{ 'webroot'
+         if (remnawave_nginx_before_acme.container.State.Running | default(false))
+         else 'standalone' }}
   when:
     - remnawave_certificate_needs_issue | bool
     - certificate_mode == 'http01'
@@ -66,41 +102,28 @@
   ansible.builtin.set_fact:
     remnawave_certbot_argv: >-
       {{ ['certbot', 'certonly', '--non-interactive', '--agree-tos', '--keep-until-expiring',
+          '--server', remnawave_acme_directory,
           '--email', acme_email, '--cert-name', certificate_name]
-         + (['--standalone', '--preferred-challenges', 'http'] if certificate_mode == 'http01' else
+         + (['--webroot', '--webroot-path', certificate_webroot_path]
+            if certificate_mode == 'http01' and remnawave_certificate_authenticator == 'webroot' else
+            ['--standalone', '--preferred-challenges', 'http']
+            if certificate_mode == 'http01' else
             ['--dns-cloudflare', '--dns-cloudflare-credentials', cloudflare_credentials_path,
              '--dns-cloudflare-propagation-seconds', certificate_dns_propagation_seconds | string])
+         + (['--force-renewal']
+            if remnawave_certificate_environment_mismatch | bool or certificate_force_reissue | bool
+            else [])
          + (remnawave_certificate_domains | map('regex_replace', '^(.*)$', '-d=\\1') | list) }}
   when: remnawave_certificate_needs_issue | bool
 
-- name: Issue or renew the selfsteal certificate safely
+- name: Issue or renew the selfsteal certificate without stopping nginx
+  ansible.builtin.command:
+    argv: "{{ remnawave_certbot_argv }}"
+  register: remnawave_certbot_result
+  changed_when: "'Certificate not yet due for renewal' not in remnawave_certbot_result.stdout"
+  no_log: "{{ certificate_mode == 'cloudflare_dns' }}"
   when: remnawave_certificate_needs_issue | bool
-  block:
-    - name: Stop nginx only while standalone ACME owns port 80
-      community.docker.docker_container:
-        name: "{{ remnawave_nginx_container }}"
-        state: stopped
-      when:
-        - certificate_mode == 'http01'
-        - remnawave_nginx_before_acme.exists | default(false)
-        - remnawave_nginx_before_acme.container.State.Running | default(false)
-
-    - name: Run bounded Certbot issuance
-      ansible.builtin.command:
-        argv: "{{ remnawave_certbot_argv }}"
-      register: remnawave_certbot_result
-      changed_when: "'Certificate not yet due for renewal' not in remnawave_certbot_result.stdout"
-      no_log: "{{ certificate_mode == 'cloudflare_dns' }}"
-
-  always:
-    - name: Restore nginx after standalone ACME
-      community.docker.docker_container:
-        name: "{{ remnawave_nginx_container }}"
-        state: started
-      when:
-        - certificate_mode == 'http01'
-        - remnawave_nginx_before_acme.exists | default(false)
-        - remnawave_nginx_before_acme.container.State.Running | default(false)
+  notify: Reload selfsteal nginx
 
 - name: Verify certificate and private key exist
   ansible.builtin.stat:
@@ -110,3 +133,23 @@
     - "/etc/letsencrypt/live/{{ certificate_name }}/privkey.pem"
   register: remnawave_certificate_artifacts
   failed_when: not remnawave_certificate_artifacts.stat.exists
+
+- name: Re-inspect the certificate after issuance
+  community.crypto.x509_certificate_info:
+    path: "/etc/letsencrypt/live/{{ certificate_name }}/fullchain.pem"
+  register: remnawave_certificate_final
+  when: remnawave_certificate_needs_issue | bool
+
+- name: Require the installed certificate to match the requested ACME environment
+  ansible.builtin.assert:
+    that:
+      - >-
+        ((remnawave_certificate_final.issuer.organizationName | default('') ~ ' ' ~
+          remnawave_certificate_final.issuer.commonName | default('')) is search('(?i)staging'))
+        == (certificate_acme_environment == 'staging')
+    fail_msg: >-
+      The installed certificate for {{ certificate_name }} was issued by
+      '{{ remnawave_certificate_final.issuer.commonName | default('unknown') }}', which does not
+      match certificate_acme_environment={{ certificate_acme_environment }}. A staging
+      certificate is not trusted by clients and must never reach production.
+  when: remnawave_certificate_needs_issue | bool

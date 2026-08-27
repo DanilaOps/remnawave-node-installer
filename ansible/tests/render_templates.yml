@@ -41,6 +41,8 @@
     certificate_name: node-de-01.example.com
     certificate_mode: http01
     certificate_renew_before_days: 30
+    certificate_webroot_path: /opt/remnawave-node/acme-webroot
+    remnawave_acme_directory: https://acme-v02.api.letsencrypt.org/directory
     node_firewall_table: remnawave_filter_test
     management_cidrs: [203.0.113.1/32]
     remnawave_panel_cidrs: [203.0.113.2/32]
@@ -66,6 +68,37 @@
           - rendered_xray.inbounds[0].streamSettings.security == 'reality'
           - rendered_xray.inbounds[0].streamSettings.realitySettings.target == '127.0.0.1:9443'
           - rendered_xray.inbounds[0].settings.clients | length == 0
+
+    - name: Render the inbound array for every supported transport
+      ansible.builtin.set_fact:
+        rendered_transports: >-
+          {{ lookup('template', playbook_dir ~ '/../roles/remnawave_panel/templates/inbounds.json.j2')
+             | from_json }}
+      vars:
+        inbound_specs:
+          - tag: DE_01_REALITY
+            port: 443
+            network: raw
+          - tag: DE_01_XHTTP
+            port: 8443
+            network: xhttp
+          - tag: DE_01_GRPC
+            port: 9444
+            network: grpc-tls
+            service_name: grpc
+      no_log: true
+
+    - name: Validate transport-specific invariants
+      ansible.builtin.assert:
+        that:
+          - rendered_transports | length == 3
+          - rendered_transports[0].streamSettings.network == 'raw'
+          - rendered_transports[1].streamSettings.network == 'xhttp'
+          - rendered_transports[1].streamSettings.xhttpSettings.path == '/api/v1/update'
+          - rendered_transports[1].streamSettings.security == 'reality'
+          - rendered_transports[2].streamSettings.network == 'grpc'
+          - rendered_transports[2].streamSettings.security == 'none'
+          - rendered_transports[2].listen == '127.0.0.1'
 
     - name: Store rendered Xray profile for executable validation
       ansible.builtin.copy:
@@ -96,6 +129,19 @@
       ansible.builtin.command:
         argv: [sh, -n, /tmp/remnawave-cert-renew-test.sh]
       changed_when: false
+
+    - name: Read the rendered renewal helper
+      ansible.builtin.slurp:
+        src: /tmp/remnawave-cert-renew-test.sh
+      register: rendered_renew
+
+    - name: Require renewal to use the webroot and leave nginx running
+      ansible.builtin.assert:
+        that:
+          - "'--webroot --webroot-path' in (rendered_renew.content | b64decode)"
+          - "'/opt/remnawave-node/acme-webroot' in (rendered_renew.content | b64decode)"
+          - "'docker stop' not in (rendered_renew.content | b64decode)"
+        fail_msg: Renewal must answer HTTP-01 from the webroot without stopping nginx.
 
     - name: Render nftables template
       ansible.builtin.template:

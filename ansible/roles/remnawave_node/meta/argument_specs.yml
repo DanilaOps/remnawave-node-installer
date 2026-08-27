@@ -29,6 +29,19 @@ argument_specs:
       certificate_mode:
         type: str
         choices: [http01, cloudflare_dns]
+      certificate_acme_environment:
+        type: str
+        choices: [staging, production]
+        description: staging uses the Let's Encrypt test CA and avoids production rate limits.
+      certificate_acme_directory:
+        type: str
+        description: Explicit ACME directory URL; overrides certificate_acme_environment.
+      certificate_webroot_path:
+        type: path
+        description: Directory nginx serves at /.well-known/acme-challenge/ for HTTP-01.
+      certificate_force_reissue:
+        type: bool
+        description: One-run switch that re-issues a certificate that is still valid.
       geodata_files:
         type: list
         elements: dict

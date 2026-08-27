@@ -35,13 +35,37 @@ class ProductionRegressionTests(unittest.TestCase):
         self.assertIn("Recreate selfsteal nginx", handlers)
         self.assertIn("recreate: always", handlers)
 
-    def test_certificate_timer_does_not_stop_nginx_unconditionally(self) -> None:
+    def test_certificate_renewal_never_stops_nginx(self) -> None:
         service = self.read("roles/remnawave_node/templates/remnawave-cert-renew.service.j2")
         helper = self.read("roles/remnawave_node/templates/remnawave-cert-renew.sh.j2")
         self.assertNotIn("ExecStartPre", service)
         self.assertNotIn("ExecStartPost", service)
+        # Renewal stays idle outside the window and answers HTTP-01 from the
+        # webroot nginx already serves, so the decoy site is never taken down.
         self.assertIn("openssl x509 -checkend", helper)
-        self.assertIn("trap restore_nginx", helper)
+        self.assertIn("--webroot --webroot-path", helper)
+        self.assertNotIn("docker stop", helper)
+
+    def test_certificate_issuance_prefers_webroot_over_stopping_nginx(self) -> None:
+        tasks = self.read("roles/remnawave_node/tasks/certificate.yml")
+        self.assertNotIn("state: stopped", tasks)
+        self.assertIn("remnawave_certificate_authenticator", tasks)
+        # Standalone is only reachable when nginx is not running yet.
+        self.assertIn(
+            "{{ 'webroot'\n         if (remnawave_nginx_before_acme.container.State.Running",
+            tasks,
+        )
+
+    def test_acme_environment_switch_forces_a_clean_reissue(self) -> None:
+        defaults = yaml.safe_load(self.read("roles/remnawave_node/defaults/main.yml"))
+        tasks = self.read("roles/remnawave_node/tasks/certificate.yml")
+        self.assertEqual(defaults["certificate_acme_environment"], "production")
+        self.assertIn("staging", defaults["certificate_acme_directories"])
+        self.assertIn("acme-staging-v02", defaults["certificate_acme_directories"]["staging"])
+        self.assertIn("remnawave_certificate_environment_mismatch", tasks)
+        self.assertIn("--force-renewal", tasks)
+        self.assertIn("Require the installed certificate to match", tasks)
+
 
     def test_bridge_patch_uses_supported_user_identity(self) -> None:
         bridge = self.read("roles/remnawave_panel/tasks/bridge_user.yml")
