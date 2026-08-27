@@ -19,7 +19,10 @@
     remnawave_node_image: ghcr.io/remnawave/node:3.3.2
     remnawave_node_port: 2222
     remnawave_validate_xray_profile: false
-    profile_name: MOCK-01
+    profile_name: Default August
+    config_profile_mode: shared
+    config_profile_create: false
+    config_profile_require_routing: true
     inbound_specs:
       - tag: MOCK_01_REALITY
         port: 443
@@ -45,10 +48,3 @@
     xhttp_extra_params: {}
   roles:
     - role: remnawave_panel
-  post_tasks:
-    - name: Persist the generated node identity as the node role would
-      ansible.builtin.copy:
-        content: "SECRET_KEY={{ remnawave_node_secret_key }}\n"
-        dest: "{{ test_node_env_path }}"
-        mode: "0600"
-      no_log: true

@@ -6,7 +6,6 @@ state="$(mktemp)"
 first="$(mktemp)"
 second="$(mktemp)"
 node_env="$(mktemp)"
-rm -f "$state"
 rm -f "$node_env"
 
 cleanup() {
@@ -14,6 +13,10 @@ cleanup() {
   rm -f "$state" "$first" "$second" "$node_env"
 }
 trap cleanup EXIT
+
+# The shared "Default August" profile already exists in production and carries
+# the routing, so the test starts from that state instead of an empty panel.
+python "$root/tests/seed_shared_profile.py" "$state"
 
 python "$root/tests/mock_panel.py" --state "$state" &
 server_pid=$!
@@ -35,11 +38,58 @@ grep -Eq 'changed=0([[:space:]]|$)' "$second" || {
   exit 1
 }
 
-python - "$state" <<'PY'
+python - "$state" "$root/tests" <<'PY'
 import json
 import pathlib
 import sys
 
+sys.path.insert(0, sys.argv[2])
+
+from seed_shared_profile import (
+    FOREIGN_INBOUND_UUID,
+    FOREIGN_PRIVATE_KEY,
+    PROFILE_UUID,
+)
+
 state = json.loads(pathlib.Path(sys.argv[1]).read_text())
-assert state["keygen_calls"] == 1, state
+
+assert state["keygen_calls"] == 1, state["keygen_calls"]
+
+profiles = state["profiles"]
+assert len(profiles) == 1, "the shared profile must not be duplicated"
+profile = profiles[0]
+assert profile["uuid"] == PROFILE_UUID, profile["uuid"]
+assert profile["name"] == "Default August", profile["name"]
+
+config = profile["config"]
+rules = config["routing"]["rules"]
+assert len(rules) == 2, f"routing was modified: {rules}"
+assert config["outbounds"] == [{"tag": "DIRECT", "protocol": "freedom"}], config["outbounds"]
+
+inbounds = {inbound["tag"]: inbound for inbound in config["inbounds"]}
+assert set(inbounds) == {"OTHER_NODE_REALITY", "MOCK_01_REALITY"}, set(inbounds)
+
+foreign = inbounds["OTHER_NODE_REALITY"]
+assert foreign["uuid"] == FOREIGN_INBOUND_UUID, "the foreign inbound lost its identity"
+foreign_reality = foreign["streamSettings"]["realitySettings"]
+assert foreign_reality["privateKey"] == FOREIGN_PRIVATE_KEY, "foreign Reality key was rewritten"
+assert foreign_reality["serverNames"] == ["other.example.test"], foreign_reality["serverNames"]
+
+managed = inbounds["MOCK_01_REALITY"]
+managed_reality = managed["streamSettings"]["realitySettings"]
+assert managed_reality["privateKey"] != FOREIGN_PRIVATE_KEY, "adopted another node's Reality key"
+assert managed_reality["serverNames"] == ["node.example.test"], managed_reality["serverNames"]
+
+hosts = state["hosts"]
+assert len(hosts) == 1, hosts
+assert hosts[0]["inbound"]["configProfileUuid"] == PROFILE_UUID, hosts[0]["inbound"]
+assert hosts[0]["inbound"]["configProfileInboundUuid"] == managed["uuid"], hosts[0]["inbound"]
+
+nodes = state["nodes"]
+assert len(nodes) == 1, nodes
+active = nodes[0]["configProfile"]
+assert active["activeConfigProfileUuid"] == PROFILE_UUID, active
+assert active["activeInbounds"] == [managed["uuid"]], active
+
+print("Shared profile merge, Host binding and Node activation are correct.")
 PY

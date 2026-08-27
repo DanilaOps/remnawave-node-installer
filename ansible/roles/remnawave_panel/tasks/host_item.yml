@@ -59,11 +59,16 @@
       - remnawave_host_matches | length <= 1
     fail_msg: "Multiple Hosts match {{ remnawave_host_spec.remark }} at {{ remnawave_host_spec.address }}."
 
+- name: Normalize the Host returned by Panel for comparison
+  ansible.builtin.set_fact:
+    remnawave_host_actual: >-
+      {{ remnawave_host_matches[0] | default({}) | remnawave_normalize_host_links }}
+
 - name: Determine Host change
   ansible.builtin.set_fact:
     remnawave_host_needs_update: >-
       {{ remnawave_host_matches | length == 0 or
-         not (remnawave_desired_host | remnawave_is_subset(remnawave_host_matches[0] | default({}), ['uuid'])) }}
+         not (remnawave_desired_host | remnawave_is_subset(remnawave_host_actual, ['uuid'])) }}
 
 - name: Create Host
   ansible.builtin.uri:

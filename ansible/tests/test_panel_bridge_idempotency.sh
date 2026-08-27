@@ -6,13 +6,15 @@ state="$(mktemp)"
 first="$(mktemp)"
 second="$(mktemp)"
 node_env="$(mktemp)"
-rm -f "$state" "$node_env"
+rm -f "$node_env"
 
 cleanup() {
   kill "${server_pid:-}" 2>/dev/null || true
   rm -f "$state" "$first" "$second" "$node_env"
 }
 trap cleanup EXIT
+
+python "$root/tests/seed_shared_profile.py" "$state"
 
 python "$root/tests/mock_panel.py" --port 18082 --state "$state" &
 server_pid=$!

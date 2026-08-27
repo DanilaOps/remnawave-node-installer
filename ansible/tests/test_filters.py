@@ -93,5 +93,113 @@ class RemnawaveFilterTests(unittest.TestCase):
         )
 
 
+class SharedProfileMergeTests(unittest.TestCase):
+    def shared_config(self) -> dict:
+        return {
+            "inbounds": [
+                {
+                    "uuid": "foreign-uuid",
+                    "tag": "OTHER_REALITY",
+                    "streamSettings": {
+                        "realitySettings": {"privateKey": "foreign-key"}
+                    },
+                }
+            ],
+            "outbounds": [{"tag": "DIRECT", "protocol": "freedom"}],
+            "routing": {"rules": [{"type": "field", "outboundTag": "DIRECT"}]},
+        }
+
+    def test_upsert_appends_without_touching_the_rest(self) -> None:
+        config = self.shared_config()
+        merged = MODULE.remnawave_upsert_inbounds(
+            config, [{"tag": "DE_REALITY", "port": 443}]
+        )
+        self.assertEqual(
+            [inbound["tag"] for inbound in merged["inbounds"]],
+            ["OTHER_REALITY", "DE_REALITY"],
+        )
+        self.assertEqual(merged["routing"], config["routing"])
+        self.assertEqual(merged["outbounds"], config["outbounds"])
+        # The source config must not be mutated in place.
+        self.assertEqual(len(config["inbounds"]), 1)
+
+    def test_upsert_replaces_by_tag_and_keeps_panel_uuid(self) -> None:
+        config = self.shared_config()
+        config["inbounds"].append({"uuid": "managed-uuid", "tag": "DE_REALITY", "port": 443})
+        merged = MODULE.remnawave_upsert_inbounds(
+            config, [{"tag": "DE_REALITY", "port": 8443}]
+        )
+        managed = [i for i in merged["inbounds"] if i["tag"] == "DE_REALITY"][0]
+        self.assertEqual(managed["port"], 8443)
+        self.assertEqual(managed["uuid"], "managed-uuid")
+        self.assertEqual(len(merged["inbounds"]), 2)
+
+    def test_upsert_prunes_only_declared_stale_tags(self) -> None:
+        config = self.shared_config()
+        config["inbounds"].append({"tag": "OLD_REALITY", "port": 443})
+        merged = MODULE.remnawave_upsert_inbounds(
+            config, [{"tag": "DE_REALITY", "port": 443}], ["OLD_REALITY"]
+        )
+        tags = [inbound["tag"] for inbound in merged["inbounds"]]
+        self.assertEqual(tags, ["OTHER_REALITY", "DE_REALITY"])
+
+    def test_upsert_rejects_untagged_inbound(self) -> None:
+        with self.assertRaises(Exception):
+            MODULE.remnawave_upsert_inbounds(self.shared_config(), [{"port": 443}])
+
+    def test_reality_settings_scoped_to_managed_tags(self) -> None:
+        config = self.shared_config()
+        config["inbounds"].append(
+            {
+                "tag": "DE_REALITY",
+                "streamSettings": {"realitySettings": {"privateKey": "own-key"}},
+            }
+        )
+        self.assertEqual(
+            MODULE.remnawave_reality_settings(config, ["DE_REALITY"])["privateKey"],
+            "own-key",
+        )
+        self.assertEqual(
+            MODULE.remnawave_reality_settings(config, ["MISSING"]),
+            {},
+        )
+        # Without a tag filter the first Reality inbound still wins.
+        self.assertEqual(
+            MODULE.remnawave_reality_settings(config)["privateKey"], "foreign-key"
+        )
+
+    def test_strip_inbound_uuids(self) -> None:
+        stripped = MODULE.remnawave_strip_inbound_uuids(self.shared_config())
+        self.assertNotIn("uuid", stripped["inbounds"][0])
+        self.assertIn("routing", stripped)
+
+    def test_normalize_node_links(self) -> None:
+        node = {
+            "name": "DE-01",
+            "configProfile": {
+                "activeConfigProfileUuid": "profile-uuid",
+                "activeInbounds": [{"uuid": "inbound-uuid", "tag": "DE_REALITY"}],
+            },
+        }
+        normalized = MODULE.remnawave_normalize_node_links(node)
+        self.assertEqual(
+            normalized["configProfile"]["activeInbounds"], ["inbound-uuid"]
+        )
+        desired = {
+            "name": "DE-01",
+            "configProfile": {
+                "activeConfigProfileUuid": "profile-uuid",
+                "activeInbounds": ["inbound-uuid"],
+            },
+        }
+        self.assertTrue(MODULE.remnawave_is_subset(desired, normalized))
+
+    def test_normalize_host_links(self) -> None:
+        host = {"remark": "DE", "nodes": [{"uuid": "node-uuid"}]}
+        self.assertEqual(
+            MODULE.remnawave_normalize_host_links(host)["nodes"], ["node-uuid"]
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

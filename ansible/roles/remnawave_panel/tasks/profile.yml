@@ -1,4 +1,19 @@
 ---
+- name: Validate Config Profile mode
+  ansible.builtin.assert:
+    that:
+      - config_profile_mode in ['shared', 'per_node']
+      - profile_name | length > 0 or profile_uuid | length > 0
+    fail_msg: >-
+      config_profile_mode must be 'shared' (all nodes share one Xray profile that carries
+      the routing) or 'per_node', and the profile must be identified by name or UUID.
+
+- name: Collect the inbound tags this node manages
+  ansible.builtin.set_fact:
+    remnawave_managed_inbound_tags: >-
+      {{ (inbound_specs | map(attribute='tag') | list) +
+         ([bridge_spec.tag] if bridge_spec.enabled | default(false) | bool else []) }}
+
 - name: List Config Profiles
   ansible.builtin.uri:
     url: "{{ remnawave_api_base }}/config-profiles"
@@ -35,8 +50,20 @@
   ansible.builtin.set_fact:
     remnawave_foreign_profile_owners: >-
       {{ remnawave_all_profiles |
-         remnawave_inbound_owners(inbound_specs | map(attribute='tag') | list,
+         remnawave_inbound_owners(remnawave_managed_inbound_tags,
                                   remnawave_profile_matches[0].uuid | default('') if remnawave_profile_matches | length == 1 else '') }}
+
+- name: Refuse to publish an inbound tag that another Config Profile already owns
+  ansible.builtin.assert:
+    that:
+      - remnawave_foreign_profile_owners | length == 0
+    fail_msg: >-
+      Inbound tags {{ remnawave_managed_inbound_tags }} already exist in another Config Profile:
+      {{ remnawave_foreign_profile_owners }}. Two profiles claiming one inbound tag makes the
+      published Host ambiguous. Rename this node's inbound tag or remove the stale inbound.
+  when:
+    - config_profile_mode == 'shared'
+    - remnawave_profile_matches | length == 1
 
 - name: Refuse silent adoption of a foreign profile
   ansible.builtin.assert:
@@ -60,6 +87,17 @@
     remnawave_config_profile_uuid: "{{ remnawave_profile_matches[0].uuid }}"
   when: remnawave_profile_matches | length == 1
 
+- name: Require the shared Config Profile to exist before any node is published
+  ansible.builtin.assert:
+    that:
+      - remnawave_config_profile_uuid is defined or config_profile_create | bool
+    fail_msg: >-
+      Config Profile '{{ profile_name }}' does not exist in the panel. In shared mode this profile
+      is the Xray JSON that carries the routing every published Host depends on, so it is never
+      invented silently. Create it in the panel first, or set config_profile_create=true to let
+      this run create it from the role template (routing from the template, not from the panel).
+  when: config_profile_mode == 'shared'
+
 - name: Read existing or adopted Config Profile
   ansible.builtin.uri:
     url: "{{ remnawave_api_base }}/config-profiles/{{ remnawave_config_profile_uuid }}"
@@ -77,13 +115,14 @@
   changed_when: false
   when: remnawave_config_profile_uuid is defined
 
-- name: Extract reusable Reality settings
+- name: Extract the current profile config and this node's Reality settings
   ansible.builtin.set_fact:
     remnawave_existing_profile_config: >-
       {{ remnawave_existing_profile_response.json.response.config | default({})
          if remnawave_existing_profile_response is not skipped | default(false) else {} }}
     remnawave_existing_reality: >-
-      {{ (remnawave_existing_profile_response.json.response.config | default({}) | remnawave_reality_settings)
+      {{ (remnawave_existing_profile_response.json.response.config | default({}) |
+          remnawave_reality_settings(remnawave_managed_inbound_tags))
          if remnawave_existing_profile_response is not skipped | default(false) else {} }}
   no_log: true
 
@@ -151,14 +190,47 @@
   loop: "{{ remnawave_reality_short_ids }}"
   no_log: true
 
-- name: Render desired Xray profile in memory
+- name: Render this node's inbounds in memory
+  ansible.builtin.set_fact:
+    remnawave_desired_inbounds: "{{ lookup('template', 'inbounds.json.j2') | from_json }}"
+  no_log: true
+
+- name: Merge this node's inbounds into the shared Config Profile
+  ansible.builtin.set_fact:
+    remnawave_desired_xray_config: >-
+      {{ remnawave_existing_profile_config |
+         remnawave_upsert_inbounds(remnawave_desired_inbounds, inbound_prune_tags) }}
+  no_log: true
+  when:
+    - config_profile_mode == 'shared'
+    - remnawave_existing_profile_config | length > 0
+
+- name: Render a standalone profile for this node
   ansible.builtin.set_fact:
     remnawave_desired_xray_config: "{{ lookup('template', 'xray-config.json.j2') | from_json }}"
   no_log: true
+  when: remnawave_desired_xray_config is not defined
+
+- name: Require the managed profile to carry routing rules
+  ansible.builtin.assert:
+    that:
+      - remnawave_desired_xray_config.routing.rules | default([]) | length > 0
+    fail_msg: >-
+      Config Profile '{{ profile_name }}' has no routing rules. Publishing Hosts against an
+      empty profile would ship clients without the routing this deployment depends on.
+  when: config_profile_require_routing | bool
+
+- name: Require every managed inbound to be present in the desired profile
+  ansible.builtin.assert:
+    that:
+      - >-
+        remnawave_managed_inbound_tags | difference(
+          remnawave_desired_xray_config.inbounds | default([]) | map(attribute='tag') | list) | length == 0
+    fail_msg: The merged Config Profile lost a managed inbound tag; refusing to write it back.
 
 - name: Write temporary profile for Xray validation
   ansible.builtin.copy:
-    content: "{{ remnawave_desired_xray_config | to_nice_json }}\n"
+    content: "{{ remnawave_desired_xray_config | remnawave_strip_inbound_uuids | to_nice_json }}\n"
     dest: "{{ remnawave_profile_validation_path }}"
     owner: root
     group: root
@@ -184,6 +256,12 @@
   register: remnawave_profile_validation
   changed_when: false
   no_log: true
+  when: remnawave_validate_xray_profile | bool
+
+- name: Remove the temporary validation profile
+  ansible.builtin.file:
+    path: "{{ remnawave_profile_validation_path }}"
+    state: absent
   when: remnawave_validate_xray_profile | bool
 
 - name: Determine Config Profile change
@@ -259,6 +337,15 @@
   no_log: true
   changed_when: false
 
+- name: Confirm the reconciled profile is the one named in inventory
+  ansible.builtin.assert:
+    that:
+      - remnawave_profile_final.json.response.name == profile_name
+    fail_msg: >-
+      Reconciled Config Profile is named '{{ remnawave_profile_final.json.response.name }}',
+      not '{{ profile_name }}'. Hosts would be published against the wrong Xray JSON.
+  when: profile_uuid | length == 0
+
 - name: Initialize inbound UUID map
   ansible.builtin.set_fact:
     remnawave_inbound_uuid_map: {}
@@ -273,11 +360,9 @@
 - name: Require UUIDs for all managed inbounds
   ansible.builtin.assert:
     that:
-      - item.tag in remnawave_inbound_uuid_map
-    fail_msg: "Panel did not return an inbound UUID for tag {{ item.tag }}."
-  loop: "{{ inbound_specs }}"
-  loop_control:
-    label: "{{ item.tag }}"
+      - item in remnawave_inbound_uuid_map
+    fail_msg: "Panel did not return an inbound UUID for tag {{ item }}."
+  loop: "{{ remnawave_managed_inbound_tags }}"
 
 - name: Store managed inbound UUIDs and profile change state
   ansible.builtin.set_fact:

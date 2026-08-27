@@ -1,0 +1,54 @@
+[
+{% for inbound in inbound_specs %}
+  {
+    "tag": {{ inbound.tag | to_json }},
+    "port": {{ inbound.port | int }},
+    "listen": {{ (inbound.listen | default('127.0.0.1' if inbound.network | default('raw') == 'grpc-tls' else '0.0.0.0')) | to_json }},
+    "protocol": "vless",
+    "settings": {"clients": [], "decryption": "none"},
+    "sniffing": {"enabled": true, "destOverride": ["http", "tls", "quic"], "routeOnly": true},
+    "streamSettings": {
+{% if inbound.network | default('raw') == 'grpc-tls' %}
+      "network": "grpc",
+      "security": "none",
+      "grpcSettings": {"serviceName": {{ inbound.service_name | default('grpc') | to_json }}, "multiMode": false},
+{% else %}
+      "network": {{ inbound.network | default('raw') | to_json }},
+      "security": "reality",
+{% if inbound.network | default('raw') == 'xhttp' %}
+      "xhttpSettings": {
+        "mode": "packet-up",
+        "path": {{ inbound.path | default(xhttp_path) | to_json }},
+        "extra": {{ inbound.xhttp_extra_params | default(xhttp_extra_params) | to_json }}
+      },
+{% endif %}
+      "realitySettings": {
+        "show": false,
+        "target": {{ (selfsteal_socket if selfsteal_socket | length > 0 else '127.0.0.1:' ~ selfsteal_local_port) | to_json }},
+        "xver": {{ reality_xver | int }},
+        "shortIds": {{ remnawave_reality_short_ids | to_json }},
+        "privateKey": {{ remnawave_reality_private_key | to_json }},
+        "serverNames": {{ inbound.server_names | default([selfsteal_domain]) | to_json }}
+      },
+{% endif %}
+      "sockopt": {"tcpNoDelay": true, "tcpFastOpen": true}
+    }
+  }{% if not loop.last or bridge_spec.enabled | default(false) %},{% endif %}
+
+{% endfor %}
+{% if bridge_spec.enabled | default(false) %}
+  {
+    "tag": {{ bridge_spec.tag | to_json }},
+    "port": {{ bridge_spec.port | int }},
+    "listen": "0.0.0.0",
+    "protocol": "shadowsocks",
+    "settings": {
+      "method": {{ bridge_spec.method | to_json }},
+      "password": {{ remnawave_bridge_secret | to_json }},
+      "network": "tcp,udp"
+    },
+    "sniffing": {"enabled": true, "destOverride": ["http", "tls", "quic"], "metadataOnly": false},
+    "streamSettings": {"sockopt": {"tcpNoDelay": true, "tcpFastOpen": true}}
+  }
+{% endif %}
+]

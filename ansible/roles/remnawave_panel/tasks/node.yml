@@ -41,20 +41,28 @@
 
 - name: Build desired Node payload
   ansible.builtin.set_fact:
-    remnawave_desired_node:
-      name: "{{ node_name }}"
-      address: "{{ node_public_ip }}"
-      port: "{{ remnawave_node_port | int }}"
-      countryCode: "{{ node_country | upper }}"
-      configProfile:
-        activeConfigProfileUuid: "{{ remnawave_config_profile_uuid }}"
-        activeInbounds: "{{ remnawave_node_active_inbounds }}"
+    remnawave_desired_node: >-
+      {{ {
+           'name': node_name,
+           'address': node_public_ip,
+           'port': remnawave_node_port | int,
+           'countryCode': node_country | upper,
+           'configProfile': {
+             'activeConfigProfileUuid': remnawave_config_profile_uuid,
+             'activeInbounds': remnawave_node_active_inbounds
+           }
+         } }}
+
+- name: Normalize the Node returned by Panel for comparison
+  ansible.builtin.set_fact:
+    remnawave_node_actual: >-
+      {{ remnawave_node_matches[0] | default({}) | remnawave_normalize_node_links }}
 
 - name: Determine whether Node needs an update
   ansible.builtin.set_fact:
     remnawave_node_needs_update: >-
       {{ remnawave_node_matches | length == 0 or
-         not (remnawave_desired_node | remnawave_is_subset(remnawave_node_matches[0] | default({}), ['uuid'])) }}
+         not (remnawave_desired_node | remnawave_is_subset(remnawave_node_actual, ['uuid'])) }}
 
 - name: Create Node
   ansible.builtin.uri:

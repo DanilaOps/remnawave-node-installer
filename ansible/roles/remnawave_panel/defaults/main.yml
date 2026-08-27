@@ -9,8 +9,15 @@ remnawave_secret_key_override: ""
 remnawave_node_env_path: "{{ remnawave_node_dir | default('/opt/remnawave-node/remnanode') }}/.env"
 remnawave_rotate_node_secret_key: false
 
+# One shared Config Profile carries the Xray JSON (including routing) that every
+# published Host depends on. Nodes add their own inbound to it instead of each
+# node owning a private profile.
+config_profile_mode: shared
+config_profile_create: false
+config_profile_require_routing: true
+inbound_prune_tags: []
 profile_uuid: ""
-profile_name: "{{ node_name }}"
+profile_name: Default August
 inbound_specs:
   - tag: "{{ node_name | upper | regex_replace('[^A-Z0-9_]', '_') }}_REALITY"
     port: 443
