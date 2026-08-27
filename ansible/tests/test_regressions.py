@@ -64,11 +64,18 @@ class ProductionRegressionTests(unittest.TestCase):
         self.assertIn("dest: /etc/ssh/sshd_config.d/00-remnawave.conf", system_tasks)
         self.assertIn("argv: [/usr/sbin/sshd, -T]", system_tasks)
 
-    def test_vault_example_uses_an_ansible_autoloaded_group(self) -> None:
+    def test_vault_example_is_not_auto_loaded_as_real_group_vars(self) -> None:
         for inventory in ("staging", "production"):
             inventory_root = ROOT / "inventories" / inventory / "group_vars"
-            self.assertTrue((inventory_root / "all" / "vault.example.yml").is_file())
+            self.assertTrue((inventory_root / "all" / "vault.yml.example").is_file())
             self.assertFalse((inventory_root / "vault.example.yml").exists())
+            # Anything ending in .yml inside group_vars is loaded by Ansible, so an
+            # example file must never use that extension: it would define real
+            # variables and shadow whatever the operator did not override.
+            for path in inventory_root.rglob("*.yml"):
+                self.assertNotIn(
+                    ".example", path.name, f"{path} would be auto-loaded by Ansible"
+                )
 
     def test_ipaddr_preflight_conditions_return_booleans(self) -> None:
         preflight = self.read("roles/node_base/tasks/preflight.yml")

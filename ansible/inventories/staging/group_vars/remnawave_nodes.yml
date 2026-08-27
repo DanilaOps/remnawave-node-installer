@@ -1,14 +1,47 @@
 ---
+# Everything a node needs that is either identical across the fleet or can be
+# derived from the few facts declared in hosts.yml. Any of these can still be
+# overridden per host when a node is genuinely different.
+
 ansible_user: deployer
 ansible_port: 22
 
-management_cidrs:
-  - 198.51.100.10/32
-remnawave_panel_cidrs:
-  - 198.51.100.20/32
+# --- Derived identity -------------------------------------------------------
+# node_id is the only identity fact entered by hand: "ee_01" yields
+# node_name EE-01, node_country EE and selfsteal domain ee01.<node_domain_zone>.
+node_name: "{{ node_id | upper | replace('_', '-') }}"
+node_country: "{{ node_id.split('_')[0] | upper }}"
+node_role: direct
+node_public_ip: "{{ ansible_host }}"
 
-remnawave_panel_url: https://panel.example.com
-remnawave_panel_token: "{{ vault_remnawave_panel_token }}"
+selfsteal_domain: "{{ node_id | replace('_', '') }}.{{ node_domain_zone }}"
+
+# --- Derived panel resources ------------------------------------------------
+# The inbound tag and the published Host follow from the identity above, so a new
+# node needs no hand-written inbound_specs or host_specs.
+inbound_specs:
+  - tag: "{{ node_name | upper | regex_replace('[^A-Z0-9_]', '_') }}_REALITY"
+    port: 443
+    network: raw
+
+node_host_remark: "{{ node_name }}"
+node_host_tags:
+  - "{{ node_country | upper }}"
+  - DIRECT
+
+host_specs:
+  - remark: "{{ node_host_remark }}"
+    address: "{{ selfsteal_domain }}"
+    inbound_tag: "{{ inbound_specs[0].tag }}"
+    port: 443
+    sni: "{{ selfsteal_domain }}"
+    fingerprint: firefox
+    security_layer: DEFAULT
+    is_hidden: false
+    is_disabled: false
+    tags: "{{ node_host_tags }}"
+
+# --- Runtime ----------------------------------------------------------------
 remnawave_node_image: ghcr.io/remnawave/node:3.3.2
 remnawave_node_port: 2222
 
@@ -17,35 +50,15 @@ xray_checksums:
   x86_64: b3e5902d06d6282fe53cfa2fc426058b9aeaa429b2c812e20887cd47f26d08bf
   aarch64: 13a251379bea366c2cf10363ad71e75734193d401f26f518bf0c25e5c8f8c931
 
-inbound_specs:
-  - tag: DE_01_REALITY
-    port: 443
-    network: raw
-
-host_specs:
-  - remark: Germany
-    address: node-de-01.example.com
-    inbound_tag: DE_01_REALITY
-    port: 443
-    sni: node-de-01.example.com
-    fingerprint: firefox
-    security_layer: DEFAULT
-    is_hidden: false
-    is_disabled: false
-    tags: [EU, DIRECT]
-
-selfsteal_virtual_hosts:
-  - name: primary
-    server_names:
-      - node-de-01.example.com
-    root: /opt/remnawave-node/selfsteal/html/primary
-    title: Cloud Infrastructure
-
+# --- Certificate ------------------------------------------------------------
+# http01 is answered from the webroot nginx already serves, so issuance and
+# renewal never take the decoy site down. Use staging while iterating.
 certificate_mode: http01
-acme_email: ops@example.com
+certificate_acme_environment: production
 
-# Keep strict verification enabled in production and provide a real controller-side
-# probe command that exits 0 only after a valid VLESS connection succeeds.
+# --- Verification -----------------------------------------------------------
+# Keep strict verification enabled in production and provide a real
+# controller-side probe that exits 0 only after a valid VLESS connection.
 verify_require_tunnel_probe: true
 verify_tunnel_probe_command: []
 verify_require_node_port_denied_probe: true
@@ -55,3 +68,10 @@ bridge_spec:
   enabled: false
 
 node_plugins: []
+
+# --- Bootstrap (playbooks/bootstrap.yml only) -------------------------------
+bootstrap_ssh_user: root
+bootstrap_authorized_keys: []
+# A freshly created VPS has no entry in known_hosts. Accepting the key on first
+# contact is reasonable for a brand new server and wrong for an existing one.
+bootstrap_trust_new_host_keys: false

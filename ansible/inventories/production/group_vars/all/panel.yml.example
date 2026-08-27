@@ -1,0 +1,30 @@
+---
+# Copy to panel.yml in this directory and fill in the real values.
+# panel.yml is git-ignored: the panel URL, controller address and node zone
+# must not end up in a published repository.
+# One Remnawave panel serves every node, so panel-wide values live here instead of
+# being repeated per node or per group.
+
+remnawave_panel_url: https://panel.example.com
+remnawave_panel_token: "{{ vault_remnawave_panel_token }}"
+
+# Shared Xray JSON that carries the routing. Every published Host is bound to it;
+# a node only adds its own inbound. See ansible/README.md.
+config_profile_mode: shared
+profile_name: Default August
+config_profile_create: false
+config_profile_require_routing: true
+
+# Source addresses allowed to reach a node: the Ansible controller (SSH) and the
+# panel (NODE_PORT). Preflight refuses to apply a firewall that would lock the
+# controller out, so this must be the address sshd actually sees.
+management_cidrs:
+  - 198.51.100.10/32
+remnawave_panel_cidrs:
+  - 198.51.100.20/32
+
+# All node domains live in this zone; selfsteal_domain is derived from it.
+node_domain_zone: example.com
+
+acme_email: ops@example.com
+internal_squad_name: Default

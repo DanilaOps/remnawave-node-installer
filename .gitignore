@@ -36,3 +36,9 @@ ansible/inventories/**/group_vars/**/vault.yml
 PROJECT-STATE.md
 
 # Local audit SSH keypair — private key, never publish
+
+# Inventory data with real addresses, domains and panel URLs - never publish
+ansible/inventories/test/
+ansible/inventories/local/
+ansible/inventories/production/hosts.yml
+ansible/inventories/production/group_vars/all/panel.yml
