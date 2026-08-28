@@ -169,7 +169,9 @@
     remote_src: true
     owner: root
     group: root
-  when: controller_xray_archive.changed or not controller_xray_binary.stat.exists
+  when:
+    - not ansible_check_mode
+    - controller_xray_archive.changed or not controller_xray_binary.stat.exists
 
 - name: Publish the pinned controller Xray client
   ansible.builtin.file:

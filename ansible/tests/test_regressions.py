@@ -519,6 +519,13 @@ class ControllerTests(unittest.TestCase):
         self.assertIn("- runuser", check)
         self.assertNotIn("become_user", check)
 
+    def test_controller_xray_extraction_is_safe_in_check_mode(self) -> None:
+        runtime = self.read("roles/semaphore_controller/tasks/runtime.yml")
+        extract = runtime.split("- name: Extract the pinned controller Xray client", 1)[1].split(
+            "- name: Publish the pinned controller Xray client", 1
+        )[0]
+        self.assertIn("not ansible_check_mode", extract)
+
     def test_the_controller_does_not_touch_ssh_authentication(self) -> None:
         # The controller is the machine an operator must be able to get back
         # into; this role is never the reason they cannot.
