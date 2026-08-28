@@ -1,0 +1,22 @@
+---
+# The Ansible controller itself:
+#
+#   ansible-playbook ansible/playbooks/controller.yml --limit controller --check
+#   ansible-playbook ansible/playbooks/controller.yml --limit controller
+#
+# It targets a `controller` group, so the same code builds the controller from a
+# workstation and rebuilds it on a new machine. Running it against localhost
+# works too (`-i localhost, -c local`), which is what a self-managing controller
+# does after it has been bootstrapped once.
+#
+# It never installs Docker and never touches SSH authentication policy: the
+# controller is the machine an operator has to be able to get back into.
+- name: Configure the Ansible controller
+  hosts: "{{ controller_group | default('controller') }}"
+  become: true
+  gather_facts: true
+  any_errors_fatal: true
+
+  roles:
+    - role: semaphore_controller
+      tags: [controller]

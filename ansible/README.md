@@ -7,35 +7,42 @@ site and the acceptance checks — is owned here.
 
 ## One command per node
 
+Every command in this project runs from the **repository root** against the one
+`ansible.cfg` there — the wrappers, the tests and Semaphore all use the same
+paths, so there is nothing to remember and nothing to keep in step.
+
 Once, on the machine that will run Ansible:
 
 ```bash
 ./setup-controller
 ```
 
-It creates the virtualenv, installs the pinned dependencies and collections,
-generates an SSH key if there is none, stores the vault password outside the
-repository so later runs stop asking, and writes the fleet configuration
-(`panel.yml`) and the encrypted vault from what you answer. It is idempotent, so
-run it again after pulling changes; it never touches a node.
+It creates the virtualenv, installs the pinned dependencies and the collections
+(into the checkout, so every account that runs from here sees the same versions),
+generates a dedicated deployer SSH key if there is none, stores the vault
+password outside the repository so later runs stop asking, and writes the
+deployment values and the encrypted vault from what you answer. It is
+idempotent, so run it again after pulling changes; it never touches a node.
 
 Then, for every node, forever:
 
 ```yaml
-# inventories/production/hosts.yml
+# ansible/inventories/production/hosts.yml
 ee01:
-  ansible_host: 13.143.176.179
-  node_host_remark: "🇪🇪 Estonia"
+  ansible_host: 203.0.113.10
 ```
 
 ```bash
-./provision-node ee01
+./provision-node ee01 --first-run
 ```
 
-That is the whole flow: buy the VPS, point `ee01.<zone>` at it, add two lines,
-run one command. The wrapper only prepares the local environment — virtualenv,
+That is the whole flow: buy the VPS, point `ee01.<zone>` at it, add one line, run
+one command. `--first-run` is only for a server created minutes ago: it accepts
+the SSH host key presented on first contact. Later runs are just
+`./provision-node ee01`, and a host key that is already known and has changed is
+always a failure, never a new trust decision. The wrapper only prepares the local environment — virtualenv,
 vault password, and a one-off root password prompt when the server has not been
-bootstrapped yet — then runs `playbooks/provision_node.yml`. Running that
+bootstrapped yet — then runs `ansible/playbooks/provision_node.yml`. Running that
 playbook directly does exactly the same thing, and every flag passes through:
 
 ```bash
@@ -58,6 +65,7 @@ Everything else about a node is derived from the inventory hostname:
 | `node_id` (`ee_01`) | inventory hostname |
 | `node_name` (`EE-01`) | inventory hostname |
 | `node_country` (`EE`) | leading letters of the hostname |
+| `node_host_remark` (`🇪🇪 Estonia`) | `node_country` via `group_vars/all/countries.yml` |
 | `node_public_ip` | `ansible_host` |
 | `selfsteal_domain` (`ee01.<zone>`) | hostname plus `node_domain_zone` |
 | `inbound_specs[0].tag` (`EE_01_REALITY`) | `node_name` |
@@ -68,39 +76,75 @@ Everything else about a node is derived from the inventory hostname:
 
 A host that does not follow the `ee01` pattern declares what it needs — usually
 just `selfsteal_domain` — in its own block; preflight rejects a hostname it
-cannot parse rather than guessing. `tests/inventory_derivation.yml` asserts that
-a two-line host really does expand to a complete node definition.
+cannot parse rather than guessing. Adding a country is one line in
+`ansible/playbooks/group_vars/all/countries.yml`; a code that is missing from it
+stops the run with that file's path in the message rather than publishing a Host
+with a blank label.
+
+To see what a line of inventory expands to, without a server and without
+secrets:
+
+```bash
+ansible-playbook ansible/playbooks/show_node_identity.yml --limit ee01
+```
+
+`ansible/tests/test_external_inventory.sh` runs that against a throwaway
+inventory that contains nothing but a hostname and an address, which is what
+Semaphore provides — the fleet configuration has to come from the playbook's own
+`group_vars`, not from next to an inventory.
 
 ## Checks that run before anything changes
 
-The operator is not asked to verify anything by hand. `node_base` starts with a
-read-only preflight, and it is the first role that touches the node, so all of
-this fails while the server is still untouched:
+The operator is not asked to verify anything by hand, and the checks are split by
+what they need, so each one runs at the only point where it can be both truthful
+and harmless.
 
-the platform is Debian 12/13 or Ubuntu 24.04 on a supported architecture; the
-inventory hostname parses into a usable identity; the root filesystem has room;
+**Before anything anywhere changes** — its own play, with no connection to the
+node at all, so it works even before the VPS exists: the inventory hostname
+parses into a usable identity and the country has a display name; every
+configured CIDR is valid; the panel answers and the token has scope; the profile
+list is not suspiciously empty; the shared Config Profile exists and carries
+routing rules; no other profile already owns this node's inbound tag; every
+inbound in the shared profile is one the panel strips per node; the panel holds
+no conflicting Node for this name or address and no ambiguous Host. The DNS state
+is **reported** here, never changed — and if `dns_provider` is `none`, a record
+that does not already point at the node fails the run, because nothing later will
+fix it.
+
+**After DNS and before the first change to the server:** the platform is Debian
+12/13 or Ubuntu 24.04 on a supported architecture; the root filesystem has room;
 NTP is synchronised; `selfsteal_domain` resolves to this node's address **from
-the node itself**; the panel answers and the token has scope; the shared Config
-Profile exists and carries routing rules; no other profile already owns this
-node's inbound tag; the panel holds no conflicting Node for this name or
-address, and no ambiguous Host; ports 80, 443 and `NODE_PORT` are free on a
-fresh install; and the address sshd reports for the controller is inside the
-management allow list.
+the node itself**; ports 80, 443 and `NODE_PORT` are free on a fresh install; and
+the address sshd reports for the controller is inside the management allow list.
 
 That last one no longer has to be maintained: the controller's own address is
 taken from the live SSH connection, so a controller with a changing address
 cannot lock itself out. Addresses that must keep SSH access even when nobody is
-running from them — a second operator, a jump host — go in
-`management_cidrs_extra`. Setting `management_cidrs` explicitly opts out of the
-discovery and is still validated against what sshd reports.
+running from them — a workstation, a jump or rescue host — go in
+`management_cidrs_extra`, in the git-ignored override rather than in this
+repository. Setting `management_cidrs` explicitly opts out of the discovery and
+is still validated against what sshd reports. Every branch of that resolution is
+covered by `ansible/tests/management_cidrs.yml`, including the one that matters:
+an explicit list that would lock the controller out is refused, not applied.
 
 ## Roles and execution order
 
-`install_node.yml` contains no deployment tasks and runs five roles in order.
+`install_node.yml` contains no deployment tasks. It is three plays, in the only
+order that is safe:
+
+1. **controller-side preflight** — reads the inventory and the panel, changes
+   nothing anywhere. This is also the Semaphore *Preflight* template.
+2. **DNS** — the record has to exist and resolve before ACME and before the node
+   resolves its own selfsteal name.
+3. **the node** — node-side preflight, then installation and verification.
+
+One node per run: play 3 writes this node's inbound into the profile the whole
+fleet shares, and that write is a read-modify-write. A run that resolves to more
+than one host is refused unless `node_allow_bulk=true` says so on purpose, and
+even then both plays run `serial: 1`.
 
 `dns` reconciles the node's A record at the registrar from the controller, then waits
-until public resolvers agree. It runs first because the node's own preflight resolves the
-selfsteal name and ACME needs the record to be live. `node_base` validates the host,
+until public resolvers agree. `node_base` validates the host,
 installs base packages and Docker, then applies a rollback-protected nftables policy.
 `remnawave_panel` reconciles the shared Config Profile, this node's inbound, the Node, its
 Hosts, the Internal Squad and the optional bridge identity through the Remnawave 3.x API.
@@ -114,7 +158,9 @@ because it is the one role that runs before the managed account exists: it conne
 root, may find no Python on the target and never escalates. It creates the account with
 the controller's public key and password-less sudo — and nothing else. sshd policy has
 exactly one owner, `node_base`, which writes the highest-priority drop-in and then
-verifies the effective policy with `sshd -T`.
+verifies the effective policy with `sshd -T` — the drop-in is `00-remnawave.conf`
+because sshd takes the first value it sees and a vendor or cloud-init file
+sorting earlier would otherwise win silently.
 
 Small components are task files inside those roles, not additional roles.
 
@@ -184,15 +230,30 @@ profile is the Xray JSON that carries the routing every published Host depends o
 never owns a private copy of it.
 
 Each run reads the profile, merges this node's inbound into it by tag and writes the
-result back. Other nodes' inbounds keep their panel UUIDs and their own Reality keys, and
+result back. Because that is a read-modify-write, the profile is read **again**
+immediately before the write and compared by fingerprint with what the run
+started from: a second provisioning run, or somebody editing the profile in the
+panel, is reported and nothing is written, rather than being silently
+overwritten. After the write the run re-reads the profile and fails if any
+inbound that was there before has disappeared — the failure that matters is a
+write that succeeds and drops another node's traffic. `ansible/tests/test_shared_profile_concurrency.sh`
+exercises all of that against a mock panel that changes the profile between the
+read and the write. Other nodes' inbounds keep their panel UUIDs and their own Reality keys, and
 `routing`, `dns`, `outbounds` and `policy` are copied through untouched. The node's own
 Reality keypair is looked up by its own inbound tag, so a node cannot adopt a neighbour's
-key. The Node object activates only this node's inbound, and every Host is published
+key. Before the config is pushed to a node the panel removes inbounds of managed
+protocols the node does not activate, so a neighbour's Reality key never reaches
+it — an inbound of any *other* protocol would go to every node in full, which is
+why the shared profile refuses to carry one unless its tag is listed in
+`shared_profile_allowed_unmanaged_inbound_tags`. `inbound_prune_tags` can only
+name inbounds inside this node's own tag namespace. The Node object activates only this node's inbound, and every Host is published
 against the shared profile UUID and this node's inbound UUID — the run re-reads the Hosts
 afterwards and fails if that binding is not what was declared.
 
 The shared profile is never invented silently: if it does not exist the run stops and says
-so. `config_profile_create=true` overrides that for a first-ever bootstrap of the profile,
+so. `config_profile_create=true` overrides that for a first-ever bootstrap of the profile
+(and a panel that answers with an empty profile list is treated as a fault, not as
+an empty panel),
 and `config_profile_require_routing` (on by default) refuses to publish Hosts against a
 profile that has no routing rules. `config_profile_mode: per_node` restores the old
 behaviour of rendering a private profile per node.
@@ -251,45 +312,65 @@ deployment does not claim clients have cut over before they refresh their subscr
 is hidden. A Linux controller with Python 3.11–3.13 and OpenSSH, able to reach
 the registrar API, the Panel, the node's SSH port and the public selfsteal
 address. `sshpass` is additionally needed to log in with a root password; it is
-not installed on the managed node. All paths in this project are relative to this
-directory, so the same code runs from a laptop and, later, from Semaphore.
+not installed on the managed node. Every path in this project is relative to the
+repository root, so the same checkout runs from a laptop, from a controller VPS
+and from Semaphore without an environment variable.
 
 ```bash
-python3 -m venv .venv
-. .venv/bin/activate
-pip install -r requirements.txt
-ansible-galaxy collection install -r collections/requirements.yml
+python3 -m venv ansible/.venv
+. ansible/.venv/bin/activate
+pip install -r ansible/requirements.txt
+ansible-galaxy collection install -r ansible/collections/requirements.yml \
+  -p ansible/collections
 ```
+
+The `-p` matters: `ansible.cfg` points `collections_path` into the checkout, so
+the collections are pinned with the project and are visible to a service user
+that runs with `ProtectHome=true` and cannot read anybody's `~/.ansible`.
 
 ## Inventory layout and secrets
 
+Fleet configuration lives next to the playbook, not next to an inventory. That is
+not a matter of taste: Semaphore keeps its own inventory outside the repository,
+and playbook-adjacent `group_vars` are the only ones that load whatever the
+inventory is — and they outrank inventory `group_vars`, so a real value placed
+next to an inventory would be silently overridden by the published one.
+
 ```text
-inventories/<env>/
-  hosts.yml                      # two facts per node
-  group_vars/
+ansible/
+  inventories/<env>/hosts.yml    # one line per node: nothing but addresses
+  playbooks/group_vars/
     all/
-      panel.yml                  # panel URL/token, shared profile, CIDRs, ACME email, zone
-      vault.yml                  # ansible-vault encrypted secrets
-    remnawave_nodes.yml          # derivations and fleet-wide runtime values
+      panel.yml                  # panel URL, shared profile, CIDRs, ACME email, zone
+      countries.yml              # country code -> label published to users
+      vault.yml                  # git-ignored, ansible-vault encrypted
+    remnawave_nodes/
+      identity.yml               # everything derived from the hostname
+      fleet.yml                  # pinned versions and fleet-wide policy
+      zz-local.yml               # git-ignored: the real values of this deployment
+  examples/
+    vault.yml.example
+    local-overrides.yml.example
 ```
 
-`inventories/staging` is the documented reference and carries placeholder values only.
-Files that hold real addresses are git-ignored — `inventories/test/`,
-`inventories/local/`, `inventories/production/hosts.yml` and
-`inventories/production/group_vars/all/panel.yml` — with `*.yml.example` twins in git. An
-example file must never end in `.yml`: Ansible loads every `.yml` file in `group_vars`, so
-`vault.example.yml` would define real variables. A regression test enforces that.
+Everything tracked here carries documentation values. The real ones go into
+`zz-local.yml`, which is in the same precedence tier as the other group files and
+is loaded last, so it wins; from Semaphore they arrive as extra vars, which
+outrank every file. Examples deliberately live in `ansible/examples/` and not in
+a `group_vars` directory: Ansible loads every `.yml` it finds there, so an
+example one rename away from `.yml` would define real variable names. A
+regression test enforces both properties.
 
 `./setup-controller` writes and encrypts the vault; the manual path is to copy
-`group_vars/all/vault.yml.example` to `vault.yml`, fill it in and run
-`ansible-vault encrypt`. The Panel token, registrar credentials, `SECRET_KEY`,
-Reality private key, bridge password and Cloudflare token belong there and nowhere
-else:
+`examples/vault.yml.example` to `playbooks/group_vars/all/vault.yml`, fill it in
+and run `ansible-vault encrypt`. The Panel token, registrar credentials, the
+probe user's VLESS UUID and the bridge password belong there and nowhere else:
 
 ```yaml
 vault_remnawave_panel_token: ...
 vault_regru_username: ...
 vault_regru_password: ...
+vault_verify_probe_vless_uuid: ...
 vault_node_root_password: ""   # optional: ./provision-node prompts instead
 ```
 
@@ -297,25 +378,36 @@ Store the vault password in a file outside the repository (`setup-controller`
 offers to) and runs stop prompting for it:
 `export ANSIBLE_VAULT_PASSWORD_FILE=~/.config/remnawave/vault-pass`.
 
-A node that must keep root/password access sets `ansible_user: root`,
-`ansible_password: "{{ vault_node_root_password }}"`, `ansible_become: false` and
-`node_ssh_allow_root_password: true` in its host block. Root/password access is off by
-default and, when enabled, is still limited to `management_cidrs`.
+The SSH key is the primary way in and root with a password is the fallback that
+survives a wiped `authorized_keys`: `fleet.yml` sets
+`node_ssh_allow_root_password: true` for this fleet, `node_base` writes the
+highest-priority sshd drop-in and then proves with `sshd -T` that the effective
+policy really is what was asked for. The role default stays the safe one
+(`false`) for anybody else using these roles. Password login is in any case
+reachable only from `management_cidrs`.
 
 `bootstrap.yml` finds the controller's public key itself
-(`~/.ssh/id_ed25519.pub`, then `~/.ssh/id_rsa.pub`; override
-`bootstrap_authorized_key_files` to be explicit). A brand new VPS has no entry in
-`known_hosts`; set `bootstrap_trust_new_host_keys=true` to accept the key
-presented on first contact, or add the fingerprint from the provider console
-beforehand. That flag is trust-on-first-use — right for a server created minutes
-ago, wrong for one that has been running.
+(`~/.ssh/remnawave-deployer.pub`, then `~/.ssh/id_ed25519.pub`, then
+`~/.ssh/id_rsa.pub`; override `bootstrap_authorized_key_files` to be explicit). A
+brand new VPS has no entry in `known_hosts`; `--first-run` (or
+`-e bootstrap_trust_new_host_keys=true`) accepts the key presented on first
+contact. That is trust-on-first-use — right for a server created minutes ago,
+wrong for one that has been running, which is why it is never the default.
+
+The one-off root password reaches the run through one of three places, in the
+order that wins: `-e bootstrap_ssh_password=...` (what Semaphore passes from a
+secret survey field of that name), `NODE_ROOT_PASSWORD` in the environment (what
+`./provision-node` prompts for, never written to disk or into argv), and
+`vault_node_root_password` for unattended runs. When any of them is set, the
+bootstrap play suppresses its own output and refuses to run at `-vv` or higher,
+because Semaphore passes extra vars on the command line.
 
 ## Required data beyond the two facts
 
-Per fleet, set once in `group_vars/all/panel.yml` (written by
-`./setup-controller`): Panel URL and token, `remnawave_panel_cidrs`,
-`node_domain_zone`, `acme_email` and the Internal Squad name or UUID. The
-controller's own address is discovered, not configured.
+Per fleet, set once in the git-ignored `zz-local.yml` (written by
+`./setup-controller`): Panel URL, `remnawave_panel_cidrs`, `node_domain_zone`,
+`acme_email` and the Internal Squad name or UUID. The controller's own address is
+discovered, not configured, and no real address belongs in the tracked files.
 
 `host_specs` is a data model, not a one-Host-per-Node shortcut: a declaration can be
 direct, hidden or virtual and can carry an explicit `node_uuids` list. Remnawave 3.3.2
@@ -331,28 +423,206 @@ an inventory host whose source IP is outside `remnawave_panel_cidrs`; it proves
 
 ## Scoped runs
 
+All of these run from the repository root:
+
 ```bash
 ./provision-node ee01
-ansible-playbook playbooks/install_node.yml --syntax-check
-ansible-playbook playbooks/install_node.yml --tags preflight --check
-ansible-playbook playbooks/install_node.yml --tags dns
-ansible-playbook playbooks/install_node.yml --tags certificate
-ansible-playbook playbooks/install_node.yml --tags selfsteal
-ansible-playbook playbooks/install_node.yml --tags node_verify
+ansible-playbook ansible/playbooks/install_node.yml --syntax-check
+ansible-playbook ansible/playbooks/install_node.yml --limit ee01 --tags preflight --check
+ansible-playbook ansible/playbooks/install_node.yml --limit ee01 --tags dns
+ansible-playbook ansible/playbooks/install_node.yml --limit ee01 --tags certificate
+ansible-playbook ansible/playbooks/install_node.yml --limit ee01 --tags selfsteal
+ansible-playbook ansible/playbooks/install_node.yml --limit ee01 --tags node_verify
 ```
 
-## Running from Semaphore later
+## Running from Semaphore
 
-Nothing here points at a specific machine, needs an interactive prompt or reads a secret
-from outside the vault, so the move is configuration only: point the Semaphore repository
-at this repo, set the playbook path to `ansible/playbooks/provision_node.yml`, add the
-vault password as a Semaphore secret, and either commit an inventory that carries no real
-addresses or paste the inventory into Semaphore. The wrappers are for humans; Semaphore
-runs the playbook directly, which is why no decision about a node lives in them. The controller address changes when the
-runner does, so `management_cidrs` and the registrar's API allow-list must then contain the
-Semaphore host's address — preflight will say so plainly if the first does not.
+Nothing here points at a specific machine, needs an interactive prompt or reads a
+secret from outside the vault, so the move is configuration only. Semaphore
+clones the repository and runs playbooks from its root, which is exactly how the
+wrappers and the tests run them.
+
+Three templates, and deliberately no others:
+
+| Template | Playbook and flags | Changes anything? |
+|---|---|---|
+| **Preflight** | `ansible/playbooks/provision_node.yml`, `--tags preflight --check` | no |
+| **Install / Reconcile Node** | `ansible/playbooks/provision_node.yml` | yes |
+| **Verify Node** | `ansible/playbooks/provision_node.yml`, `--tags node_verify` | no |
+
+Reconcile *is* update and *is* repair, so there is no separate button for either:
+one mutating template means one thing to get right. Dangerous operations —
+`certificate_force_reissue`, `reality_rotate_keys`,
+`remnawave_rotate_node_secret_key`, `inbound_prune_tags` — stay command-line
+only, with the variable spelled out by hand.
+
+- **Target** goes in the run's *Limit* field. In Semaphore 2.18.29 that is a free
+  text field, not a list built from the inventory; there is no dropdown to be had,
+  so nothing here pretends otherwise and nothing duplicates the node list into a
+  survey. The playbook refuses a run that resolves to more than one host unless
+  `node_allow_bulk=true`, so a forgotten Limit is an error rather than an
+  incident.
+- **Inventory** is a static YAML inventory in Semaphore, holding the same one line
+  per node as `hosts.yml`. It is the node registry, so it is the one piece of
+  state that does not live in git — back it up.
+- **The root password of a brand new VPS** is a *secret survey field* named
+  `bootstrap_ssh_password`. Survey secrets are not stored in Semaphore's database
+  (`Task.Secret` is `db:"-"`), which is exactly what a one-off credential wants;
+  a Variable Group keeps its secrets at rest and is for the long-lived ones — the
+  panel token, the vault password. Either way the value reaches Ansible as
+  `--extra-vars` on the command line, so the controller must stay
+  single-purpose and the template must not raise verbosity: the bootstrap play
+  refuses to run with a password at `-vv` or higher.
+- **`--first-run`** has no wrapper in the UI: pass
+  `bootstrap_trust_new_host_keys=true` as a survey checkbox used only for a
+  server created minutes ago.
+- **Parallelism** is disabled on the Install / Reconcile template only
+  (`allow_parallel_tasks: false`). Preflight and Verify are read-only and may run
+  while an installation is in progress.
+
+The controller address changes when the runner does, so the registrar's API
+allow-list must contain the Semaphore host's address; `management_cidrs` does not
+need updating, because it is discovered from the live SSH connection. Add a
+workstation or rescue host to `management_cidrs_extra` in the git-ignored
+override so it keeps access when nobody is running from it.
+
+## The controller
+
+One role builds it, and it targets a `controller` group so the same code works
+from a workstation and on the machine itself:
+
+```bash
+ansible-playbook ansible/playbooks/controller.yml --limit controller --check
+ansible-playbook ansible/playbooks/controller.yml --limit controller
+```
+
+It installs the pinned Ansible runtime and the collections into the checkout, a
+pinned Semaphore (2.18.29, verified against a checksum, and the running binary is
+checked against the pin afterwards), the systemd unit, swap, unattended upgrades,
+fail2ban and a nightly backup. Three things it deliberately does not do:
+
+- **No Docker.** The controller runs playbooks; it does not run workloads. A
+  regression test forbids Docker module calls anywhere in the role.
+- **No change to SSH authentication.** This is the machine an operator has to be
+  able to get back into, so root and password login are left exactly as the
+  provider set them. A regression test forbids touching `sshd_config`.
+- **No public listener.** The UI binds to loopback only; the role refuses any
+  other `semaphore_interface` and then checks with `ss` that nothing is listening
+  on all interfaces. Reach it with
+  `ssh -N -L 3000:127.0.0.1:3000 <controller>`.
+
+Two properties matter for adopting a controller that was installed by hand.
+`semaphore_config_path` is read first, and the three encryption keys found there
+are **reused**, never regenerated — new keys would make every stored Key Store
+entry undecryptable. And the database dialect of an existing instance is never
+changed: if the declaration disagrees with the instance, the run stops and says
+so rather than inventing a migration.
+
+The firewall follows the node's pattern: the address of the live session is
+always in the allow list, `nft -c` validates before anything is applied, a
+rollback timer is armed, and the connection is re-established and proven before
+the timer is disarmed.
+
+The Semaphore project, repository, inventory and the three templates are created
+by `ansible/tools/semaphore_bootstrap.py`, so a rebuilt controller gets the same
+templates with the same flags instead of whatever somebody remembers:
+
+```bash
+export SEMAPHORE_URL=http://127.0.0.1:3000
+export SEMAPHORE_API_TOKEN="$(cat /etc/semaphore/bootstrap-api-token)"
+python3 ansible/tools/semaphore_bootstrap.py --dry-run   # prints, changes nothing
+python3 ansible/tools/semaphore_bootstrap.py
+```
+
+It is idempotent by name and never writes a secret: the deployer key, the vault
+password and the panel token are added in the UI, and it prints exactly what is
+left to do by hand.
+
+## End-to-end probe
+
+Strict acceptance means a node is not "ready" until traffic has gone through it.
+The built-in probe connects from the controller exactly as a client would — VLESS
+over Reality with Vision to the published Host — and fetches one URL through it.
+Everything it needs is already known from the run except the client identity, so
+the one-time setup is two things:
+
+1. an Xray client binary on the controller (`verify_probe_xray_binary`, default
+   `xray` in `PATH`) — the controller has no Docker, so this is a plain binary;
+2. an existing panel user to connect as: its VLESS UUID in
+   `vault_verify_probe_vless_uuid`, and its username in `verify_probe_username`.
+
+The probe never creates or changes that user: before connecting it reads the
+user through the API and requires it to be `ACTIVE` and a member of the Internal
+Squad this fleet publishes to, which is what gives it access to the node's
+inbound. Verification that mutates the panel is not verification.
+
+The Reality public key is derived from the node's own private key on the
+controller (`remnawave_reality_public_key`, x25519 via `cryptography`), so
+nothing has to be stored twice and no Docker is needed to compute it.
+
+`verify_require_tunnel_probe` stays `true`. With neither a probe identity nor a
+custom `verify_tunnel_probe_command`, the run **fails** — reporting a node nobody
+proved carries traffic is worse than a red run.
+`ansible/tests/test_tunnel_probe.sh` covers the fail-closed path, the three
+panel-state refusals and a full pass through a real SOCKS proxy to a real HTTP
+endpoint; only the Reality handshake itself needs a node.
+
+## Backup and restore
+
+The Semaphore inventory is the node registry, and it is the one piece of state
+that does not live in git. The nightly job therefore covers it and says so
+loudly when it cannot:
+
+- the database (for `bolt`, the service is stopped for the copy — bolt has no
+  online snapshot and copying a file being written to can capture a torn page;
+  the window is under a second on a single-user UI);
+- a portable export of every project **including its inventory**, taken through
+  the API so it can be read and restored without this exact binary;
+- `config.json` with its secrets redacted;
+- a manifest with the sha256 of every member and the pinned versions.
+
+The Semaphore encryption keys, the Ansible vault password and the deployer
+private key are deliberately **not** in the archive: one file holding both the
+ciphertext and its key loses everything at once. They belong in a password
+manager, and the restore procedure expects them from there.
+
+`controller_backup_remote` is an rsync destination. Left empty, the job still
+runs, still writes the archive and then **exits non-zero**, so the timer's status
+shows a failure — an archive that never leaves the machine it protects is not a
+backup.
+
+Restore on a clean Debian 13: install the controller with
+`ansible-playbook ansible/playbooks/controller.yml`, put the three encryption
+keys from the password manager into `config.json` before the first start, restore
+the database file from the archive (or import the project export through the UI),
+restore the deployer key and the vault password into the Key Store, then run the
+**Preflight** template against one node. A restore that has not been verified by
+a green Preflight has not been verified.
 
 ## Verification and tests
+
+Everything below runs from the repository root and needs no server:
+
+```bash
+yamllint -c .yamllint.yml ansible .github
+python ansible/tests/validate_structure.py
+python -m unittest discover -s ansible/tests -p 'test_*.py'
+ansible-playbook ansible/playbooks/provision_node.yml --syntax-check
+bash ansible/tests/test_external_inventory.sh
+ansible-playbook -i localhost, -c local ansible/tests/management_cidrs.yml
+ansible-playbook -i localhost, -c local ansible/tests/render_templates.yml
+bash ansible/tests/test_panel_idempotency.sh
+bash ansible/tests/test_shared_profile_concurrency.sh
+bash ansible/tests/test_panel_bridge_idempotency.sh
+bash ansible/tests/test_panel_errors.sh
+bash ansible/tests/test_dns_idempotency.sh
+bash ansible/tests/validate_nginx.sh
+ansible-lint
+```
+
+CI runs the first group on every push and the container-and-mock group on a pull
+request, so a mistake is visible in a minute and the slow proof still gates a
+merge.
 
 Full acceptance on a test VPS — including recovery from a failed run, two strict runs,
 VPN end-to-end, bridge and the no-secret-rotation checks — is described in

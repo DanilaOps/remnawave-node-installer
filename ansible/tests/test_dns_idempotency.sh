@@ -2,6 +2,7 @@
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+repo="$(cd "$root/.." && pwd)"
 state="$(mktemp)"
 out="$(mktemp)"
 
@@ -25,7 +26,7 @@ start_server() {
 }
 
 run() {
-  ANSIBLE_CONFIG="$root/ansible.cfg" ansible-playbook \
+  ANSIBLE_CONFIG="$repo/ansible.cfg" ansible-playbook \
     -i localhost, -c local "$root/tests/dns_idempotency.yml" "$@" >"$out" 2>&1
 }
 

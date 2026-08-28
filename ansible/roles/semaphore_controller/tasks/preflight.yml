@@ -1,0 +1,60 @@
+---
+- name: Validate the controller declaration
+  ansible.builtin.assert:
+    that:
+      - ansible_facts.distribution in ['Debian', 'Ubuntu']
+      - semaphore_version is match('^[0-9]+\.[0-9]+\.[0-9]+$')
+      - semaphore_db_dialect in ['bolt', 'mysql', 'postgres']
+      - semaphore_port | int >= 1
+      - semaphore_port | int <= 65535
+      - semaphore_user is match('^[a-z_][a-z0-9_-]{0,31}$')
+      - semaphore_project_root is match('^/')
+    fail_msg: >-
+      The controller runs on Debian or Ubuntu, needs a pinned three-part Semaphore version, a
+      supported database dialect and an absolute project path.
+
+- name: Refuse to expose the Semaphore UI beyond loopback
+  # There is no TLS, no domain and no reverse proxy here on purpose. Binding
+  # anywhere else would publish an authenticated admin panel over plain HTTP.
+  ansible.builtin.assert:
+    that:
+      - semaphore_interface in ['127.0.0.1', '::1', 'localhost']
+    fail_msg: >-
+      semaphore_interface is '{{ semaphore_interface }}'. This role only binds the UI to loopback;
+      it is reached with 'ssh -N -L {{ semaphore_port }}:127.0.0.1:{{ semaphore_port }} <controller>'.
+      Publishing it would need TLS and an authenticating proxy, which this project does not set up.
+
+- name: Read an existing Semaphore configuration
+  ansible.builtin.slurp:
+    src: "{{ semaphore_config_path }}"
+  register: semaphore_existing_config_raw
+  failed_when: false
+  changed_when: false
+
+- name: Remember the existing configuration
+  ansible.builtin.set_fact:
+    semaphore_existing_config: >-
+      {{ (semaphore_existing_config_raw.content | b64decode | from_json)
+         if semaphore_existing_config_raw.content is defined else {} }}
+  no_log: true
+
+- name: Refuse to change the database dialect of an existing instance
+  # Migrating Semaphore's database is not something a converge run invents. If
+  # the running instance disagrees with the declaration, the declaration is what
+  # gets corrected.
+  ansible.builtin.assert:
+    that:
+      - semaphore_existing_config.dialect | default(semaphore_db_dialect) == semaphore_db_dialect
+    fail_msg: >-
+      {{ semaphore_config_path }} says dialect '{{ semaphore_existing_config.dialect | default('') }}'
+      while semaphore_db_dialect is '{{ semaphore_db_dialect }}'. This role does not migrate a
+      Semaphore database. Set semaphore_db_dialect to what the instance already uses, or migrate
+      deliberately and by hand.
+
+- name: Report what will be reused from the existing instance
+  ansible.builtin.debug:
+    msg: >-
+      {{ semaphore_config_path }}:
+      {{ ('found - reusing its encryption keys and dialect ' ~ (semaphore_existing_config.dialect | default('')))
+         if semaphore_existing_config | length > 0
+         else 'absent - a new configuration with fresh encryption keys will be generated' }}

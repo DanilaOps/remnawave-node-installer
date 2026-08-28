@@ -2,6 +2,7 @@
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+repo="$(cd "$root/.." && pwd)"
 state="$(mktemp)"
 first="$(mktemp)"
 second="$(mktemp)"
@@ -30,7 +31,7 @@ curl --silent --fail \
   >/dev/null
 
 for output in "$first" "$second"; do
-  ANSIBLE_CONFIG="$root/ansible.cfg" ansible-playbook \
+  ANSIBLE_CONFIG="$repo/ansible.cfg" ansible-playbook \
     -i localhost, -c local "$root/tests/panel_idempotency.yml" \
     -e remnawave_panel_url=http://127.0.0.1:18082 \
     -e test_node_env_path="$node_env" \

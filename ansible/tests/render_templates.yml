@@ -235,6 +235,17 @@
         dest: /tmp/remnawave-filter-test.nft
         mode: "0600"
 
+    - name: Render the controller nftables template
+      ansible.builtin.template:
+        src: "{{ playbook_dir }}/../roles/semaphore_controller/templates/remnawave-controller.nft.j2"
+        dest: /tmp/remnawave-controller-test.nft
+        mode: "0600"
+      vars:
+        controller_firewall_table: remnawave_controller
+        controller_ssh_effective_cidrs:
+          - 203.0.113.9/32
+          - "2001:db8::1/128"
+
     - name: Read rendered compose file
       ansible.builtin.slurp:
         src: /tmp/remnawave-compose-test.yml

@@ -1,0 +1,100 @@
+---
+# The Ansible controller: Semaphore behind an SSH tunnel, the pinned Ansible
+# runtime, and the parts of the host that keep both alive. Deliberately no
+# Docker: the controller runs playbooks, it does not run workloads.
+
+# --- Pinned Semaphore -------------------------------------------------------
+# Recorded so the controller can be rebuilt. Changing this is an upgrade and has
+# to be a decision, not a side effect of a rerun.
+semaphore_version: 2.18.29
+semaphore_architecture_map:
+  x86_64: amd64
+  aarch64: arm64
+semaphore_architecture: "{{ semaphore_architecture_map[ansible_facts.architecture] | default('amd64') }}"
+semaphore_release_base: https://github.com/semaphoreui/semaphore/releases/download
+semaphore_archive: "semaphore_{{ semaphore_version }}_linux_{{ semaphore_architecture }}.tar.gz"
+# Preferred: pin the hash here, so the download is verified against a value that
+# does not come from the same place as the file. Left empty, the role verifies
+# against the release's own checksums file, which still catches a truncated or
+# corrupted download but trusts the same host.
+semaphore_sha256: ""
+semaphore_binary_path: /usr/local/bin/semaphore
+
+# --- Identity and paths -----------------------------------------------------
+semaphore_user: semaphore
+semaphore_group: semaphore
+semaphore_home: /var/lib/semaphore
+semaphore_tmp_path: /var/cache/semaphore
+semaphore_config_dir: /etc/semaphore
+# Point this at an existing instance's config.json when adopting a controller
+# that was installed by hand. The role reuses the encryption keys it finds and
+# never regenerates them: new keys would make every stored Key Store entry
+# undecryptable.
+semaphore_config_path: "{{ semaphore_config_dir }}/config.json"
+semaphore_db_dialect: bolt
+semaphore_bolt_path: "{{ semaphore_home }}/database.boltdb"
+semaphore_sqlite_path: "{{ semaphore_home }}/database.sqlite"
+
+# The UI has no public listener, no TLS and no domain. It is reached with
+# ssh -N -L 3000:127.0.0.1:3000 <controller>.
+semaphore_interface: 127.0.0.1
+semaphore_port: 3000
+
+# --- Project checkout -------------------------------------------------------
+semaphore_project_root: /opt/remnawave-node-installer
+semaphore_venv_path: "{{ semaphore_project_root }}/ansible/.venv"
+semaphore_manage_checkout: false
+semaphore_repository: ""
+semaphore_repository_version: feature/ansible-automation
+
+# --- Host -------------------------------------------------------------------
+controller_packages:
+  - ca-certificates
+  - curl
+  - git
+  - python3
+  - python3-venv
+  - openssh-client
+  - sshpass
+  - fail2ban
+  - unattended-upgrades
+  - nftables
+  - rsync
+controller_swap_enabled: true
+controller_swap_size_mb: 2048
+controller_swap_path: /swapfile
+controller_unattended_upgrades_enabled: true
+controller_fail2ban_enabled: true
+controller_fail2ban_maxretry: 5
+controller_fail2ban_bantime: 1h
+
+# Root and password logins are deliberately left alone here: the controller is
+# the machine an operator has to be able to get back into, and this role must
+# never be the reason they cannot.
+controller_firewall_enabled: true
+controller_firewall_table: remnawave_controller
+controller_firewall_config_path: /etc/nftables.d/remnawave-controller.nft
+controller_firewall_rollback_seconds: 120
+# Sources allowed to reach SSH. The address of the live session is always
+# included, so this role cannot lock out the operator running it.
+controller_ssh_allowed_cidrs: []
+
+# --- Backup -----------------------------------------------------------------
+# The Semaphore inventory is the node registry and the one piece of state that
+# does not live in git, so a backup of this host is not optional.
+controller_backup_enabled: true
+controller_backup_dir: /var/backups/semaphore
+controller_backup_keep: 14
+controller_backup_hour: 3
+controller_backup_minute: 17
+# Where the archive is copied off this host. An rsync destination
+# (user@host:/path) or an empty value. Empty means the backup job still runs and
+# still fails loudly, because an archive that never leaves the machine it
+# protects is not a backup.
+controller_backup_remote: ""
+controller_backup_rsync_options: "-e ssh -a --chmod=F600"
+# Project export through the API needs a token; put it in a 0600 file on the
+# controller. Without it the archive holds the database but not a portable,
+# human-readable export of the project and its inventory.
+controller_backup_api_token_path: "{{ semaphore_config_dir }}/backup-api-token"
+controller_backup_api_base: "http://{{ semaphore_interface }}:{{ semaphore_port }}/api"

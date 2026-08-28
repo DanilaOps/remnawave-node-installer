@@ -1,0 +1,7 @@
+[Unit]
+Description=Undo a controller firewall change that locked management out
+
+[Timer]
+OnActiveSec={{ controller_firewall_rollback_seconds }}
+AccuracySec=1s
+Unit=remnawave-controller-firewall-rollback.service

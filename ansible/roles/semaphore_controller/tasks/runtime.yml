@@ -1,0 +1,128 @@
+---
+- name: Create the Semaphore system group
+  ansible.builtin.group:
+    name: "{{ semaphore_group }}"
+    system: true
+    state: present
+
+- name: Create the Semaphore system user
+  ansible.builtin.user:
+    name: "{{ semaphore_user }}"
+    group: "{{ semaphore_group }}"
+    system: true
+    shell: /usr/sbin/nologin
+    home: "{{ semaphore_home }}"
+    create_home: true
+    state: present
+
+- name: Create the controller directories
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: "{{ item.owner | default(semaphore_user) }}"
+    group: "{{ item.group | default(semaphore_group) }}"
+    mode: "{{ item.mode }}"
+  loop:
+    - path: "{{ semaphore_config_dir }}"
+      owner: root
+      group: "{{ semaphore_group }}"
+      mode: "0750"
+    - path: "{{ semaphore_home }}"
+      mode: "0700"
+    - path: "{{ semaphore_tmp_path }}"
+      mode: "0700"
+    - path: "{{ semaphore_home }}/.ssh"
+      mode: "0700"
+
+- name: Clone or update the project checkout
+  ansible.builtin.git:
+    repo: "{{ semaphore_repository }}"
+    dest: "{{ semaphore_project_root }}"
+    version: "{{ semaphore_repository_version }}"
+    update: true
+  when:
+    - semaphore_manage_checkout | bool
+    - semaphore_repository | length > 0
+
+- name: Require the project checkout to exist
+  ansible.builtin.stat:
+    path: "{{ semaphore_project_root }}/ansible.cfg"
+  register: controller_project_checkout
+
+- name: Explain a missing checkout instead of guessing
+  ansible.builtin.assert:
+    that:
+      - controller_project_checkout.stat.exists
+    fail_msg: >-
+      {{ semaphore_project_root }}/ansible.cfg is missing, so this is not a checkout of this project.
+      Clone it there (Semaphore also clones it itself for its runs), or set semaphore_manage_checkout=true
+      with semaphore_repository so this role does it.
+
+- name: Create the Python virtualenv for the pinned Ansible
+  ansible.builtin.command:
+    argv: [python3, -m, venv, "{{ semaphore_venv_path }}"]
+    creates: "{{ semaphore_venv_path }}/bin/python"
+
+- name: Install the pinned Python dependencies
+  ansible.builtin.pip:
+    requirements: "{{ semaphore_project_root }}/ansible/requirements.txt"
+    virtualenv: "{{ semaphore_venv_path }}"
+    state: present
+
+- name: Install the pinned collections into the checkout
+  # Into the checkout, not into a home directory: the service runs with
+  # ProtectHome=true and would not see collections installed under ~/.ansible,
+  # and this way the collections are pinned together with the project.
+  ansible.builtin.command:
+    argv:
+      - "{{ semaphore_venv_path }}/bin/ansible-galaxy"
+      - collection
+      - install
+      - -r
+      - "{{ semaphore_project_root }}/ansible/collections/requirements.yml"
+      - -p
+      - "{{ semaphore_project_root }}/ansible/collections"
+    chdir: "{{ semaphore_project_root }}"
+  register: controller_collections
+  changed_when: "'Nothing to do' not in controller_collections.stdout"
+
+- name: Let the service user read the checkout
+  ansible.builtin.file:
+    path: "{{ semaphore_project_root }}"
+    state: directory
+    owner: root
+    group: "{{ semaphore_group }}"
+    mode: "0755"
+
+- name: Prove the service user can resolve the pinned collections
+  # The failure this catches is silent and confusing: every playbook run fails on
+  # a missing module instead of on a missing collection path.
+  ansible.builtin.command:
+    argv:
+      - "{{ semaphore_venv_path }}/bin/ansible-galaxy"
+      - collection
+      - list
+    chdir: "{{ semaphore_project_root }}"
+  become: true
+  become_user: "{{ semaphore_user }}"
+  environment:
+    HOME: "{{ semaphore_home }}"
+  register: controller_collection_check
+  changed_when: false
+  check_mode: false
+
+- name: Require every collection the roles import to be visible to the service user
+  ansible.builtin.assert:
+    that:
+      - item in controller_collection_check.stdout
+    fail_msg: >-
+      The '{{ semaphore_user }}' user cannot see the '{{ item }}' collection. Runs from the UI would fail
+      on a missing module. Collections must be installed into
+      {{ semaphore_project_root }}/ansible/collections, which is what collections_path in ansible.cfg
+      points at.
+  loop:
+    - community.docker
+    - community.crypto
+    - community.general
+    - ansible.posix
+    - ansible.utils

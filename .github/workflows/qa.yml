@@ -1,3 +1,4 @@
+---
 name: QA
 
 on:
@@ -7,6 +8,8 @@ on:
 permissions:
   contents: read
 
+# Every command runs from the repository root against the single ansible.cfg,
+# exactly the way the wrappers and Semaphore run them.
 jobs:
   shell-checks:
     runs-on: ubuntu-latest
@@ -20,11 +23,27 @@ jobs:
       - name: Validate mirror installer
         run: bash check-mirror.sh ./install-mirror.sh
 
-  ansible-checks:
+      - name: Validate the entry-point wrappers and test scripts
+        run: shellcheck -S warning provision-node setup-controller ansible/tests/*.sh
+
+      - name: Reject CRLF and trailing whitespace in tracked text files
+        run: |
+          bad=0
+          while IFS= read -r file; do
+            case "$file" in *.png|*.jpg|*.ico|*.zip) continue ;; esac
+            if grep -qlU $'\r' "$file" 2>/dev/null; then
+              echo "CRLF in $file"; bad=1
+            fi
+            if grep -qE ' +$' "$file" 2>/dev/null; then
+              echo "trailing whitespace in $file"; bad=1
+            fi
+          done < <(git ls-files)
+          exit "$bad"
+
+  # Fast lane: everything that needs no container and no network. Runs on every
+  # push so a mistake is visible within a minute.
+  fast:
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: ansible
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -37,49 +56,79 @@ jobs:
       - name: Install Ansible test dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
-          ansible-galaxy collection install -r collections/requirements.yml
+          pip install -r ansible/requirements.txt
+          ansible-galaxy collection install -r ansible/collections/requirements.yml \
+            -p ansible/collections
 
       - name: Validate YAML
-        run: yamllint -c .yamllint.yml .
+        run: yamllint -c .yamllint.yml ansible .github
 
       - name: Validate role structure and filters
         run: |
-          python tests/validate_structure.py
-          python -m unittest discover -s tests -p 'test_*.py'
+          python ansible/tests/validate_structure.py
+          python -m unittest discover -s ansible/tests -p 'test_*.py'
 
       - name: Run Ansible syntax check
         run: |
-          ansible-playbook -i inventories/staging/hosts.yml playbooks/provision_node.yml --syntax-check
-          ansible-playbook -i inventories/staging/hosts.yml playbooks/install_node.yml --syntax-check
-          ansible-playbook -i inventories/staging/hosts.yml playbooks/bootstrap.yml --syntax-check
+          for playbook in provision_node install_node bootstrap show_node_identity controller; do
+            ansible-playbook "ansible/playbooks/${playbook}.yml" --syntax-check
+          done
 
-      - name: Verify a two-line host expands to a full node definition
-        run: ansible-playbook -i inventories/staging/hosts.yml tests/inventory_derivation.yml
+      - name: Verify an external inventory still resolves the whole node
+        run: bash ansible/tests/test_external_inventory.sh
 
-      - name: Render core templates
+      - name: Verify how the management allow list is resolved
+        run: ansible-playbook -i localhost, -c local ansible/tests/management_cidrs.yml
+
+      - name: Render core templates and validate the firewall
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq nftables
-          ansible-playbook -i localhost, -c local tests/render_templates.yml
+          ansible-playbook -i localhost, -c local ansible/tests/render_templates.yml
           sudo nft -c -f /tmp/remnawave-filter-test.nft
-
-      - name: Verify Panel API idempotency against stateful mock
-        run: |
-          bash tests/test_panel_idempotency.sh
-          bash tests/test_panel_bridge_idempotency.sh
-          bash tests/test_panel_errors.sh
-
-      - name: Verify DNS reconciliation against stateful mock registrar
-        run: bash tests/test_dns_idempotency.sh
-
-      - name: Validate the rendered nginx configuration in the pinned image
-        run: bash tests/validate_nginx.sh
-
-      - name: Test system roles on Debian 12, Debian 13 and Ubuntu 24.04
-        run: |
-          (cd roles/node_base && molecule test)
-          (cd roles/remnawave_node && molecule test)
+          sudo nft -c -f /tmp/remnawave-controller-test.nft
 
       - name: Run Ansible lint
         run: ansible-lint
+
+  # Full lane: containers, stateful mocks and Molecule. Required for a pull
+  # request, skipped on intermediate pushes so the fast lane stays readable.
+  full:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install Ansible test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r ansible/requirements.txt
+          ansible-galaxy collection install -r ansible/collections/requirements.yml \
+            -p ansible/collections
+
+      - name: Verify Panel API idempotency and concurrency guards against the mock
+        run: |
+          bash ansible/tests/test_panel_idempotency.sh
+          bash ansible/tests/test_panel_bridge_idempotency.sh
+          bash ansible/tests/test_panel_errors.sh
+          bash ansible/tests/test_shared_profile_concurrency.sh
+
+      - name: Verify the end-to-end probe is fail-closed and works
+        run: bash ansible/tests/test_tunnel_probe.sh
+
+      - name: Verify DNS reconciliation against the stateful mock registrar
+        run: bash ansible/tests/test_dns_idempotency.sh
+
+      - name: Validate the rendered nginx configuration in the pinned image
+        run: bash ansible/tests/validate_nginx.sh
+
+      - name: Test system roles on Debian 12, Debian 13 and Ubuntu 24.04
+        run: |
+          (cd ansible/roles/node_base && molecule test)
+          (cd ansible/roles/remnawave_node && molecule test)

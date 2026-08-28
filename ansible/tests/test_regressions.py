@@ -7,6 +7,8 @@ import yaml
 
 
 ROOT = pathlib.Path(__file__).parents[1]
+REPO = ROOT.parent
+GROUP_VARS = ROOT / "playbooks" / "group_vars"
 
 
 class ProductionRegressionTests(unittest.TestCase):
@@ -122,35 +124,65 @@ class ProductionRegressionTests(unittest.TestCase):
 
     def test_root_password_ssh_is_explicit_and_cloud_init_safe(self) -> None:
         defaults = yaml.safe_load(self.read("roles/node_base/defaults/main.yml"))
-        template = self.read("roles/node_base/templates/90-remnawave-ssh.conf.j2")
+        template = self.read("roles/node_base/templates/00-remnawave-ssh.conf.j2")
         system_tasks = self.read("roles/node_base/tasks/system.yml")
+        fleet = yaml.safe_load(self.read("playbooks/group_vars/remnawave_nodes/fleet.yml"))
+        # The role default stays the safe one for anybody else using these
+        # roles; this fleet opts in explicitly, and the run proves the
+        # effective policy afterwards instead of trusting the rendered file.
         self.assertFalse(defaults["node_ssh_allow_root_password"])
+        self.assertTrue(fleet["node_ssh_allow_root_password"])
         self.assertIn("node_ssh_allow_root_password", template)
+        # 00- so the drop-in wins: sshd takes the first value it sees, and a
+        # vendor or cloud-init file sorting earlier would silently override us.
         self.assertIn("dest: /etc/ssh/sshd_config.d/00-remnawave.conf", system_tasks)
+        self.assertIn("path: /etc/ssh/sshd_config.d/90-remnawave.conf", system_tasks)
+        self.assertIn("argv: [/usr/sbin/sshd, -t]", system_tasks)
         self.assertIn("argv: [/usr/sbin/sshd, -T]", system_tasks)
+        self.assertLess(
+            system_tasks.index("argv: [/usr/sbin/sshd, -t]"),
+            system_tasks.index("argv: [/usr/sbin/sshd, -T]"),
+        )
 
-    def test_vault_example_is_not_auto_loaded_as_real_group_vars(self) -> None:
-        for inventory in ("staging", "production"):
-            inventory_root = ROOT / "inventories" / inventory / "group_vars"
-            self.assertTrue((inventory_root / "all" / "vault.yml.example").is_file())
-            self.assertFalse((inventory_root / "vault.example.yml").exists())
-            # Anything ending in .yml inside group_vars is loaded by Ansible, so an
-            # example file must never use that extension: it would define real
-            # variables and shadow whatever the operator did not override.
-            for path in inventory_root.rglob("*.yml"):
+    def test_examples_live_outside_every_group_vars_directory(self) -> None:
+        # Ansible loads every .yml it finds in a group_vars directory, so an
+        # example kept there defines real variable names the moment somebody
+        # drops the .example suffix. Examples live in ansible/examples/ instead.
+        self.assertTrue((ROOT / "examples" / "vault.yml.example").is_file())
+        self.assertTrue((ROOT / "examples" / "local-overrides.yml.example").is_file())
+        for path in GROUP_VARS.rglob("*"):
+            if path.is_file():
                 self.assertNotIn(
                     ".example", path.name, f"{path} would be auto-loaded by Ansible"
                 )
+        self.assertEqual(
+            [], list((ROOT / "inventories").rglob("group_vars")),
+            "fleet configuration must live next to the playbook, not next to an inventory",
+        )
 
     def test_ipaddr_preflight_conditions_return_booleans(self) -> None:
-        preflight = self.read("roles/node_base/tasks/preflight.yml")
+        preflight = "".join(
+            self.read(f"roles/node_base/tasks/{name}.yml")
+            for name in ("preflight_controller", "preflight_node", "preflight_management_cidrs")
+        )
         self.assertNotIn("- node_public_ip | ansible.utils.ipaddr\n", preflight)
         self.assertNotIn("- item | ansible.utils.ipaddr\n", preflight)
         self.assertIn("(node_public_ip | ansible.utils.ipaddr) != false", preflight)
 
     def test_read_only_preflight_commands_run_in_check_mode(self) -> None:
-        preflight = self.read("roles/node_base/tasks/preflight.yml")
-        self.assertGreaterEqual(preflight.count("check_mode: false"), 4)
+        controller = self.read("roles/node_base/tasks/preflight_controller.yml")
+        node = self.read("roles/node_base/tasks/preflight_node.yml")
+        # Every read the checks depend on has to happen for real, or --check
+        # reports a green preflight it never performed.
+        self.assertGreaterEqual(controller.count("check_mode: false"), 5)
+        self.assertGreaterEqual(node.count("check_mode: false"), 3)
+
+    def test_management_allow_list_is_deduplicated(self) -> None:
+        cidrs = self.read("roles/node_base/tasks/preflight_management_cidrs.yml")
+        # | unique binds tighter than +, so it has to wrap the whole sum. The
+        # behaviour itself is covered by tests/management_cidrs.yml.
+        self.assertIn("+ (management_cidrs_extra | default([]))) | unique }}", cidrs)
+        self.assertNotIn("+ (management_cidrs_extra | default([])) | unique }}", cidrs)
 
     def test_bios_grub_target_is_discovered_before_package_upgrade(self) -> None:
         system_tasks = self.read("roles/node_base/tasks/system.yml")
@@ -168,7 +200,7 @@ class ProductionRegressionTests(unittest.TestCase):
 
     def test_firewall_requires_a_new_authenticated_connection(self) -> None:
         firewall = self.read("roles/node_base/tasks/firewall.yml")
-        preflight = self.read("roles/node_base/tasks/preflight.yml")
+        preflight = self.read("roles/node_base/tasks/preflight_node.yml")
         self.assertIn("ansible.builtin.meta: reset_connection", firewall)
         self.assertIn("ansible.builtin.wait_for_connection", firewall)
         self.assertNotIn("ansible.builtin.wait_for:\n", firewall)
@@ -181,89 +213,305 @@ class OperatorWorkflowTests(unittest.TestCase):
     def read(self, relative: str) -> str:
         return (ROOT / relative).read_text(encoding="utf-8")
 
-    def test_a_new_host_needs_only_address_and_label(self) -> None:
+    def test_a_new_host_needs_only_an_address(self) -> None:
         hosts = yaml.safe_load(self.read("inventories/staging/hosts.yml"))
         block = hosts["all"]["children"]["remnawave_nodes"]["hosts"]["ee01"]
-        self.assertEqual(set(block), {"ansible_host", "node_host_remark"})
+        self.assertEqual(set(block), {"ansible_host"})
 
     def test_identity_is_derived_from_the_inventory_hostname(self) -> None:
-        for inventory in ("staging", "production"):
-            group_vars = self.read(f"inventories/{inventory}/group_vars/remnawave_nodes.yml")
-            self.assertIn("inventory_hostname | regex_replace", group_vars)
-            self.assertIn('selfsteal_domain: "{{ inventory_hostname }}.{{ node_domain_zone }}"', group_vars)
-            # Nothing identity-shaped may be required per host any more.
-            self.assertNotIn("\nnode_id: ee_01", group_vars)
+        identity = self.read("playbooks/group_vars/remnawave_nodes/identity.yml")
+        self.assertIn("inventory_hostname | regex_replace", identity)
+        self.assertIn(
+            'selfsteal_domain: "{{ inventory_hostname }}.{{ node_domain_zone }}"', identity
+        )
+        # Nothing identity-shaped may be required per host any more.
+        self.assertNotIn("\nnode_id: ee_01", identity)
 
-    def test_derivation_block_does_not_drift_between_inventories(self) -> None:
-        def derivation(text: str) -> str:
-            start = text.index("# --- Derived identity")
-            end = text.index("# --- Runtime")
-            return text[start:end]
+    def test_fleet_configuration_is_declared_exactly_once(self) -> None:
+        # Two copies of the same fleet file under two inventories used to be kept
+        # in step by a test. The structure now makes the drift impossible: the
+        # files live next to the playbook and every inventory shares them.
+        self.assertTrue((GROUP_VARS / "all" / "panel.yml").is_file())
+        self.assertTrue((GROUP_VARS / "all" / "countries.yml").is_file())
+        self.assertTrue((GROUP_VARS / "remnawave_nodes" / "identity.yml").is_file())
+        self.assertTrue((GROUP_VARS / "remnawave_nodes" / "fleet.yml").is_file())
+        inventories = [
+            path for path in (ROOT / "inventories").rglob("*.yml") if path.is_file()
+        ]
+        self.assertTrue(inventories)
+        for path in inventories:
+            self.assertEqual(
+                "hosts.yml", path.name,
+                f"{path} makes an inventory carry more than node addresses",
+            )
 
-        staging = derivation(self.read("inventories/staging/group_vars/remnawave_nodes.yml"))
-        production = derivation(self.read("inventories/production/group_vars/remnawave_nodes.yml"))
-        self.assertEqual(staging, production)
+    def test_connection_variables_stay_scoped_to_the_node_group(self) -> None:
+        # group_vars/all applies to every host a playbook in this directory
+        # targets, localhost and the controller included. ansible_user there
+        # would silently redirect a localhost play to the deployer account.
+        for path in (GROUP_VARS / "all").glob("*.yml"):
+            values = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+            for connection_var in ("ansible_user", "ansible_port", "ansible_host"):
+                self.assertNotIn(connection_var, values, f"{path} must not set {connection_var}")
+        fleet = yaml.safe_load(self.read("playbooks/group_vars/remnawave_nodes/fleet.yml"))
+        self.assertEqual("deployer", fleet["ansible_user"])
+
+    def test_local_overrides_win_over_the_published_documentation_values(self) -> None:
+        # The real deployment values are loaded last of the group files, so they
+        # override the documentation values that are safe to publish. Both are in
+        # the same precedence tier, so only the file name decides.
+        tracked = sorted(
+            path.name for path in (GROUP_VARS / "remnawave_nodes").glob("*.yml")
+        )
+        self.assertTrue(tracked)
+        for name in tracked:
+            self.assertLess(
+                name, "zz-local.yml",
+                "zz-local.yml must sort after every tracked group file",
+            )
+        gitignore = (REPO / ".gitignore").read_text(encoding="utf-8")
+        self.assertIn(
+            "ansible/playbooks/group_vars/remnawave_nodes/zz-local.yml", gitignore
+        )
+        self.assertIn("ansible/playbooks/group_vars/all/vault.yml", gitignore)
 
     def test_bootstrap_credentials_are_not_stored_in_inventory(self) -> None:
         defaults = self.read("roles/node_bootstrap/defaults/main.yml")
         # The root password is read from the environment (the wrapper prompts for
-        # it) and only falls back to the vault; it never lands in inventory.
+        # it, Semaphore passes a secret survey field of the same name) and only
+        # falls back to the vault; it never lands in inventory or group_vars.
         self.assertIn("lookup('env', 'NODE_ROOT_PASSWORD')", defaults)
         self.assertIn("vault_node_root_password", defaults)
         self.assertIn("first_found", defaults)
-        for inventory in ("staging", "production"):
-            group_vars = self.read(f"inventories/{inventory}/group_vars/remnawave_nodes.yml")
-            self.assertNotIn("bootstrap_ssh_password", group_vars)
-            self.assertNotIn("bootstrap_authorized_keys", group_vars)
+        for path in list(GROUP_VARS.rglob("*.yml")) + list((ROOT / "inventories").rglob("*.yml")):
+            text = path.read_text(encoding="utf-8")
+            self.assertNotIn("bootstrap_ssh_password", text, f"{path} must not carry a password")
+            self.assertNotIn("bootstrap_authorized_keys", text)
 
     def test_controller_address_is_discovered_not_configured(self) -> None:
-        preflight = self.read("roles/node_base/tasks/preflight.yml")
-        panel = self.read("inventories/staging/group_vars/all/panel.yml")
-        self.assertIn("Resolve the management allow list", preflight)
-        self.assertIn("management_cidrs_extra", preflight)
+        cidrs = self.read("roles/node_base/tasks/preflight_management_cidrs.yml")
+        panel = self.read("playbooks/group_vars/all/panel.yml")
+        self.assertIn("Resolve the management allow list", cidrs)
+        self.assertIn("management_cidrs_extra", cidrs)
+        # No real address is published: the controller's own is discovered from
+        # the live SSH session, and a workstation goes into the ignored override.
         self.assertIn("management_cidrs_extra: []", panel)
         # An explicitly configured list must still win, and still be validated.
-        self.assertIn("Require the management allow list to include the source seen by sshd", preflight)
+        self.assertIn("Require the management allow list to include the source seen by sshd", cidrs)
 
-    def test_panel_state_is_checked_before_the_node_is_touched(self) -> None:
-        preflight = self.read("roles/node_base/tasks/preflight.yml")
+    def test_panel_state_is_checked_before_anything_changes(self) -> None:
+        preflight = self.read("roles/node_base/tasks/preflight_controller.yml")
+        plays = yaml.safe_load(self.read("playbooks/install_node.yml"))
+        # The panel checks are their own play, before the play that reconciles
+        # DNS and before the play that touches the server: a conflict has to stop
+        # the run while the registrar and the node are both untouched.
+        self.assertEqual(3, len(plays))
+        self.assertIn("preflight_controller.yml", self.read("playbooks/install_node.yml"))
+        self.assertLess(
+            self.read("playbooks/install_node.yml").index("preflight_controller.yml"),
+            self.read("playbooks/install_node.yml").index("role: dns"),
+        )
+        self.assertEqual("local", plays[0]["connection"])
+        self.assertEqual("local", plays[1]["connection"])
+        self.assertNotIn("connection", plays[2])
+        # One node per run, and a fleet-wide reconcile still one at a time.
+        self.assertEqual(1, plays[1]["serial"])
+        self.assertEqual(1, plays[2]["serial"])
+        self.assertIn("node_allow_bulk", self.read("playbooks/install_node.yml"))
+        # The node-side half still runs before the first change to the server.
         main = self.read("roles/node_base/tasks/main.yml")
-        # preflight is the first thing node_base does, and node_base is the first
-        # mutating role, so these checks run while the server is still untouched.
-        self.assertLess(main.index("preflight.yml"), main.index("system.yml"))
+        self.assertLess(main.index("preflight_node.yml"), main.index("system.yml"))
         for check in (
             "Reject a conflicting Node in the panel",
             "Require the shared Config Profile to exist before the node is touched",
             "Require the target Config Profile to carry routing rules",
             "Reject an inbound tag that another Config Profile already owns",
             "Reject ambiguous Hosts in the panel",
+            "Treat an empty Config Profile list as a panel problem",
+            "Require a display name for this node's country",
+            "Require an unmanaged DNS record to already be correct",
         ):
             self.assertIn(check, preflight)
 
+
+class SharedProfileTests(unittest.TestCase):
+    """The shared profile carries the routing every published Host depends on."""
+
+    def read(self, relative: str) -> str:
+        return (ROOT / relative).read_text(encoding="utf-8")
+
+    def test_the_profile_is_re_read_immediately_before_it_is_written(self) -> None:
+        profile = self.read("roles/remnawave_panel/tasks/profile.yml")
+        recheck = profile.index("Re-read the shared Config Profile immediately before writing it")
+        guard = profile.index("Refuse to overwrite a Config Profile that changed")
+        patch = profile.index("Update Config Profile only when its managed config differs")
+        # Read, compare, then write - in that order, with nothing in between.
+        self.assertLess(recheck, guard)
+        self.assertLess(guard, patch)
+        self.assertIn("remnawave_profile_fingerprint_before", profile)
+        self.assertIn("to_json(sort_keys=True) | hash('sha256')", profile)
+
+    def test_nothing_that_was_in_the_profile_may_disappear(self) -> None:
+        profile = self.read("roles/remnawave_panel/tasks/profile.yml")
+        self.assertIn("remnawave_profile_tags_before", profile)
+        survival = profile.index("Require every inbound the shared profile already held")
+        final_read = profile.index("Read reconciled Config Profile and panel-assigned inbound UUIDs")
+        self.assertLess(final_read, survival)
+
+    def test_pruning_is_limited_to_this_node_namespace(self) -> None:
+        profile = self.read("roles/remnawave_panel/tasks/profile.yml")
+        self.assertIn("Require every pruned inbound tag to belong to this node", profile)
+        # The check must come before the first request, not after the merge.
+        self.assertLess(
+            profile.index("Require every pruned inbound tag to belong to this node"),
+            profile.index("List Config Profiles"),
+        )
+
+    def test_only_protocols_the_panel_strips_per_node_are_allowed(self) -> None:
+        # The panel filters inbounds of managed protocols a node does not
+        # activate, so a neighbour's Reality key never reaches it. An inbound of
+        # any other protocol goes to every node in full.
+        defaults = yaml.safe_load(self.read("roles/remnawave_panel/defaults/main.yml"))
+        self.assertEqual(
+            ["vless", "trojan", "shadowsocks", "hysteria"],
+            defaults["shared_profile_managed_protocols"],
+        )
+        self.assertEqual([], defaults["shared_profile_allowed_unmanaged_inbound_tags"])
+        profile = self.read("roles/remnawave_panel/tasks/profile.yml")
+        self.assertIn("shared_profile_allowed_unmanaged_inbound_tags", profile)
+
+    def test_the_whole_profile_never_stays_on_a_node_after_a_failure(self) -> None:
+        profile = self.read("roles/remnawave_panel/tasks/profile.yml")
+        block = profile.index("Validate the merged profile with the pinned Node image")
+        always = profile.index("always:", block)
+        removal = profile.index("Remove the temporary validation profile", block)
+        self.assertLess(always, removal)
+
+    def test_adoption_requires_an_explicit_uuid(self) -> None:
+        profile = self.read("roles/remnawave_panel/tasks/profile.yml")
+        self.assertIn("remnawave_adopt_existing_profile | bool and profile_uuid | length > 0", profile)
+
     def test_wrappers_stay_thin(self) -> None:
         for name in ("provision-node", "setup-controller"):
-            script = self.read(name)
+            script = (REPO / name).read_text(encoding="utf-8")
             self.assertTrue(script.startswith("#!/usr/bin/env bash"))
             # Infrastructure logic belongs in the playbooks, not in the wrapper.
             for forbidden in ("nft ", "certbot", "docker run", "/api/nodes", "iptables"):
                 self.assertNotIn(forbidden, script, f"{name} must not contain {forbidden!r}")
-        wrapper = self.read("provision-node")
-        self.assertIn("playbooks/provision_node.yml", wrapper)
+        wrapper = (REPO / "provision-node").read_text(encoding="utf-8")
+        self.assertIn("ansible/playbooks/provision_node.yml", wrapper)
         self.assertIn("NODE_ROOT_PASSWORD", wrapper)
         # The probe must not silently record trust in a new server's host key.
         self.assertIn("UserKnownHostsFile=/dev/null", wrapper)
 
-    def test_semaphore_runs_from_the_repository_root(self) -> None:
-        config = (ROOT.parent / "ansible.cfg").read_text(encoding="utf-8")
-        unit = self.read("semaphore/semaphore.service")
+    def test_one_configuration_and_one_entry_point(self) -> None:
+        config = (REPO / "ansible.cfg").read_text(encoding="utf-8")
+        unit = self.read("roles/semaphore_controller/templates/semaphore.service.j2")
         self.assertIn("roles_path = ansible/roles", config)
         self.assertIn("filter_plugins = ansible/filter_plugins", config)
-        self.assertIn("Environment=SEMAPHORE_INTERFACE=127.0.0.1", unit)
+        # Collections belong to the checkout, not to the invoking user's home:
+        # the service user runs with ProtectHome and would not see them there.
+        self.assertIn("collections_path = ansible/collections", config)
+        # A second configuration file is how the CLI and the UI drift apart.
+        self.assertFalse(
+            (ROOT / "ansible.cfg").exists(), "ansible/ansible.cfg must not come back"
+        )
+        for name in ("provision-node", "setup-controller"):
+            self.assertTrue((REPO / name).is_file(), f"{name} must live in the repository root")
+            self.assertFalse((ROOT / name).exists(), f"{name} must not be duplicated under ansible/")
+        self.assertIn("Environment=SEMAPHORE_INTERFACE={{ semaphore_interface }}", unit)
         self.assertIn("Environment=SEMAPHORE_HOME_DIR_MODE=user_home", unit)
-        self.assertNotIn("Environment=ANSIBLE_CONFIG=", unit)
-        jail = self.read("semaphore/fail2ban-sshd.local")
+        # A persistent HOME is what makes a node's accepted host key survive.
+        self.assertIn("Environment=HOME={{ semaphore_home }}", unit)
+        # The unit must not carry a configuration path of its own: one ansible.cfg.
+        self.assertNotIn("ANSIBLE_CONFIG", unit)
+        jail = self.read("roles/semaphore_controller/templates/fail2ban-sshd.local.j2")
         self.assertIn("backend = systemd", jail)
-        self.assertIn("maxretry = 5", jail)
+        # The unit and the jail are templates of the controller role now, so
+        # there is exactly one owner for each file on the controller.
+        self.assertFalse(
+            (ROOT / "semaphore" / "semaphore.service").exists(),
+            "the unit has one owner: the controller role",
+        )
+
+
+class ControllerTests(unittest.TestCase):
+    """The controller is rebuildable and cannot publish its own UI."""
+
+    def read(self, relative: str) -> str:
+        return (ROOT / relative).read_text(encoding="utf-8")
+
+    def test_semaphore_version_is_pinned_and_verified(self) -> None:
+        defaults = yaml.safe_load(self.read("roles/semaphore_controller/defaults/main.yml"))
+        self.assertEqual("2.18.29", defaults["semaphore_version"])
+        tasks = self.read("roles/semaphore_controller/tasks/semaphore.yml")
+        # Downloaded against a checksum, and the running binary is checked
+        # against the pin afterwards - a controller that cannot be rebuilt to the
+        # same version is not rebuildable.
+        self.assertIn("checksum:", tasks)
+        self.assertIn("Require the installed binary to be the pinned version", tasks)
+
+    def test_encryption_keys_are_generated_once_and_reused(self) -> None:
+        preflight = self.read("roles/semaphore_controller/tasks/preflight.yml")
+        tasks = self.read("roles/semaphore_controller/tasks/semaphore.yml")
+        # New keys would make every stored Key Store entry undecryptable.
+        self.assertIn("Read an existing Semaphore configuration", preflight)
+        self.assertIn("semaphore_existing_config[item] | default('') | length == 0", tasks)
+
+    def test_the_database_dialect_is_never_migrated_silently(self) -> None:
+        preflight = self.read("roles/semaphore_controller/tasks/preflight.yml")
+        self.assertIn("Refuse to change the database dialect of an existing instance", preflight)
+
+    def test_the_ui_cannot_be_bound_beyond_loopback(self) -> None:
+        preflight = self.read("roles/semaphore_controller/tasks/preflight.yml")
+        tasks = self.read("roles/semaphore_controller/tasks/semaphore.yml")
+        self.assertIn("Refuse to expose the Semaphore UI beyond loopback", preflight)
+        self.assertIn("Require the UI listener to be loopback only", tasks)
+
+    def test_the_controller_never_installs_or_uses_docker(self) -> None:
+        # The controller runs playbooks; it does not run workloads. Saying so in
+        # a comment is allowed, doing it is not.
+        for path in (ROOT / "roles" / "semaphore_controller").rglob("*"):
+            if not path.is_file():
+                continue
+            text = path.read_text(encoding="utf-8")
+            for forbidden in (
+                # A module invocation, not the collection name: the controller
+                # installs community.docker because the node roles import it, and
+                # verifies the service user can see it. It never calls it.
+                "community.docker.",
+                "docker run",
+                "docker compose",
+                "docker.io",
+                "docker-ce",
+            ):
+                self.assertNotIn(forbidden, text, f"{path} brings Docker onto the controller")
+        defaults = yaml.safe_load(self.read("roles/semaphore_controller/defaults/main.yml"))
+        self.assertNotIn("docker", " ".join(defaults["controller_packages"]))
+
+    def test_the_controller_does_not_touch_ssh_authentication(self) -> None:
+        # The controller is the machine an operator must be able to get back
+        # into; this role is never the reason they cannot.
+        for path in (ROOT / "roles" / "semaphore_controller").rglob("*"):
+            if path.is_file():
+                text = path.read_text(encoding="utf-8")
+                for forbidden in ("PermitRootLogin", "PasswordAuthentication", "sshd_config"):
+                    self.assertNotIn(forbidden, text, f"{path} changes SSH policy")
+
+    def test_the_firewall_cannot_lock_out_the_live_session(self) -> None:
+        firewall = self.read("roles/semaphore_controller/tasks/firewall.yml")
+        self.assertIn("controller_observed_ssh_source", firewall)
+        self.assertIn("wait_for_connection", firewall)
+        self.assertIn("rollback", firewall)
+
+    def test_a_local_only_backup_is_reported_as_a_failure(self) -> None:
+        script = self.read("roles/semaphore_controller/templates/semaphore-backup.sh.j2")
+        # The Semaphore inventory is the node registry and exists nowhere else,
+        # so an archive that never leaves this host is not a backup.
+        self.assertIn("controller_backup_remote is not set", script)
+        self.assertIn("exit 1", script)
+        # And the keys that would decrypt it never travel with it.
+        self.assertIn("excluded=encryption_keys,vault_password,deployer_private_key", script)
 
 
 if __name__ == "__main__":

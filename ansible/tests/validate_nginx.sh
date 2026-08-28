@@ -7,6 +7,7 @@
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+repo="$(cd "$root/.." && pwd)"
 work="$(mktemp -d)"
 image="${REMNAWAVE_NGINX_IMAGE:-nginx:1.29.3-alpine}"
 
@@ -19,7 +20,7 @@ openssl req -x509 -newkey rsa:2048 -nodes -sha256 -days 1 \
   -keyout "$work/tls/privkey.pem" -out "$work/tls/fullchain.pem" \
   -subj "/CN=node-test-01.example.com" >/dev/null 2>&1
 
-ANSIBLE_CONFIG="$root/ansible.cfg" ansible-playbook \
+ANSIBLE_CONFIG="$repo/ansible.cfg" ansible-playbook \
   -i localhost, -c local "$root/tests/render_templates.yml" \
   -e certificate_live_dir="$work/tls" \
   -e remnawave_nginx_user=root \

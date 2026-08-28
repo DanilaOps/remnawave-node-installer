@@ -2,6 +2,7 @@
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+repo="$(cd "$root/.." && pwd)"
 state="$(mktemp)"
 first="$(mktemp)"
 second="$(mktemp)"
@@ -26,10 +27,10 @@ for _ in $(seq 1 30); do
   sleep 0.1
 done
 
-ANSIBLE_CONFIG="$root/ansible.cfg" ansible-playbook \
+ANSIBLE_CONFIG="$repo/ansible.cfg" ansible-playbook \
   -i localhost, -c local "$root/tests/panel_idempotency.yml" \
   -e test_node_env_path="$node_env" | tee "$first"
-ANSIBLE_CONFIG="$root/ansible.cfg" ansible-playbook \
+ANSIBLE_CONFIG="$repo/ansible.cfg" ansible-playbook \
   -i localhost, -c local "$root/tests/panel_idempotency.yml" \
   -e test_node_env_path="$node_env" | tee "$second"
 

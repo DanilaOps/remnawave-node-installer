@@ -1,0 +1,49 @@
+---
+- name: Create the backup directory
+  ansible.builtin.file:
+    path: "{{ controller_backup_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+
+- name: Install the backup script
+  ansible.builtin.template:
+    src: semaphore-backup.sh.j2
+    dest: /usr/local/sbin/semaphore-backup
+    owner: root
+    group: root
+    mode: "0750"
+
+- name: Install the backup units
+  ansible.builtin.template:
+    src: "{{ item.src }}"
+    dest: "{{ item.dest }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - src: semaphore-backup.service.j2
+      dest: /etc/systemd/system/semaphore-backup.service
+    - src: semaphore-backup.timer.j2
+      dest: /etc/systemd/system/semaphore-backup.timer
+  notify: Reload systemd
+
+- name: Enable the nightly backup timer
+  ansible.builtin.systemd_service:
+    name: semaphore-backup.timer
+    state: started
+    enabled: true
+    daemon_reload: true
+
+- name: Say plainly when the backup has nowhere to go
+  # An archive that never leaves the machine it protects is not a backup, so this
+  # is reported rather than quietly counted as done. The job itself also exits
+  # non-zero, so the timer's status shows it.
+  ansible.builtin.debug:
+    msg: >-
+      controller_backup_remote is empty. The nightly job will produce an archive in
+      {{ controller_backup_dir }} and then fail, because nothing copies it off this host. Set
+      controller_backup_remote to an rsync destination - the Semaphore inventory is the node
+      registry and does not exist anywhere else.
+  when: controller_backup_remote | length == 0

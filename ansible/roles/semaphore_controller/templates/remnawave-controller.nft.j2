@@ -1,0 +1,31 @@
+#!/usr/sbin/nft -f
+# Controller firewall. Its own isolated table, so anything else on the host keeps
+# working: this file is the only thing this project owns in nftables here.
+table inet {{ controller_firewall_table }} {
+  chain input {
+    type filter hook input priority 0; policy drop;
+
+    iif lo accept
+    ct state established,related accept
+    ct state invalid drop
+
+    ip protocol icmp icmp type { echo-request, destination-unreachable, time-exceeded } accept
+    ip6 nexthdr icmpv6 accept
+
+{% for cidr in controller_ssh_effective_cidrs %}
+{% if ':' in cidr %}
+    ip6 saddr {{ cidr }} tcp dport {{ ansible_port | default(22) }} accept
+{% else %}
+    ip saddr {{ cidr }} tcp dport {{ ansible_port | default(22) }} accept
+{% endif %}
+{% endfor %}
+  }
+
+  chain forward {
+    type filter hook forward priority 0; policy drop;
+  }
+
+  chain output {
+    type filter hook output priority 0; policy accept;
+  }
+}

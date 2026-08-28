@@ -17,6 +17,9 @@ EXPECTED_ROLES = {
     "remnawave_panel",
     "remnawave_node",
     "node_verify",
+    # The controller is the one thing here that is not a node, so it is the one
+    # role that does not belong to the node pipeline.
+    "semaphore_controller",
 }
 
 

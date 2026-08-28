@@ -1,0 +1,7 @@
+[Unit]
+Description=Restore the previous Remnawave controller nftables table
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sh -c 'nft delete table inet {{ controller_firewall_table }} 2>/dev/null; \
+  test -s /run/remnawave-controller-nft-backup.nft && nft -f /run/remnawave-controller-nft-backup.nft || true'

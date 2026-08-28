@@ -2,6 +2,7 @@
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+repo="$(cd "$root/.." && pwd)"
 state="$(mktemp)"
 output="$(mktemp)"
 node_env="$(mktemp)"
@@ -24,7 +25,7 @@ done
 expect_failure() {
   local label="$1"
   shift
-  if ANSIBLE_CONFIG="$root/ansible.cfg" ansible-playbook \
+  if ANSIBLE_CONFIG="$repo/ansible.cfg" ansible-playbook \
     -i localhost, -c local "$root/tests/panel_idempotency.yml" \
     -e remnawave_panel_url=http://127.0.0.1:18081 \
     -e test_node_env_path="$node_env" "$@" >"$output" 2>&1; then

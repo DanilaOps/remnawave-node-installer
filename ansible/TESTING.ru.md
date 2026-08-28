@@ -69,46 +69,54 @@ ssh-keyscan -H -t ed25519 203.0.113.10 >> ~/.ssh/known_hosts
 
 Сначала прогоните локальные проверки проекта:
 
+Все команды проекта запускаются из **корня репозитория** — там лежит единственный
+`ansible.cfg`, и ни одной переменной окружения для этого не нужно:
+
 ```bash
-yamllint -c .yamllint.yml .
-python tests/validate_structure.py
-python -m unittest discover -s tests -p 'test_*.py'
-ansible-playbook -i inventories/staging/hosts.yml playbooks/install_node.yml --syntax-check
-ansible-playbook -i localhost, -c local tests/render_templates.yml
-bash tests/test_panel_idempotency.sh
-bash tests/test_panel_bridge_idempotency.sh
-bash tests/test_panel_errors.sh
-ansible-lint --offline
+yamllint -c .yamllint.yml ansible .github
+python ansible/tests/validate_structure.py
+python -m unittest discover -s ansible/tests -p 'test_*.py'
+ansible-playbook ansible/playbooks/provision_node.yml --syntax-check
+bash ansible/tests/test_external_inventory.sh
+ansible-playbook -i localhost, -c local ansible/tests/management_cidrs.yml
+ansible-playbook -i localhost, -c local ansible/tests/render_templates.yml
+bash ansible/tests/test_panel_idempotency.sh
+bash ansible/tests/test_shared_profile_concurrency.sh
+bash ansible/tests/test_panel_bridge_idempotency.sh
+bash ansible/tests/test_panel_errors.sh
+bash ansible/tests/test_dns_idempotency.sh
+bash ansible/tests/validate_nginx.sh
+ansible-lint
 ```
 
 Если на Controller доступен Docker daemon, дополнительно выполните Molecule:
 
 ```bash
-(cd roles/node_base && molecule test)
-(cd roles/remnawave_node && molecule test)
+(cd ansible/roles/node_base && molecule test)
+(cd ansible/roles/remnawave_node && molecule test)
 ```
 
 Переходите к VPS только после успешных локальных проверок.
 
 ## 4. Отдельный test inventory
 
-`inventories/test/` целиком в `.gitignore`: в нём реальные IP, домены и URL панели, которым нельзя попадать в публичный репозиторий. Для тестовых прогонов ставьте `certificate_acme_environment: staging`, иначе повторные попытки упрутся в лимиты Let's Encrypt.
+`ansible/inventories/test/` целиком в `.gitignore`: в нём реальные IP, которым нельзя попадать в публичный репозиторий. Для тестовых прогонов ставьте `certificate_acme_environment: staging`, иначе повторные попытки упрутся в лимиты Let's Encrypt.
 
-Не подставляйте реальные значения в staging-пример. Создайте отдельный inventory:
+**Важно после реструктуризации.** Парковые переменные больше не лежат рядом с inventory — они в `ansible/playbooks/group_vars/`, и такие `group_vars` имеют приоритет **выше** инвентарных. Поэтому реальные значения, положенные рядом с тестовым inventory, будут молча перекрыты документационными. Настоящие значения идут в один git-ignored файл:
 
 ```bash
-mkdir -p inventories/test/group_vars/all
-cp inventories/staging/hosts.yml inventories/test/hosts.yml
-cp inventories/staging/group_vars/all/panel.yml inventories/test/group_vars/all/panel.yml
-cp inventories/staging/group_vars/remnawave_nodes.yml inventories/test/group_vars/remnawave_nodes.yml
-cp inventories/staging/group_vars/all/vault.yml.example inventories/test/group_vars/all/vault.yml
-ansible-vault encrypt inventories/test/group_vars/all/vault.yml
-ansible-vault edit inventories/test/group_vars/all/vault.yml
+mkdir -p ansible/inventories/test
+cp ansible/inventories/staging/hosts.yml ansible/inventories/test/hosts.yml
+cp ansible/examples/local-overrides.yml.example \
+   ansible/playbooks/group_vars/remnawave_nodes/zz-local.yml
+cp ansible/examples/vault.yml.example ansible/playbooks/group_vars/all/vault.yml
+ansible-vault encrypt ansible/playbooks/group_vars/all/vault.yml
+ansible-vault edit ansible/playbooks/group_vars/all/vault.yml
 ```
 
-Файл `vault.yml` исключён из Git. Заполните в нём настоящий API token тестовой Panel и, если выбран парольный SSH, `vault_node_root_password`. Токену нужны права чтения и изменения Nodes, Config Profiles, Hosts, Internal Squads и Users, а также доступ к keygen. Cloudflare token нужен только для `cloudflare_dns`; в этом случае добавьте в открытые переменные ссылку `cloudflare_token: "{{ vault_cloudflare_token }}"`. `vault_bridge_secret` можно оставить пустым, тогда роль один раз сгенерирует пароль нового bridge-пользователя и далее будет переиспользовать его из Panel. Если пароль задаётся заранее, явно свяжите его через `bridge_secret: "{{ vault_bridge_secret }}"`.
+Файл `vault.yml` и `zz-local.yml` исключены из Git. Заполните в нём настоящий API token тестовой Panel и, если выбран парольный SSH, `vault_node_root_password`. Токену нужны права чтения и изменения Nodes, Config Profiles, Hosts, Internal Squads и Users, а также доступ к keygen. Cloudflare token нужен только для `cloudflare_dns`; в этом случае добавьте в открытые переменные ссылку `cloudflare_token: "{{ vault_cloudflare_token }}"`. `vault_bridge_secret` можно оставить пустым, тогда роль один раз сгенерирует пароль нового bridge-пользователя и далее будет переиспользовать его из Panel. Если пароль задаётся заранее, явно свяжите его через `bridge_secret: "{{ vault_bridge_secret }}"`.
 
-Минимальный `inventories/test/hosts.yml` для direct EU-ноды:
+Минимальный `ansible/inventories/test/hosts.yml` для direct EU-ноды:
 
 ```yaml
 ---
@@ -144,67 +152,40 @@ node_ssh_allow_root_password: true
 
 По умолчанию `node_ssh_allow_root_password` равен `false`. При включении роль проверяет итог через `sshd -T`, а nftables разрешает порт 22 только адресам из `management_cidrs`. Не задавайте `0.0.0.0/0` ради удобства: при изменении внешнего IP Controller сначала обновите CIDR у провайдера и в inventory.
 
-Проверьте и замените значения в `inventories/test/group_vars/remnawave_nodes.yml`. Для direct-теста файл должен содержать как минимум следующий набор:
+Парковых переменных для теста писать не нужно: имя хоста в inventory даёт
+идентичность, а версии, политика сертификата и проверки берутся из
+`ansible/playbooks/group_vars/`. В git-ignored `zz-local.yml` остаётся только то,
+что относится к этому развёртыванию:
 
 ```yaml
 ---
-ansible_user: deployer
-ansible_port: 22
-
-management_cidrs:
-  - 198.51.100.10/32
+remnawave_panel_url: https://panel-test.example.com
 remnawave_panel_cidrs:
   - 198.51.100.20/32
-
-remnawave_panel_url: https://panel-test.example.com
-remnawave_panel_token: "{{ vault_remnawave_panel_token }}"
-remnawave_node_image: ghcr.io/remnawave/node:3.3.2
-remnawave_node_port: 2222
-
-xray_version: 26.6.27
-xray_checksums:
-  x86_64: b3e5902d06d6282fe53cfa2fc426058b9aeaa429b2c812e20887cd47f26d08bf
-  aarch64: 13a251379bea366c2cf10363ad71e75734193d401f26f518bf0c25e5c8f8c931
-
-inbound_specs:
-  - tag: DE_TEST_01_REALITY
-    port: 443
-    network: raw
-
-host_specs:
-  - remark: Germany Test
-    address: node-test-01.example.com
-    inbound_tag: DE_TEST_01_REALITY
-    port: 443
-    sni: node-test-01.example.com
-    fingerprint: firefox
-    security_layer: DEFAULT
-    is_hidden: false
-    is_disabled: false
-    tags: [EU, TEST, DIRECT]
-
-selfsteal_virtual_hosts:
-  - name: primary
-    server_names: [node-test-01.example.com]
-    root: /opt/remnawave-node/selfsteal/html/primary
-    title: Test Infrastructure
-
-certificate_mode: http01
+node_domain_zone: example.com
 acme_email: ops@example.com
+internal_squad_name: Default
 
-verify_require_tunnel_probe: true
+# Адрес рабочей машины, который должен сохранять доступ к нодам, даже когда
+# запуск идёт не с неё. Адрес самого Controller определяется из живой
+# SSH-сессии и здесь не нужен.
+management_cidrs_extra:
+  - 198.51.100.10/32
+
+# Для теста: staging CA, чтобы не тратить лимиты Let's Encrypt.
+certificate_acme_environment: staging
+
+# Реальный E2E-probe туннеля. Пока он не настроен, строгая приёмка падает - это
+# сделано намеренно.
 verify_tunnel_probe_command:
-  - /usr/local/bin/remnawave-vpn-probe
-  - DE-TEST-01
-  - "203.0.113.10"
+  - ansible/tools/vless-probe.sh
+```
 
-verify_require_node_port_denied_probe: true
-verify_node_port_untrusted_probe_host: localhost
+Что нода получит из этого набора, можно посмотреть до запуска и без сервера:
 
-bridge_spec:
-  enabled: false
-
-node_plugins: []
+```bash
+ansible-playbook ansible/playbooks/show_node_identity.yml \
+  -i ansible/inventories/test/hosts.yml --limit de01
 ```
 
 Все tags должны состоять только из uppercase-букв, цифр, `_` и `:`. Не переносите API token, `SECRET_KEY`, Reality private key или bridge password в открытый inventory. Обычный запуск сам получает `SECRET_KEY` при первой установке и переиспользует его из `/opt/remnawave-node/remnanode/.env`. Переменная `remnawave_rotate_node_secret_key` должна оставаться `false`.
@@ -214,7 +195,7 @@ Inventory является источником истины. Имена Node, H
 Проверьте inventory и доступ к VPS:
 
 ```bash
-export TEST_INVENTORY=inventories/test/hosts.yml
+export TEST_INVENTORY=ansible/inventories/test/hosts.yml
 export TEST_NODE=de-test-01
 
 ansible-inventory -i "$TEST_INVENTORY" --graph --ask-vault-pass
