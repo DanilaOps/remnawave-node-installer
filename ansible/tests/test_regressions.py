@@ -511,6 +511,14 @@ class ControllerTests(unittest.TestCase):
         self.assertIn("controller_xray_checksums", runtime)
         self.assertIn("Require the installed controller Xray client to match the pin", runtime)
 
+    def test_collection_visibility_does_not_require_sudo_on_debian(self) -> None:
+        runtime = self.read("roles/semaphore_controller/tasks/runtime.yml")
+        check = runtime.split("- name: Prove the service user can resolve", 1)[1].split(
+            "- name: Require every collection", 1
+        )[0]
+        self.assertIn("- runuser", check)
+        self.assertNotIn("become_user", check)
+
     def test_the_controller_does_not_touch_ssh_authentication(self) -> None:
         # The controller is the machine an operator must be able to get back
         # into; this role is never the reason they cannot.

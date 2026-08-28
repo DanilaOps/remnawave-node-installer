@@ -99,14 +99,16 @@
   # a missing module instead of on a missing collection path.
   ansible.builtin.command:
     argv:
+      - runuser
+      - --user
+      - "{{ semaphore_user }}"
+      - --
+      - env
+      - "HOME={{ semaphore_home }}"
       - "{{ semaphore_venv_path }}/bin/ansible-galaxy"
       - collection
       - list
     chdir: "{{ semaphore_project_root }}"
-  become: true
-  become_user: "{{ semaphore_user }}"
-  environment:
-    HOME: "{{ semaphore_home }}"
   register: controller_collection_check
   changed_when: false
   check_mode: false
