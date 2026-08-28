@@ -29,16 +29,21 @@ ansible/.cache/
 .molecule/
 __pycache__/
 *.py[cod]
-ansible/inventories/**/group_vars/vault.yml
-ansible/inventories/**/group_vars/**/vault.yml
 
 # Session working notes — contain real IPs/keys/domains, not for publication
 PROJECT-STATE.md
 
 # Local audit SSH keypair — private key, never publish
 
-# Inventory data with real addresses, domains and panel URLs - never publish
+# Inventory data with real addresses - never publish
 ansible/inventories/test/
 ansible/inventories/local/
 ansible/inventories/production/hosts.yml
-ansible/inventories/production/group_vars/all/panel.yml
+
+# Real values of this deployment and its secrets - never publish.
+# Examples for both live in ansible/examples/.
+ansible/playbooks/group_vars/all/vault.yml
+ansible/playbooks/group_vars/remnawave_nodes/zz-local.yml
+
+# Collections installed into the checkout by ./setup-controller
+ansible/collections/ansible_collections/

@@ -13,9 +13,12 @@ set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$here"
 
-inventory_dir="${REMNAWAVE_INVENTORY_DIR:-inventories/production}"
+inventory_dir="${REMNAWAVE_INVENTORY_DIR:-ansible/inventories/production}"
+group_vars="ansible/playbooks/group_vars"
+vault_file="$group_vars/all/vault.yml"
+local_file="$group_vars/remnawave_nodes/zz-local.yml"
 vault_pass_file="${ANSIBLE_VAULT_PASSWORD_FILE:-$HOME/.config/remnawave/vault-pass}"
-ssh_key="${REMNAWAVE_SSH_KEY:-$HOME/.ssh/id_ed25519}"
+ssh_key="${REMNAWAVE_SSH_KEY:-$HOME/.ssh/remnawave-deployer}"
 
 die() { printf '\n%s\n' "error: $*" >&2; exit 1; }
 step() { printf '\n== %s\n' "$*"; }
@@ -84,34 +87,39 @@ if not (3, 11) <= sys.version_info[:2] <= (3, 13):
     raise SystemExit(1)
 PY
 ok "python $(python3 -c 'import sys; print(sys.version.split()[0])')"
-if [[ ! -d .venv ]]; then
-  python3 -m venv .venv 2>/tmp/venv-error \
+if [[ ! -d ansible/.venv ]]; then
+  python3 -m venv ansible/.venv 2>/tmp/venv-error \
     || die "python3 -m venv failed: $(tr -d '\n' </tmp/venv-error). On Debian and Ubuntu this is usually the missing python3-venv package."
-  ok "created .venv"
+  ok "created ansible/.venv"
 else
-  ok ".venv already present"
+  ok "ansible/.venv already present"
 fi
 # shellcheck disable=SC1091
-. .venv/bin/activate
+. ansible/.venv/bin/activate
 
 step "Python dependencies"
 pip install --quiet --upgrade pip
-pip install --quiet -r requirements.txt
+pip install --quiet -r ansible/requirements.txt
 ok "requirements.txt installed ($(ansible --version | head -1))"
 
 step "Ansible collections"
-ansible-galaxy collection install -r collections/requirements.yml >/dev/null
-ok "collections installed"
+# Installed into the checkout, not into the invoking user's home: the root
+# ansible.cfg points collections_path here, so every account that runs from this
+# directory - an operator, or the semaphore service user with ProtectHome - sees
+# the same pinned collections.
+ansible-galaxy collection install -r ansible/collections/requirements.yml \
+  -p ansible/collections >/dev/null
+ok "collections installed into ansible/collections"
 
 step "SSH key for the managed account"
+# A dedicated key, not the operator's personal one: it is the credential the
+# whole fleet trusts, and in Semaphore it becomes a Key Store entry.
 if [[ -f "$ssh_key" ]]; then
   ok "$ssh_key"
-elif [[ -f "$HOME/.ssh/id_rsa" ]]; then
-  ssh_key="$HOME/.ssh/id_rsa"
-  ok "$ssh_key"
 else
-  todo "no key found, generating $ssh_key"
-  ssh-keygen -q -t ed25519 -N '' -f "$ssh_key"
+  todo "no deployer key yet, generating $ssh_key"
+  mkdir -p "$(dirname "$ssh_key")"
+  ssh-keygen -q -t ed25519 -N '' -C "remnawave-deployer" -f "$ssh_key"
   ok "generated $ssh_key"
 fi
 
@@ -135,11 +143,9 @@ else
 fi
 export ANSIBLE_VAULT_PASSWORD_FILE="$vault_pass_file"
 
-step "Fleet configuration ($inventory_dir)"
-mkdir -p "$inventory_dir/group_vars/all"
-panel_file="$inventory_dir/group_vars/all/panel.yml"
-if [[ -f "$panel_file" ]]; then
-  ok "$panel_file already present, leaving it alone"
+step "Deployment values ($local_file)"
+if [[ -f "$local_file" ]]; then
+  ok "$local_file already present, leaving it alone"
 else
   panel_url="$(ask 'Remnawave panel URL' 'https://panel.example.com')"
   panel_host="${panel_url#*://}"; panel_host="${panel_host%%/*}"
@@ -148,34 +154,34 @@ else
   zone="$(ask 'DNS zone all node domains live in' 'example.com')"
   acme_email="$(ask "Let's Encrypt account email" 'ops@example.com')"
   squad="$(ask 'Internal Squad name' 'Default')"
-  profile="$(ask 'shared Config Profile name' 'Default August')"
-  cat > "$panel_file" <<PANEL
+  workstation="$(ask 'address that must keep SSH access to nodes (blank for none)' '')"
+  cat > "$local_file" <<LOCAL
 ---
-# Written by ./setup-controller. One panel serves every node, so panel-wide
-# values live here instead of being repeated per node.
+# Written by ./setup-controller. Real values of this deployment; git-ignored.
+# Loaded last of the group files, so it overrides the documentation values in
+# playbooks/group_vars/all/panel.yml. See ansible/examples/local-overrides.yml.example.
 remnawave_panel_url: $panel_url
-remnawave_panel_token: "{{ vault_remnawave_panel_token }}"
-
-config_profile_mode: shared
-profile_name: $profile
-config_profile_create: false
-config_profile_require_routing: true
-
-# The controller's own address is discovered from the live SSH connection; add
-# stable addresses that must keep access even when nobody runs from them.
-management_cidrs_extra: []
 remnawave_panel_cidrs:
   - $panel_cidr
-
 node_domain_zone: $zone
-
 acme_email: $acme_email
 internal_squad_name: $squad
-PANEL
-  ok "wrote $panel_file"
+LOCAL
+  if [[ -n "$workstation" ]]; then
+    cat >> "$local_file" <<LOCAL
+management_cidrs_extra:
+  - $workstation
+LOCAL
+  else
+    cat >> "$local_file" <<'LOCAL'
+# The controller's own address is discovered from the live SSH connection. Add a
+# workstation, jump or rescue host here so it keeps access as well.
+management_cidrs_extra: []
+LOCAL
+  fi
+  ok "wrote $local_file"
 fi
 
-vault_file="$inventory_dir/group_vars/all/vault.yml"
 if [[ -f "$vault_file" ]]; then
   ok "$vault_file already present, leaving it alone"
 else
@@ -187,11 +193,12 @@ else
 ---
 vault_remnawave_panel_token: $panel_token
 # Root passwords are not stored here: ./provision-node asks for one only when a
-# server still needs bootstrapping, and it never reaches the disk.
+# server still needs bootstrapping, Semaphore passes it as a secret survey field,
+# and neither reaches the disk.
 vault_node_root_password: ""
 vault_regru_username: ""
 vault_regru_password: ""
-vault_cloudflare_token: ""
+vault_verify_probe_vless_uuid: ""
 vault_bridge_secret: ""
 VAULT
   unset panel_token
@@ -200,27 +207,33 @@ VAULT
 fi
 
 step "Self-check"
-ansible-playbook -i "$inventory_dir/hosts.yml" playbooks/provision_node.yml --syntax-check >/dev/null 2>&1 \
-  && ok "playbooks parse against $inventory_dir/hosts.yml" \
-  || todo "could not syntax-check yet (add a host to $inventory_dir/hosts.yml first)"
+mkdir -p "$inventory_dir"
+if [[ -f "$inventory_dir/hosts.yml" ]]; then
+  ansible-playbook -i "$inventory_dir/hosts.yml" ansible/playbooks/provision_node.yml --syntax-check >/dev/null 2>&1 \
+    && ok "playbooks parse against $inventory_dir/hosts.yml" \
+    || todo "could not syntax-check yet (add a host to $inventory_dir/hosts.yml first)"
+else
+  cp ansible/inventories/production/hosts.yml.example "$inventory_dir/hosts.yml"
+  todo "created $inventory_dir/hosts.yml from the example - replace the sample node"
+fi
 
+zone_line="$( [[ -f "$local_file" ]] && grep -m1 '^node_domain_zone:' "$local_file" | awk '{print $2}' )"
 cat <<NEXT
 
 Controller ready.
 
-Its own address is what the nodes will allow through their firewall, and what
-REG.RU has to allow for the DNS API, so keep it stable. To add a node:
+Its own address is what the nodes will allow through their firewall, and what the
+registrar has to allow for the DNS API, so keep it stable. To add a node:
 
-  1. buy the VPS and point <name>.$( [[ -f "$panel_file" ]] && grep -m1 '^node_domain_zone:' "$panel_file" | awk '{print $2}' ) at its address
-  2. add two lines to $inventory_dir/hosts.yml:
+  1. buy the VPS and point <name>.${zone_line:-your-zone} at its address
+  2. add one line to $inventory_dir/hosts.yml:
 
         ee01:
           ansible_host: 203.0.113.10
-          node_host_remark: "Estonia"
 
-  3. ./provision-node ee01
+  3. ./provision-node ee01 --first-run
 
-Public key that will be installed on the managed account:
+Public key to install on the managed account (Semaphore: Key Store entry):
 
 $(cat "${ssh_key}.pub")
 NEXT

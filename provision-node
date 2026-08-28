@@ -5,26 +5,32 @@
 #   ./provision-node ee01
 #
 # It only prepares the local environment - virtualenv, vault password, an
-# optional one-off root password - and then runs playbooks/provision_node.yml.
-# Every decision about the node itself lives in the playbooks, so running the
-# playbook directly does exactly the same thing.
+# optional one-off root password - and then runs the playbook. Every decision
+# about the node itself lives in the playbooks, so running
+#
+#   ansible-playbook ansible/playbooks/provision_node.yml --limit ee01
+#
+# from this directory does exactly the same thing.
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$here"
 
-inventory="${REMNAWAVE_INVENTORY:-inventories/production/hosts.yml}"
+inventory="${REMNAWAVE_INVENTORY:-ansible/inventories/production/hosts.yml}"
 vault_pass_file="${ANSIBLE_VAULT_PASSWORD_FILE:-$HOME/.config/remnawave/vault-pass}"
 
 die() { printf '\n%s\n' "error: $*" >&2; exit 1; }
 
 usage() {
   cat <<HELP
-Usage: ./provision-node <host> [ansible-playbook options...]
+Usage: ./provision-node <host> [options] [ansible-playbook options...]
 
   <host>                inventory host name, e.g. ee01
   -i, --inventory <p>   inventory to use (default: $inventory,
                         override with REMNAWAVE_INVENTORY)
+      --first-run       accept the SSH host key this brand new VPS presents.
+                        Only for a server created minutes ago: a key that is
+                        already known and has changed always fails instead.
   -h, --help            this help
 
 Anything else is passed through to ansible-playbook, so the usual flags work:
@@ -41,6 +47,7 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     -h|--help) usage; exit 0 ;;
     -i|--inventory) [[ $# -ge 2 ]] || die "--inventory needs a path"; inventory="$2"; shift 2 ;;
+    --first-run) passthrough+=(-e bootstrap_trust_new_host_keys=true); shift ;;
     --) shift; passthrough+=("$@"); break ;;
     -*) passthrough+=("$1"); shift ;;
     *) if [[ -z "$host" ]]; then host="$1"; else passthrough+=("$1"); fi; shift ;;
@@ -50,9 +57,9 @@ done
 [[ -n "$host" ]] || { usage; exit 2; }
 [[ -f "$inventory" ]] || die "inventory not found: $inventory"
 
-if [[ -d .venv ]]; then
+if [[ -d ansible/.venv ]]; then
   # shellcheck disable=SC1091
-  . .venv/bin/activate
+  . ansible/.venv/bin/activate
 fi
 command -v ansible-playbook >/dev/null 2>&1 \
   || die "ansible-playbook not found. Run ./setup-controller once to prepare this machine."
@@ -67,7 +74,7 @@ fi
 # Resolve the host from the inventory. This both validates the name and tells us
 # which account the pipeline will use, so the password prompt below appears only
 # when it is actually needed.
-host_json="$(ansible-playbook --version >/dev/null 2>&1 && ansible-inventory -i "$inventory" --host "$host" 2>/dev/null)" \
+host_json="$(ansible-inventory -i "$inventory" --host "$host" 2>/dev/null)" \
   || die "host '$host' is not in $inventory"
 read -r node_address node_user < <(
   printf '%s' "$host_json" | python3 -c '
@@ -80,15 +87,17 @@ print(data.get("ansible_host", ""), data.get("ansible_user", "root"))
 
 printf 'node      : %s (%s@%s)\ninventory : %s\n' "$host" "$node_user" "$node_address" "$inventory"
 
-# Probe whether the managed account already answers. The probe records no host
-# key and grants nothing: trusting a new server's key stays a decision of the
-# bootstrap play, gated by bootstrap_trust_new_host_keys.
+# Probe whether the managed account already answers. This probe records no host
+# key and grants nothing - it writes to /dev/null and is not the connection the
+# playbook uses. Trusting a new server's key stays a decision of the bootstrap
+# play, gated by bootstrap_trust_new_host_keys / --first-run.
 if ssh -o BatchMode=yes -o ConnectTimeout=6 -o StrictHostKeyChecking=no \
        -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR \
        "$node_user@$node_address" true >/dev/null 2>&1; then
   printf 'access    : %s already reachable, no root password needed\n\n' "$node_user"
 else
   printf 'access    : %s does not answer yet, this run will bootstrap it\n' "$node_user"
+  printf '            (a brand new VPS also needs --first-run to accept its host key)\n'
   if [[ -z "${NODE_ROOT_PASSWORD:-}" ]]; then
     # Read into the environment, never onto disk and never into argv.
     read -rsp "root password for $node_address (empty to use the vault / an existing key): " NODE_ROOT_PASSWORD
@@ -97,5 +106,5 @@ else
   fi
 fi
 
-exec ansible-playbook -i "$inventory" playbooks/provision_node.yml \
+exec ansible-playbook -i "$inventory" ansible/playbooks/provision_node.yml \
   --limit "$host" "${vault_args[@]+"${vault_args[@]}"}" "${passthrough[@]+"${passthrough[@]}"}"
