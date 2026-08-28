@@ -1,0 +1,76 @@
+---
+# What one line of inventory expands to. Needs no server, no secrets and no
+# connection, so it is both an operator command and the test that fleet
+# configuration is loaded from playbooks/group_vars whatever the inventory is:
+#
+#   ansible-playbook ansible/playbooks/show_node_identity.yml --limit ee01
+#
+# It lives next to group_vars on purpose. Playbook-adjacent group_vars are
+# resolved relative to the playbook's own directory, so a check placed anywhere
+# else would prove nothing about the real runs.
+- name: Show what the inventory expands to
+  hosts: remnawave_nodes
+  connection: local
+  gather_facts: false
+  become: false
+
+  tasks:
+    - name: Show the derived values
+      ansible.builtin.debug:
+        msg:
+          - "node_id          = {{ node_id }}"
+          - "node_name        = {{ node_name }}"
+          - "node_country     = {{ node_country }}"
+          - "node_public_ip   = {{ node_public_ip }}"
+          - "selfsteal_domain = {{ selfsteal_domain }}"
+          - "inbound tag      = {{ inbound_specs[0].tag }}"
+          - "host remark      = {{ host_specs[0].remark }}"
+          - "host tags        = {{ host_specs[0].tags }}"
+          - "ansible_user     = {{ ansible_user }}"
+          - "panel            = {{ remnawave_panel_url }}"
+          - "profile          = {{ profile_name }}"
+          - "decoy seed       = {{ selfsteal_decoy_seed | default(node_id) }}"
+
+    - name: Require the identity derivation to hold
+      ansible.builtin.assert:
+        that:
+          - node_id is match('^[a-z][a-z0-9]*_[a-z0-9-]+$')
+          - node_name == node_country_code ~ '-' ~ node_sequence
+          - node_country == node_country_code
+          - node_country is match('^[A-Z]{2}$')
+          - node_public_ip == ansible_host
+          - selfsteal_domain == inventory_hostname ~ '.' ~ node_domain_zone
+          - inbound_specs[0].tag == (node_name | upper | regex_replace('[^A-Z0-9_]', '_')) ~ '_REALITY'
+          - inbound_specs[0].port == 443
+          - host_specs[0].remark == node_host_remark
+          - host_specs[0].address == selfsteal_domain
+          - host_specs[0].sni == selfsteal_domain
+          - host_specs[0].inbound_tag == inbound_specs[0].tag
+          - host_specs[0].tags == [node_country | upper, 'DIRECT']
+        success_msg: One line of inventory expands to a complete node definition.
+
+    - name: Require a display name for this country
+      ansible.builtin.assert:
+        that:
+          - node_host_remark | trim | length > 0
+        fail_msg: >-
+          Country code '{{ node_country_code }}' (from inventory hostname
+          '{{ inventory_hostname }}') has no entry in
+          ansible/playbooks/group_vars/all/countries.yml. Add one line there:
+          "{{ node_country_code }}: \"<flag> <Country>\"" - or set node_host_remark
+          on this host if it needs a label of its own.
+
+    - name: Require fleet policy to come from playbook group_vars
+      ansible.builtin.assert:
+        that:
+          - ansible_user == 'deployer'
+          - certificate_mode == 'http01'
+          - certificate_acme_environment == 'auto'
+          - config_profile_mode == 'shared'
+          - dns_provider is defined
+          - remnawave_panel_url is match('^https://')
+          - profile_name | length > 0
+          - remnawave_node_port | int > 0
+          - xray_version | length > 0
+          - node_ssh_allow_root_password is defined
+        success_msg: Fleet-wide policy is loaded independently of the inventory.

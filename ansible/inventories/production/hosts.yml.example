@@ -1,9 +1,10 @@
 ---
-# Copy to hosts.yml (git-ignored) and add one block per node.
+# Copy to hosts.yml (git-ignored) and add one line per node. This file is the
+# node registry for command-line runs; Semaphore keeps its own copy of the same
+# structure as a static inventory.
 all:
   children:
     remnawave_nodes:
       hosts:
         ee01:
           ansible_host: 203.0.113.10
-          node_host_remark: Estonia

@@ -1,0 +1,44 @@
+---
+# Panel-wide values: one Remnawave panel serves the whole fleet, so these are
+# declared once instead of per node.
+#
+# Everything here is a documentation value. Real values never enter this public
+# repository: put them in the git-ignored
+# group_vars/remnawave_nodes/zz-local.yml (see examples/local-overrides.yml.example),
+# which is loaded last and therefore wins, or pass them from Semaphore as extra
+# vars, which outrank every file.
+
+remnawave_panel_url: https://panel.example.com
+remnawave_panel_token: "{{ vault_remnawave_panel_token }}"
+
+# Shared Xray JSON that carries the routing. Every published Host is bound to it;
+# a node only adds its own inbound. See ansible/README.md.
+config_profile_mode: shared
+profile_name: Default August
+config_profile_create: false
+config_profile_require_routing: true
+
+# Inbound protocols the panel strips per node before it pushes the config
+# (MANAGED_CLIENT_PROTOCOLS in the panel). An inbound outside this set is sent to
+# every node with its settings, so the shared profile refuses to carry one unless
+# its tag is listed here on purpose.
+shared_profile_allowed_unmanaged_inbound_tags: []
+
+# Source addresses allowed to reach a node. The controller's own address is
+# discovered from the live SSH connection, so it is never maintained by hand and a
+# controller with a changing address cannot lock itself out. Put the addresses
+# that must keep SSH access even when nobody runs from them - a workstation, a
+# jump or rescue host - in management_cidrs_extra, in zz-local.yml rather than
+# here. Setting management_cidrs explicitly opts out of the discovery entirely.
+management_cidrs_extra: []
+# The panel's address, allowed to reach NODE_PORT. Keep it explicit: resolving it
+# from the panel URL would silently point at a CDN if the panel ever moves behind
+# one, which would leave the node unreachable for the panel itself.
+remnawave_panel_cidrs:
+  - 198.51.100.20/32
+
+# All node domains live in this zone; selfsteal_domain is derived from it.
+node_domain_zone: example.com
+
+acme_email: ops@example.com
+internal_squad_name: Default

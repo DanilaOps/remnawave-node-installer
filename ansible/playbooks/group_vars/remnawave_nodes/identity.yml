@@ -1,0 +1,42 @@
+---
+# Everything about a node that can be derived from the two facts declared in the
+# inventory: its name and its address. "ee01" yields node_id ee_01, node_name
+# EE-01, country EE, the domain ee01.<node_domain_zone>, the inbound tag
+# EE_01_REALITY and the published Host. A standard node therefore needs no
+# variables at all. Any of these can be overridden for one host that does not
+# follow the pattern; preflight rejects a name it cannot parse and a country code
+# that is missing from group_vars/all/countries.yml.
+
+node_country_code: "{{ inventory_hostname | regex_replace('^([A-Za-z]+).*$', '\\1') | upper }}"
+node_sequence: "{{ inventory_hostname | regex_replace('^[A-Za-z]+[-_]?', '') }}"
+node_id: "{{ (node_country_code | lower) ~ '_' ~ node_sequence }}"
+node_name: "{{ node_country_code ~ '-' ~ node_sequence }}"
+node_country: "{{ node_country_code }}"
+node_public_ip: "{{ ansible_host }}"
+
+selfsteal_domain: "{{ inventory_hostname }}.{{ node_domain_zone }}"
+
+# --- Panel resources ---------------------------------------------------------
+inbound_specs:
+  - tag: "{{ node_name | upper | regex_replace('[^A-Z0-9_]', '_') }}_REALITY"
+    port: 443
+    network: raw
+
+# Label users see in the client. Comes from the country table, so a new node in a
+# known country needs nothing; set node_host_remark on the host to override.
+node_host_remark: "{{ node_country_remarks[node_country_code] | default('') }}"
+node_host_tags:
+  - "{{ node_country | upper }}"
+  - DIRECT
+
+host_specs:
+  - remark: "{{ node_host_remark }}"
+    address: "{{ selfsteal_domain }}"
+    inbound_tag: "{{ inbound_specs[0].tag }}"
+    port: 443
+    sni: "{{ selfsteal_domain }}"
+    fingerprint: firefox
+    security_layer: DEFAULT
+    is_hidden: false
+    is_disabled: false
+    tags: "{{ node_host_tags }}"

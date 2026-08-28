@@ -1,0 +1,36 @@
+---
+# Copy to ansible/playbooks/group_vars/remnawave_nodes/zz-local.yml (git-ignored)
+# and put the real values of this deployment here.
+#
+# Why here and not in the inventory: playbook-adjacent group_vars outrank
+# inventory group_vars, so a real value placed next to an inventory would be
+# silently overridden by the documentation value in
+# playbooks/group_vars/all/panel.yml. This file is in the same precedence tier as
+# the tracked fleet files and is loaded last (zz-), so it wins.
+#
+# Semaphore does not need this file: values passed from a Variable Group or a
+# survey arrive as extra vars, which outrank every file.
+
+remnawave_panel_url: https://panel.your-domain.tld
+remnawave_panel_cidrs:
+  - 198.51.100.20/32
+node_domain_zone: your-domain.tld
+acme_email: ops@your-domain.tld
+internal_squad_name: Default
+
+# Addresses that must keep SSH access to every node even when nobody runs from
+# them: a workstation, a jump or rescue host. The controller's own address is
+# discovered from the live SSH connection and does not belong here.
+management_cidrs_extra:
+  - 203.0.113.9/32
+
+# Turn on registrar automation once vault_regru_username / vault_regru_password
+# are in the vault.
+dns_provider: regru
+
+# End-to-end probe. The built-in one needs the Xray client binary on the
+# controller and the username of the panel user whose VLESS UUID is in the vault
+# as vault_verify_probe_vless_uuid. Set verify_tunnel_probe_command instead only
+# if you want to replace the built-in probe with your own command.
+verify_probe_username: probe
+verify_probe_xray_binary: /usr/local/bin/xray

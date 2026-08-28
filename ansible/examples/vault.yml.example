@@ -1,0 +1,25 @@
+---
+# Copy to ansible/playbooks/group_vars/all/vault.yml (git-ignored) and encrypt it
+# with ansible-vault before use. ./setup-controller does this for you.
+#
+# This file lives outside group_vars on purpose: Ansible loads every .yml it
+# finds in a group_vars directory, so an example kept there would define real
+# variable names as soon as somebody dropped the .example suffix.
+vault_remnawave_panel_token: replace-me
+
+# Registrar API credentials, used only when dns_provider is set. REG.RU also
+# requires API access to be enabled and the controller's address allow-listed.
+vault_regru_username: ""
+vault_regru_password: ""
+
+# Fallback for unattended bootstrap runs. Interactive runs are prompted by
+# ./provision-node and Semaphore passes the value as a secret survey field, so
+# leaving this empty is the normal case.
+vault_node_root_password: ""
+
+# VLESS UUID of the user the end-to-end tunnel probe connects as. It is a normal
+# panel user that must be active and a member of the Internal Squad this fleet
+# publishes to; verify only reads it and never creates or changes it.
+vault_verify_probe_vless_uuid: ""
+
+vault_bridge_secret: ""
