@@ -89,3 +89,18 @@
     {{ ['remnawave-disk-check.timer']
        + (['remnawave-cert-renew.timer'] if certificate_enabled | bool else [])
        + (['remnawave-geodata-update.timer'] if geodata_enabled | bool and geodata_update_enabled | bool else []) }}
+  # The timer units are written by this run, so in a dry-run systemd does not know
+  # the ones that are not on the host yet. Those that exist are still checked.
+  when: not ansible_check_mode or item in (node_base_systemd_units | default(''))
+
+- name: Report the maintenance timers a dry-run would enable
+  ansible.builtin.debug:
+    msg: >-
+      Would install and enable {{ item }} - systemd does not know that unit yet.
+  loop: >-
+    {{ ['remnawave-disk-check.timer']
+       + (['remnawave-cert-renew.timer'] if certificate_enabled | bool else [])
+       + (['remnawave-geodata-update.timer'] if geodata_enabled | bool and geodata_update_enabled | bool else []) }}
+  when:
+    - ansible_check_mode
+    - item not in (node_base_systemd_units | default(''))

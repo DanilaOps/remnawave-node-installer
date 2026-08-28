@@ -141,6 +141,17 @@
     name: unattended-upgrades
     state: started
     enabled: true
+  # The package is installed by this run; a dry-run installed nothing.
+  when: >-
+    not ansible_check_mode or
+    'unattended-upgrades.service' in node_base_systemd_units
+
+- name: Report the unattended-upgrades unit a dry-run would enable
+  ansible.builtin.debug:
+    msg: Would install unattended-upgrades, then start and enable unattended-upgrades.service.
+  when:
+    - ansible_check_mode
+    - "'unattended-upgrades.service' not in node_base_systemd_units"
 
 - name: Remove the superseded late SSH hardening drop-in
   ansible.builtin.file:

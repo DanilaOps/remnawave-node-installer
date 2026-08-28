@@ -158,12 +158,28 @@ The end-to-end tunnel probe is never simulated: it is announced as not executed,
 because a probe that reports success without carrying a packet is worse than no
 probe.
 
-Two tests keep this true. `ansible/tests/test_check_mode.py` fails the build if
-any task registers a result from a module Ansible skips in check mode and a
-later task reads it without a guard — the exact bug that used to surface as an
-undefined attribute halfway through a run. `ansible/tests/test_check_mode_panel.sh`
-runs a dry-run against the mock panel before, during and after reconciliation and
-requires the last one to report no change at all.
+The same rule covers systemd, where it is easy to get wrong: a dry-run reports a
+unit file or a package as `changed` without putting anything on disk, so a task
+that then starts, enables or restarts that unit is asking systemd about
+something that does not exist, and the run stops on *Could not find the
+requested service*. Every role that touches systemd therefore reads
+`systemctl list-unit-files` once, for real, and each systemd task says how it
+knows its unit is there — either it consults that list, or it is not part of a
+dry-run at all and reports what it would have done. Handlers follow the same
+rule: a planned change still announces the restart it would cause. The firewall
+chain is the strictest case, because arming a rollback timer and swapping the
+live nftables table can lock an operator out, so a dry-run performs none of it
+and prints the whole sequence instead.
+
+Three tests keep this true. `ansible/tests/test_check_mode.py` fails the build on
+both shapes of the bug: a task registering a result from a module Ansible skips
+in check mode that a later task reads without a guard, and a systemd task acting
+on a unit without saying how a dry-run knows it exists.
+`ansible/tests/test_check_mode_panel.sh` runs a dry-run against the mock panel
+before, during and after reconciliation and requires the last one to report no
+change at all. `ansible/tests/test_check_mode_controller.sh` runs the controller
+firewall chain in check mode on a machine that does not have its units, which is
+where *Could not find the requested service* came from.
 
 ## Roles and execution order
 

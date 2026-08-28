@@ -38,5 +38,16 @@
     name: fail2ban
     state: started
     enabled: true
-  when: node_fail2ban_enabled | bool
+  when:
+    - node_fail2ban_enabled | bool
+    # In a dry-run the package was not installed, so the unit does not exist yet.
+    - not ansible_check_mode or 'fail2ban.service' in node_base_systemd_units
+
+- name: Report the fail2ban unit a dry-run would enable
+  ansible.builtin.debug:
+    msg: Would start and enable fail2ban.service, which this run would install first.
+  when:
+    - node_fail2ban_enabled | bool
+    - ansible_check_mode
+    - "'fail2ban.service' not in node_base_systemd_units"
 

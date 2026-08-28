@@ -159,6 +159,7 @@
   vars:
     semaphore_keys_reused: >-
       {{ ['cookie_hash', 'cookie_encryption', 'access_key_encryption']
+         | select('in', semaphore_existing_config)
          | map('extract', semaphore_existing_config) | select('truthy') | list | length }}
     semaphore_keys_generated: >-
       {{ semaphore_generated_keys.results | default([]) | rejectattr('skipped', 'defined') | list | length }}
@@ -191,6 +192,19 @@
     state: started
     enabled: true
     daemon_reload: true
+  # The unit above is written by this very run, so in a dry-run it does not exist
+  # and systemd would be asked about a unit that is not there. Where it already
+  # exists the state is still checked for real.
+  when: not ansible_check_mode or 'semaphore.service' in controller_systemd_units
+
+- name: Report the Semaphore unit a dry-run would start
+  ansible.builtin.debug:
+    msg: >-
+      Would reload systemd, then enable and start semaphore.service - the unit file is written by
+      this run and systemd does not know it yet.
+  when:
+    - ansible_check_mode
+    - "'semaphore.service' not in controller_systemd_units"
 
 - name: Wait for the UI to answer on loopback
   ansible.builtin.wait_for:

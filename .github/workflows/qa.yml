@@ -87,6 +87,12 @@ jobs:
       - name: Verify how the management allow list is resolved
         run: ansible-playbook -i localhost, -c local ansible/tests/management_cidrs.yml
 
+      - name: Verify the controller firewall dry-run never touches a unit it did not install
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq nftables
+          bash ansible/tests/test_check_mode_controller.sh
+
       - name: Verify the guards on deployment values and node identity
         run: |
           ansible-playbook -i ansible/inventories/staging/hosts.yml -c local \

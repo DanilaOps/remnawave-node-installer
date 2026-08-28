@@ -1,4 +1,8 @@
 ---
+# A handler is notified by a change, and in a dry-run that change was only
+# planned: docker, the compose file or the image may not be there at all. Each
+# handler that touches the running system therefore acts on a real run and
+# reports what it would have done otherwise.
 - name: Apply Remnawave compose
   community.docker.docker_compose_v2:
     project_src: "{{ remnawave_install_root }}"
@@ -8,6 +12,14 @@
     remove_orphans: true
   register: remnawave_compose_apply
   notify: Mark compose applied
+  when: not ansible_check_mode
+
+- name: Report the compose apply a dry-run would make
+  ansible.builtin.debug:
+    msg: >-
+      Would apply {{ remnawave_install_root }}/compose.yml - the compose file or its environment changed.
+  listen: Apply Remnawave compose
+  when: ansible_check_mode
 
 - name: Mark compose applied
   ansible.builtin.file:
@@ -28,11 +40,27 @@
     recreate: always
     wait: true
     wait_timeout: 60
+  when: not ansible_check_mode
+
+- name: Report the selfsteal nginx recreation a dry-run would make
+  ansible.builtin.debug:
+    msg: >-
+      Would recreate the nginx-selfsteal service so it picks up the new image or configuration.
+  listen: Recreate selfsteal nginx
+  when: ansible_check_mode
 
 - name: Reload selfsteal nginx
   ansible.builtin.command:
     argv: [docker, exec, "{{ remnawave_nginx_container }}", nginx, -s, reload]
   changed_when: true
+  when: not ansible_check_mode
+
+- name: Report the selfsteal nginx reload a dry-run would make
+  ansible.builtin.debug:
+    msg: >-
+      Would reload nginx inside the selfsteal container - its configuration or certificate changed.
+  listen: Reload selfsteal nginx
+  when: ansible_check_mode
 
 - name: Restart RemnaNode
   community.docker.docker_compose_v2:
@@ -40,6 +68,14 @@
     files: [compose.yml]
     services: [remnanode]
     state: restarted
+  when: not ansible_check_mode
+
+- name: Report the RemnaNode restart a dry-run would make
+  ansible.builtin.debug:
+    msg: >-
+      Would restart the remnanode service - its configuration changed.
+  listen: Restart RemnaNode
+  when: ansible_check_mode
 
 - name: Reload systemd
   ansible.builtin.systemd_service:

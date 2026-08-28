@@ -37,6 +37,23 @@
       dest: /etc/systemd/system/remnawave-firewall-rollback.timer
   notify: Reload systemd
 
+- name: Say what a dry-run would do to the live firewall
+  # This block is the one place in this role that can lock the operator out of the
+  # node, so a dry-run must not perform any part of it. It is described instead,
+  # in the order it would happen.
+  ansible.builtin.debug:
+    msg: >-
+      Would reload systemd, arm remnawave-firewall-rollback.timer
+      ({{ node_firewall_rollback_seconds }}s), drop the inet {{ node_firewall_table }} table, load
+      {{ node_firewall_config_path }}, reconnect to prove management access survived, and then
+      disarm the timer. The rollback units
+      {{ 'do not exist on this host yet and would be installed first'
+         if 'remnawave-firewall-rollback.timer' not in node_base_systemd_units
+         else 'are already installed' }}.
+  when:
+    - ansible_check_mode
+    - node_base_firewall_template.changed
+
 - name: Apply changed firewall with automatic rollback
   when: node_base_firewall_template.changed
   block:
@@ -46,6 +63,9 @@
       register: node_base_previous_ruleset
       changed_when: false
       failed_when: node_base_previous_ruleset.rc not in [0, 1]
+      # Read-only: it runs in check mode too, so the rollback copy below shows the
+      # ruleset that would really be saved rather than an empty file.
+      check_mode: false
 
     - name: Save rollback ruleset
       ansible.builtin.copy:
@@ -58,11 +78,16 @@
     - name: Reload systemd units before arming rollback
       ansible.builtin.systemd_service:
         daemon_reload: true
+      when: not ansible_check_mode
 
     - name: Arm firewall rollback timer
       ansible.builtin.systemd_service:
         name: remnawave-firewall-rollback.timer
         state: started
+      # Arming a timer changes the live machine, and in a dry-run the unit file
+      # above was not written, so systemd would be asked for a unit that does not
+      # exist. What would happen is reported before the block instead.
+      when: not ansible_check_mode
 
     - name: Remove previous managed table if present
       ansible.builtin.command:
@@ -77,6 +102,9 @@
       changed_when: true
 
     - name: Close the SSH connection that predates the firewall change
+      # meta: reset_connection takes no conditional. Dropping the connection is
+      # harmless in a dry-run - the tasks that would need the new one are the
+      # ones guarded above.
       ansible.builtin.meta: reset_connection
 
     - name: Verify a fresh authenticated Ansible connection through the firewall
@@ -90,6 +118,7 @@
         name: remnawave-firewall-rollback.timer
         state: stopped
         enabled: false
+      when: not ansible_check_mode
 
   rescue:
     - name: Wait for the armed firewall rollback timer
@@ -115,3 +144,16 @@
   ansible.builtin.systemd_service:
     name: remnawave-firewall.service
     enabled: true
+  # The unit is installed by this run, so in a dry-run on a host that does not
+  # have it yet systemd knows nothing about it. Where it exists, whether it is
+  # enabled is still checked for real.
+  when: not ansible_check_mode or 'remnawave-firewall.service' in node_base_systemd_units
+
+- name: Report the firewall unit a dry-run would enable
+  ansible.builtin.debug:
+    msg: >-
+      Would install and enable remnawave-firewall.service so the ruleset survives a reboot -
+      systemd does not know that unit yet.
+  when:
+    - ansible_check_mode
+    - "'remnawave-firewall.service' not in node_base_systemd_units"

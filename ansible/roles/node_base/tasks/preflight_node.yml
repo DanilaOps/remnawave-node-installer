@@ -91,3 +91,21 @@
   when:
     - preflight_check_ports | bool
     - not node_base_existing_compose.stat.exists
+
+- name: Read which units systemd already knows about
+  # A dry-run writes no unit file and installs no package, so a later systemd task
+  # would be asked to start something that does not exist and the run would stop
+  # on "Could not find the requested service". This one read is what those tasks
+  # consult instead of assuming the unit is there. It covers .service and .timer
+  # alike, and units from a package as well as the ones this role writes.
+  ansible.builtin.command:
+    argv: [systemctl, list-unit-files, --no-legend, --no-pager]
+  register: node_base_unit_files
+  changed_when: false
+  failed_when: false
+  # Read-only: it runs in check mode too, so a dry-run sees real state.
+  check_mode: false
+
+- name: Remember which units systemd already knows about
+  ansible.builtin.set_fact:
+    node_base_systemd_units: "{{ node_base_unit_files.stdout | default('') }}"

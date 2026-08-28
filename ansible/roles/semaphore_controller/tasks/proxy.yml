@@ -173,12 +173,27 @@
     name: nginx
     state: started
     enabled: true
+  # nginx comes from the package this run installs; in a dry-run it was not
+  # installed, so systemd knows no such unit yet.
+  when: not ansible_check_mode or 'nginx.service' in controller_systemd_units
 
 - name: Apply the pending site configuration before the challenge
   ansible.builtin.systemd_service:
     name: nginx
     state: reloaded
-  when: controller_proxy_site.changed
+  when:
+    - controller_proxy_site.changed
+    - not ansible_check_mode or 'nginx.service' in controller_systemd_units
+
+- name: Report the nginx work a dry-run would do
+  ansible.builtin.debug:
+    msg: >-
+      Would
+      {{ 'install nginx, then start and enable nginx.service'
+         if 'nginx.service' not in controller_systemd_units
+         else ('reload nginx.service to apply the changed site configuration'
+               if controller_proxy_site.changed else 'leave nginx.service as it is') }}.
+  when: ansible_check_mode
 
 - name: Issue the certificate
   ansible.builtin.command:
@@ -279,7 +294,11 @@
     name: certbot.timer
     state: started
     enabled: true
+  # Not every certbot packaging ships a timer, so a missing unit is not a failure
+  # here. In a dry-run the package itself may not be installed yet, and asking
+  # systemd about a unit it does not know would stop the run outright.
   failed_when: false
+  when: not ansible_check_mode or 'certbot.timer' in controller_systemd_units
 
 - name: Flush the nginx reload before the listeners are checked
   ansible.builtin.meta: flush_handlers

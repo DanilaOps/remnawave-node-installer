@@ -1,4 +1,10 @@
 ---
+# A handler is notified by a change, and in a dry-run that change was only
+# planned: the unit file, the package or the configuration it would restart does
+# not exist yet. Asking systemd to restart it then stops the whole run on
+# "Could not find the requested service". Each handler therefore acts only on a
+# real run and reports what it would have done otherwise, so a dry-run still
+# says which services a real run would restart.
 - name: Reload systemd
   ansible.builtin.systemd_service:
     daemon_reload: true
@@ -9,13 +15,34 @@
     state: restarted
     enabled: true
     daemon_reload: true
+  when: not ansible_check_mode
+
+- name: Report the Semaphore restart a dry-run would make
+  ansible.builtin.debug:
+    msg: Would reload systemd and restart semaphore.service - its unit or configuration changed.
+  listen: Restart Semaphore
+  when: ansible_check_mode
 
 - name: Restart fail2ban
   ansible.builtin.systemd_service:
     name: fail2ban
     state: restarted
+  when: not ansible_check_mode
+
+- name: Report the fail2ban restart a dry-run would make
+  ansible.builtin.debug:
+    msg: Would restart fail2ban.service - its jail configuration changed.
+  listen: Restart fail2ban
+  when: ansible_check_mode
 
 - name: Reload nginx
   ansible.builtin.systemd_service:
     name: nginx
     state: reloaded
+  when: not ansible_check_mode
+
+- name: Report the nginx reload a dry-run would make
+  ansible.builtin.debug:
+    msg: Would reload nginx.service - its configuration or certificate changed.
+  listen: Reload nginx
+  when: ansible_check_mode

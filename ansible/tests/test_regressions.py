@@ -932,8 +932,21 @@ class DryRunTests(unittest.TestCase):
         self.assertIn("check_mode: false", probe)
 
     def test_no_check_is_disabled_by_brute_force(self) -> None:
+        # The two shortcuts that would make every dry-run "pass": swallowing the
+        # result of a task, and swallowing it *and* skipping it in check mode.
         for path in sorted((ROOT / "roles").rglob("*.yml")):
             text = path.read_text(encoding="utf-8")
             with self.subTest(file=str(path.relative_to(ROOT))):
                 self.assertNotIn("ignore_errors: true", text)
-                self.assertNotIn("failed_when: false\n  when: not ansible_check_mode", text)
+            document = yaml.safe_load(text)
+            if not isinstance(document, list):
+                continue
+            for task in document:
+                if not isinstance(task, dict):
+                    continue
+                condition = str(task.get("when", "")).strip()
+                if task.get("failed_when") is False and condition == "not ansible_check_mode":
+                    self.fail(
+                        f"{path.relative_to(ROOT)}: '{task.get('name')}' both hides its result and "
+                        "skips itself in check mode, which is how a check that proves nothing looks"
+                    )

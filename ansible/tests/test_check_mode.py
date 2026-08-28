@@ -154,6 +154,125 @@ class CheckModeRegisterTests(unittest.TestCase):
         self.assertGreater(len(registers), 20, "the audit found almost no registers to inspect")
 
 
+# Modules that ask systemd about a named unit. In check mode they still query
+# systemd, so a unit that only *would* have been installed makes them fail with
+# "Could not find the requested service".
+UNIT_MODULES = {
+    "ansible.builtin.systemd_service", "ansible.builtin.systemd", "ansible.builtin.service",
+    "systemd_service", "systemd", "service",
+}
+# Modules that act on something a planned write would have produced.
+PLANNED_WRITE_CONSUMERS = UNIT_MODULES | {"community.docker.docker_compose_v2"}
+# A task is allowed past the rule if its condition consults one of these: either
+# it excludes check mode outright, or it asks whether systemd really knows the
+# unit right now.
+UNIT_EXISTENCE_SIGNALS = (
+    "ansible_check_mode",
+    "ansible_facts.services",
+    "controller_systemd_units",
+    "node_base_systemd_units",
+)
+
+
+def unit_module_of(task: dict) -> str | None:
+    for key in task:
+        if key in PLANNED_WRITE_CONSUMERS:
+            return key
+    return None
+
+
+class PlannedWriteConsumerTests(unittest.TestCase):
+    """A dry-run installs no unit file and no package.
+
+    Ansible reports `changed` for a template or an apt install it only simulated,
+    but nothing appears on disk. A systemd task that then starts, enables or
+    restarts that unit is asking systemd about something that does not exist, and
+    the run stops on "Could not find the requested service" - which is what
+    happened to `Arm the rollback timer` after the first check-mode audit, because
+    that audit only looked at `register` chains.
+
+    The rule: a task that acts on a named unit must say, in its own condition or
+    in the condition of a block around it, how it knows the unit is there. Either
+    it is not part of a dry-run at all, or it consults what systemd currently
+    knows. `daemon_reload` on its own names no unit and is exempt.
+    """
+
+    def offenders(self) -> list[str]:
+        problems = []
+        for path in task_files():
+            for task, when_chain, _check_mode in tasks_of(path):
+                module = unit_module_of(task)
+                if not module:
+                    continue
+                args = task.get(module) or {}
+                if not isinstance(args, dict):
+                    continue
+                if module in UNIT_MODULES:
+                    # daemon_reload with no unit name touches no unit file.
+                    if not args.get("name"):
+                        continue
+                    if not any(key in args for key in ("state", "enabled", "masked")):
+                        continue
+                condition = when_text(when_chain)
+                if any(signal in condition for signal in UNIT_EXISTENCE_SIGNALS):
+                    continue
+                problems.append(
+                    f"{path.relative_to(REPO)}: '{task.get('name', module)}' acts on "
+                    f"{args.get('name', module)} without saying how a dry-run knows it exists"
+                )
+        return problems
+
+    def test_no_systemd_task_assumes_a_unit_a_dry_run_did_not_install(self):
+        problems = self.offenders()
+        self.assertEqual([], problems, "\n" + "\n".join(problems))
+
+    def test_the_rule_actually_has_tasks_to_check(self):
+        checked = [
+            task
+            for path in task_files()
+            for task, _when, _check in tasks_of(path)
+            if unit_module_of(task)
+        ]
+        self.assertGreater(len(checked), 15, "the systemd audit found almost nothing to inspect")
+
+    def test_the_firewall_rollback_chain_never_touches_systemd_in_a_dry_run(self):
+        # The exact chain that failed on the controller, in both roles that have it.
+        for relative, timer in [
+            ("roles/semaphore_controller/tasks/firewall.yml",
+             "remnawave-controller-firewall-rollback.timer"),
+            ("roles/node_base/tasks/firewall.yml", "remnawave-firewall-rollback.timer"),
+        ]:
+            text = (ANSIBLE / relative).read_text(encoding="utf-8")
+            with self.subTest(file=relative):
+                self.assertIn(timer, text)
+                # Arming and disarming are changes to a live machine: never in a dry-run.
+                for fragment in text.split("- name: ")[1:]:
+                    if timer in fragment and "systemd_service" in fragment:
+                        self.assertIn("not ansible_check_mode", fragment)
+                # ...and a dry-run has to say what it would have done instead.
+                self.assertIn("Say what a dry-run would do to the live firewall", text)
+
+    def test_every_service_handler_reports_itself_in_a_dry_run(self):
+        # A guarded handler that says nothing would make a dry-run quieter than
+        # the truth: the operator still has to see which services a real run
+        # restarts.
+        for relative in [
+            "roles/semaphore_controller/handlers/main.yml",
+            "roles/node_base/handlers/main.yml",
+            "roles/remnawave_node/handlers/main.yml",
+        ]:
+            document = yaml.safe_load((ANSIBLE / relative).read_text(encoding="utf-8"))
+            guarded = [
+                handler["name"]
+                for handler in document
+                if "not ansible_check_mode" in str(handler.get("when", ""))
+            ]
+            listeners = {str(handler.get("listen", "")) for handler in document}
+            for name in guarded:
+                with self.subTest(handler=f"{relative}:{name}"):
+                    self.assertIn(name, listeners, f"{name} is silent in a dry-run")
+
+
 if __name__ == "__main__":
     problems = findings()
     for problem in problems:

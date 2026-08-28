@@ -54,6 +54,16 @@
     name: docker
     state: started
     enabled: true
+  # Docker comes from the package this run installs; in a dry-run nothing was
+  # installed, so systemd knows no docker.service yet.
+  when: not ansible_check_mode or 'docker.service' in node_base_systemd_units
+
+- name: Report the Docker unit a dry-run would enable
+  ansible.builtin.debug:
+    msg: Would install Docker Engine and Compose V2, then start and enable docker.service.
+  when:
+    - ansible_check_mode
+    - "'docker.service' not in node_base_systemd_units"
 
 - name: Flush Docker handler before dependent roles
   ansible.builtin.meta: flush_handlers
