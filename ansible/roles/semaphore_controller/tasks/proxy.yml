@@ -71,6 +71,44 @@
     path: "/etc/letsencrypt/live/{{ controller_proxy_domain }}/fullchain.pem"
   register: controller_proxy_certificate
 
+- name: Inspect the certificate that is already installed
+  community.crypto.x509_certificate_info:
+    path: "/etc/letsencrypt/live/{{ controller_proxy_domain }}/fullchain.pem"
+  register: controller_proxy_certificate_current
+  when: controller_proxy_certificate.stat.exists
+
+- name: Decide whether the certificate has to be replaced rather than renewed
+  # Switching staging -> production leaves a certificate that is still valid, so
+  # certbot with --keep-until-expiring would keep the staging one and the issuer
+  # check below would fail every time. The environment of what is installed is
+  # therefore compared with the environment that was asked for, and only a
+  # mismatch forces a reissue - a run that changes nothing must not spend an
+  # issuance.
+  ansible.builtin.set_fact:
+    controller_proxy_certificate_is_staging: >-
+      {{ controller_proxy_certificate.stat.exists and
+         ((controller_proxy_certificate_current.issuer.organizationName | default('') ~ ' ' ~
+           controller_proxy_certificate_current.issuer.commonName | default('')) is search('(?i)staging')) }}
+
+- name: Plan the issuance
+  ansible.builtin.set_fact:
+    controller_proxy_force_reissue: >-
+      {{ controller_proxy_certificate.stat.exists and
+         (controller_proxy_certificate_is_staging | bool)
+         != (controller_proxy_acme_environment == 'staging') }}
+
+- name: Report the certificate decision
+  ansible.builtin.debug:
+    msg: >-
+      {{ controller_proxy_domain }}:
+      {{ 'no certificate yet, issuing from ' ~ controller_proxy_acme_environment
+         if not controller_proxy_certificate.stat.exists
+         else ('installed certificate is ' ~
+               ('staging' if controller_proxy_certificate_is_staging | bool else 'production') ~
+               ', requested ' ~ controller_proxy_acme_environment ~ ' -> ' ~
+               ('forcing a reissue' if controller_proxy_force_reissue | bool
+                else 'renewing only when due')) }}
+
 # The site configuration references the certificate, so nginx cannot serve TLS
 # before one exists. The first pass therefore installs an HTTP-only site that
 # answers the ACME challenge; the second pass, after issuance, installs the real
@@ -137,10 +175,14 @@
       - "{{ controller_proxy_acme_email }}"
       - --cert-name
       - "{{ controller_proxy_domain }}"
-      - --keep-until-expiring
+      - "{{ '--force-renewal' if controller_proxy_force_reissue | bool else '--keep-until-expiring' }}"
       - "-d={{ controller_proxy_domain }}"
   register: controller_proxy_certbot
   changed_when: "'Certificate not yet due for renewal' not in controller_proxy_certbot.stdout"
+  # nginx keeps serving the certificate it loaded at start-up, so a replaced
+  # lineage has to be followed by a reload even though no file this role writes
+  # has changed.
+  notify: Reload nginx
   when: not ansible_check_mode
 
 - name: Confirm the certificate is now installed

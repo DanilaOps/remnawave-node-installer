@@ -714,3 +714,49 @@ class ValidateArgumentTests(unittest.TestCase):
             proxy.index("Start nginx so the challenge path is served"),
         )
         self.assertIn("Validate the complete nginx configuration with TLS enabled", proxy)
+
+
+class ProxyCertificateTests(unittest.TestCase):
+    """staging -> production has to actually replace the certificate."""
+
+    def read(self, relative: str) -> str:
+        return (ROOT / relative).read_text(encoding="utf-8")
+
+    def test_the_environment_switch_forces_a_reissue(self) -> None:
+        # A staging certificate is still valid, so --keep-until-expiring keeps it
+        # and the issuer assertion then fails on every run. The environment of
+        # what is installed decides, not the calendar.
+        proxy = self.read("roles/semaphore_controller/tasks/proxy.yml")
+        self.assertIn("controller_proxy_certificate_is_staging", proxy)
+        self.assertIn(
+            "\'--force-renewal\' if controller_proxy_force_reissue | bool "
+            "else \'--keep-until-expiring\'",
+            proxy,
+        )
+        # The decision is made before certbot runs, from the installed issuer.
+        self.assertLess(
+            proxy.index("Plan the issuance"),
+            proxy.index("- name: Issue the certificate"),
+        )
+        self.assertLess(
+            proxy.index("Inspect the certificate that is already installed"),
+            proxy.index("Plan the issuance"),
+        )
+
+    def test_a_run_that_changes_nothing_does_not_spend_an_issuance(self) -> None:
+        proxy = self.read("roles/semaphore_controller/tasks/proxy.yml")
+        self.assertIn("--keep-until-expiring", proxy)
+        self.assertIn(
+            "changed_when: \"'Certificate not yet due for renewal' not in "
+            "controller_proxy_certbot.stdout\"",
+            proxy,
+        )
+
+    def test_a_replaced_certificate_is_followed_by_a_reload(self) -> None:
+        # No file this role writes changes when only the lineage is replaced, so
+        # without this nginx keeps serving the old certificate until something
+        # else reloads it.
+        proxy = self.read("roles/semaphore_controller/tasks/proxy.yml")
+        certbot = proxy.index("- name: Issue the certificate")
+        following = proxy[certbot:proxy.index("- name: Confirm the certificate is now installed")]
+        self.assertIn("notify: Reload nginx", following)
