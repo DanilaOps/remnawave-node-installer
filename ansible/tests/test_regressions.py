@@ -259,6 +259,7 @@ class OperatorWorkflowTests(unittest.TestCase):
         self.assertIn("roles_path = ansible/roles", config)
         self.assertIn("filter_plugins = ansible/filter_plugins", config)
         self.assertIn("Environment=SEMAPHORE_INTERFACE=127.0.0.1", unit)
+        self.assertIn("Environment=SEMAPHORE_HOME_DIR_MODE=user_home", unit)
         self.assertNotIn("Environment=ANSIBLE_CONFIG=", unit)
 
 
