@@ -20,12 +20,30 @@ on (see below).
 
 ## Reaching the UI
 
-There is no public listener, no nginx, no TLS and no domain on the controller.
-Forward the port over SSH from the workstation:
+Semaphore binds `127.0.0.1:3000` and never anything else. Two ways in:
+
+**SSH tunnel** — the default, nothing published:
 
 ```bash
 ssh -N -L 3000:127.0.0.1:3000 <controller>
 ```
+
+**Published on a name** — `controller_proxy_enabled: true`. nginx terminates TLS on
+443 and proxies to loopback; the firewall opens 80 and 443 and never the UI port.
+An address list (`controller_proxy_allowed_cidrs`) and optional basic auth sit in
+front of Semaphore's own login, and the routes Semaphore serves without
+authentication — `/api/integrations/`, `/api/terraform/`, `/api/internal/` — are
+returned as 404. See "Publishing the UI" in `ansible/README.md`; settings go in
+`/etc/remnawave/controller.yml`.
+
+## Accounts
+
+There is no self-registration route in 2.18.29 — accounts exist only because an
+admin created them, so there is nothing to switch off. The role keeps
+`non_admin_can_create_project: false`, and a second operator is created with
+`ansible/tools/semaphore_bootstrap.py --add-user <login>`: not an admin, and
+`task_runner` in the project, so they can run the three templates and read the
+logs without being able to rewrite them.
 
 ## Secrets
 

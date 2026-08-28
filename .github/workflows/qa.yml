@@ -80,6 +80,11 @@ jobs:
       - name: Verify how the management allow list is resolved
         run: ansible-playbook -i localhost, -c local ansible/tests/management_cidrs.yml
 
+      - name: Verify the guards on deployment values and node identity
+        run: |
+          ansible-playbook -i ansible/inventories/staging/hosts.yml -c local \
+            ansible/tests/preflight_guards.yml --limit ee01
+
       - name: Render core templates and validate the firewall
         run: |
           sudo apt-get update -qq

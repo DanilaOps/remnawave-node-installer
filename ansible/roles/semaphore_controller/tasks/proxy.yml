@@ -1,0 +1,226 @@
+---
+# TLS in front of the UI. Semaphore stays on loopback: what listens on the public
+# address is nginx, whose whole job is TLS, access control and passing the request
+# to 127.0.0.1. The admin panel is reachable no other way, so a mistake in this
+# file cannot expose it directly.
+- name: Install the reverse proxy packages
+  ansible.builtin.apt:
+    name: "{{ controller_proxy_packages }}"
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+    lock_timeout: 300
+
+- name: Read the installed nginx version
+  ansible.builtin.command:
+    argv: [nginx, -v]
+  register: controller_proxy_nginx_version
+  changed_when: false
+  check_mode: false
+
+- name: Decide which HTTP/2 syntax this nginx understands
+  # 'http2 on' arrived in 1.25.1. Debian 13 has a newer one, Ubuntu 24.04 does
+  # not, and the wrong form is a hard configuration error rather than a warning.
+  ansible.builtin.set_fact:
+    controller_proxy_http2_directive: >-
+      {{ ((controller_proxy_nginx_version.stderr ~ controller_proxy_nginx_version.stdout)
+          | regex_search('nginx/([0-9.]+)', '\1') | first) is version('1.25.1', '>=') }}
+
+- name: Install the WebSocket upgrade map
+  ansible.builtin.template:
+    src: nginx-upgrade-map.conf.j2
+    dest: /etc/nginx/conf.d/remnawave-upgrade-map.conf
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Reload nginx
+
+- name: Create the ACME webroot
+  ansible.builtin.file:
+    path: "{{ controller_proxy_webroot }}/.well-known/acme-challenge"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Write the basic-auth file
+  # Hashes only. Preflight refuses anything that looks like a plaintext password,
+  # because nginx would accept it silently and never authenticate anybody.
+  ansible.builtin.copy:
+    content: |
+      {% for entry in controller_proxy_basic_auth_users %}
+      {{ entry.user }}:{{ entry.hash }}
+      {% endfor %}
+    dest: /etc/nginx/remnawave-ui.htpasswd
+    owner: root
+    group: www-data
+    mode: "0640"
+  no_log: true
+  when: controller_proxy_basic_auth_users | length > 0
+  notify: Reload nginx
+
+- name: Remove the basic-auth file when no users are declared
+  ansible.builtin.file:
+    path: /etc/nginx/remnawave-ui.htpasswd
+    state: absent
+  when: controller_proxy_basic_auth_users | length == 0
+  notify: Reload nginx
+
+- name: Look for an existing certificate
+  ansible.builtin.stat:
+    path: "/etc/letsencrypt/live/{{ controller_proxy_domain }}/fullchain.pem"
+  register: controller_proxy_certificate
+
+# The site configuration references the certificate, so nginx cannot serve TLS
+# before one exists. The first pass therefore installs an HTTP-only site that
+# answers the ACME challenge; the second pass, after issuance, installs the real
+# one. On every later run the certificate is already there and only the real
+# configuration is written.
+- name: Install the site configuration
+  ansible.builtin.template:
+    src: semaphore-nginx.conf.j2
+    dest: /etc/nginx/sites-available/remnawave-ui.conf
+    owner: root
+    group: root
+    mode: "0644"
+    validate: "nginx -t -c /etc/nginx/nginx.conf -q"
+  vars:
+    controller_proxy_tls_ready: "{{ controller_proxy_certificate.stat.exists }}"
+  register: controller_proxy_site
+
+- name: Enable the site
+  ansible.builtin.file:
+    src: /etc/nginx/sites-available/remnawave-ui.conf
+    dest: /etc/nginx/sites-enabled/remnawave-ui.conf
+    state: link
+  notify: Reload nginx
+
+- name: Disable the distribution's default site
+  ansible.builtin.file:
+    path: /etc/nginx/sites-enabled/default
+    state: absent
+  notify: Reload nginx
+
+- name: Start nginx so the challenge path is served
+  ansible.builtin.systemd_service:
+    name: nginx
+    state: started
+    enabled: true
+
+- name: Apply the pending site configuration before the challenge
+  ansible.builtin.systemd_service:
+    name: nginx
+    state: reloaded
+  when: controller_proxy_site.changed
+
+- name: Issue the certificate
+  ansible.builtin.command:
+    argv:
+      - certbot
+      - certonly
+      - --non-interactive
+      - --agree-tos
+      - --webroot
+      - --webroot-path
+      - "{{ controller_proxy_webroot }}"
+      - --server
+      - "{{ controller_proxy_acme_directories[controller_proxy_acme_environment] }}"
+      - --email
+      - "{{ controller_proxy_acme_email }}"
+      - --cert-name
+      - "{{ controller_proxy_domain }}"
+      - --keep-until-expiring
+      - "-d={{ controller_proxy_domain }}"
+  register: controller_proxy_certbot
+  changed_when: "'Certificate not yet due for renewal' not in controller_proxy_certbot.stdout"
+  when: not ansible_check_mode
+
+- name: Confirm the certificate is now installed
+  ansible.builtin.stat:
+    path: "/etc/letsencrypt/live/{{ controller_proxy_domain }}/fullchain.pem"
+  register: controller_proxy_certificate_final
+
+- name: Require a certificate before the TLS site is published
+  ansible.builtin.assert:
+    that:
+      - controller_proxy_certificate_final.stat.exists
+    fail_msg: >-
+      certbot did not leave a certificate for {{ controller_proxy_domain }}. nginx is still serving
+      the HTTP-only challenge site, so nothing is published; look at
+      /var/log/letsencrypt/letsencrypt.log. Remember the Let's Encrypt limit of five failures per
+      hour per hostname - use controller_proxy_acme_environment=staging while debugging.
+  when: not ansible_check_mode
+
+- name: Inspect the installed certificate
+  community.crypto.x509_certificate_info:
+    path: "/etc/letsencrypt/live/{{ controller_proxy_domain }}/fullchain.pem"
+  register: controller_proxy_certificate_info
+  when: controller_proxy_certificate_final.stat.exists
+
+- name: Require the certificate to match the requested ACME environment
+  # A staging certificate is not trusted by any browser, and a staging certificate
+  # left in production is the kind of thing nobody notices until somebody else does.
+  ansible.builtin.assert:
+    that:
+      - >-
+        ((controller_proxy_certificate_info.issuer.organizationName | default('') ~ ' ' ~
+          controller_proxy_certificate_info.issuer.commonName | default('')) is search('(?i)staging'))
+        == (controller_proxy_acme_environment == 'staging')
+      - controller_proxy_domain in (controller_proxy_certificate_info.subject_alt_name | default([]) | join(' '))
+    fail_msg: >-
+      The certificate for {{ controller_proxy_domain }} was issued by
+      '{{ controller_proxy_certificate_info.issuer.commonName | default('unknown') }}', which does not
+      match controller_proxy_acme_environment={{ controller_proxy_acme_environment }}.
+  when: controller_proxy_certificate_final.stat.exists
+
+- name: Install the TLS site configuration
+  ansible.builtin.template:
+    src: semaphore-nginx.conf.j2
+    dest: /etc/nginx/sites-available/remnawave-ui.conf
+    owner: root
+    group: root
+    mode: "0644"
+    validate: "nginx -t -c /etc/nginx/nginx.conf -q"
+  vars:
+    controller_proxy_tls_ready: true
+  when: controller_proxy_certificate_final.stat.exists
+  notify: Reload nginx
+
+- name: Reload nginx after a renewal instead of leaving the old certificate served
+  ansible.builtin.copy:
+    content: |
+      #!/bin/sh
+      # Installed by the semaphore_controller role. certbot's own timer renews the
+      # certificate; nginx keeps serving the old one until it is told otherwise.
+      systemctl reload nginx
+    dest: /etc/letsencrypt/renewal-hooks/deploy/10-reload-nginx
+    owner: root
+    group: root
+    mode: "0750"
+
+- name: Enable certbot's renewal timer
+  ansible.builtin.systemd_service:
+    name: certbot.timer
+    state: started
+    enabled: true
+  failed_when: false
+
+- name: Flush the nginx reload before the listeners are checked
+  ansible.builtin.meta: flush_handlers
+
+- name: Read the public listeners
+  ansible.builtin.command:
+    argv: [ss, -H, -lnt]
+  register: controller_proxy_listeners
+  changed_when: false
+  check_mode: false
+
+- name: Require 80 and 443 to be public and the UI port not to be
+  ansible.builtin.assert:
+    that:
+      - controller_proxy_listeners.stdout is regex('(?m)(^|\s)(0\.0\.0\.0|\[::\]|\*):443\s')
+      - controller_proxy_listeners.stdout is not regex('(?m)(^|\s)(0\.0\.0\.0|\[::\]|\*):' ~ semaphore_port ~ '\s')
+    fail_msg: >-
+      Expected nginx on 443 and Semaphore only on {{ semaphore_interface }}:{{ semaphore_port }}.
+      Listeners now: {{ controller_proxy_listeners.stdout_lines | join(' | ') }}.
+  when: not ansible_check_mode

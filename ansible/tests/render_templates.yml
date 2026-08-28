@@ -235,6 +235,84 @@
         dest: /tmp/remnawave-filter-test.nft
         mode: "0600"
 
+    - name: Render the controller reverse proxy, with and without a certificate
+      ansible.builtin.template:
+        src: "{{ playbook_dir }}/../roles/semaphore_controller/templates/semaphore-nginx.conf.j2"
+        dest: "/tmp/remnawave-ui-{{ item.name }}.conf"
+        mode: "0644"
+      vars:
+        semaphore_interface: 127.0.0.1
+        semaphore_port: 3000
+        controller_proxy_domain: web.example.com
+        controller_proxy_webroot: /var/www/remnawave-acme
+        controller_proxy_certificate_dir: "{{ certificate_live_dir | default('/tmp/remnawave-ui-tls') }}"
+        controller_proxy_ssl_stapling: false
+        controller_proxy_http2_directive: "{{ item.http2 }}"
+        controller_proxy_tls_ready: "{{ item.tls }}"
+        controller_proxy_allowed_cidrs: "{{ item.cidrs }}"
+        controller_proxy_basic_auth_users: "{{ item.basic_auth }}"
+        controller_proxy_blocked_paths:
+          - /api/integrations/
+          - /api/terraform/
+          - /api/internal/
+      loop:
+        - name: bootstrap
+          tls: false
+          http2: false
+          cidrs: []
+          basic_auth: []
+        # The validated artifact uses the pre-1.25 HTTP/2 syntax: it is accepted by
+        # every nginx this project supports, and by crossplane, which does not know
+        # the newer 'http2 on' directive. The newer form is asserted below instead.
+        - name: restricted
+          tls: true
+          http2: false
+          cidrs: ["203.0.113.9/32", "2001:db8::/64"]
+          basic_auth: [{user: mate, hash: "$apr1$abcdefgh$0123456789abcdefghijkl"}]
+        - name: public
+          tls: true
+          http2: false
+          cidrs: []
+          basic_auth: []
+        - name: modern
+          tls: true
+          http2: true
+          cidrs: []
+          basic_auth: []
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: Render the WebSocket upgrade map
+      ansible.builtin.template:
+        src: "{{ playbook_dir }}/../roles/semaphore_controller/templates/nginx-upgrade-map.conf.j2"
+        dest: /tmp/remnawave-upgrade-map.conf
+        mode: "0644"
+
+    - name: Require the published proxy to hide what Semaphore serves unauthenticated
+      ansible.builtin.assert:
+        that:
+          - rendered_restricted is search('location \^~ /api/integrations/')
+          - rendered_restricted is search('location \^~ /api/terraform/')
+          - rendered_restricted is search('location \^~ /api/internal/')
+          - rendered_restricted is search('allow 203.0.113.9/32;')
+          - rendered_restricted is search('deny all;')
+          - rendered_restricted is search('auth_basic_user_file')
+          - rendered_restricted is search('proxy_set_header Connection \$connection_upgrade;')
+          - rendered_restricted is search('proxy_pass http://127.0.0.1:3000;')
+          - rendered_restricted is not search('listen 3000')
+          - rendered_public is not search('deny all;')
+          - rendered_public is not search('auth_basic')
+          - rendered_bootstrap is not search('ssl_certificate ')
+          - rendered_bootstrap is search('acme-challenge')
+          - rendered_modern is search('http2 on;')
+          - rendered_restricted is search('listen 443 ssl http2;')
+        fail_msg: The rendered reverse proxy does not match what the role promises.
+      vars:
+        rendered_restricted: "{{ lookup('file', '/tmp/remnawave-ui-restricted.conf') }}"
+        rendered_public: "{{ lookup('file', '/tmp/remnawave-ui-public.conf') }}"
+        rendered_bootstrap: "{{ lookup('file', '/tmp/remnawave-ui-bootstrap.conf') }}"
+        rendered_modern: "{{ lookup('file', '/tmp/remnawave-ui-modern.conf') }}"
+
     - name: Render the controller nftables template
       ansible.builtin.template:
         src: "{{ playbook_dir }}/../roles/semaphore_controller/templates/remnawave-controller.nft.j2"

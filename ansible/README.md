@@ -341,30 +341,56 @@ ansible/
   inventories/<env>/hosts.yml    # one line per node: nothing but addresses
   playbooks/group_vars/
     all/
-      panel.yml                  # panel URL, shared profile, CIDRs, ACME email, zone
+      panel.yml                  # documentation values: panel URL, profile, zone
       countries.yml              # country code -> label published to users
-      vault.yml                  # git-ignored, ansible-vault encrypted
     remnawave_nodes/
       identity.yml               # everything derived from the hostname
       fleet.yml                  # pinned versions and fleet-wide policy
-      zz-local.yml               # git-ignored: the real values of this deployment
   examples/
-    vault.yml.example
-    local-overrides.yml.example
+    fleet.yml.example            # -> /etc/remnawave/fleet.yml on the controller
+    secrets.yml.example          # -> /etc/remnawave/secrets.yml, ansible-vault
 ```
 
-Everything tracked here carries documentation values. The real ones go into
-`zz-local.yml`, which is in the same precedence tier as the other group files and
-is loaded last, so it wins; from Semaphore they arrive as extra vars, which
-outrank every file. Examples deliberately live in `ansible/examples/` and not in
-a `group_vars` directory: Ansible loads every `.yml` it finds there, so an
-example one rename away from `.yml` would define real variable names. A
-regression test enforces both properties.
+Everything tracked here carries documentation values, and preflight **refuses** to
+run against them. The real values live on the controller, in two files outside the
+checkout:
 
-`./setup-controller` writes and encrypts the vault; the manual path is to copy
-`examples/vault.yml.example` to `playbooks/group_vars/all/vault.yml`, fill it in
-and run `ansible-vault encrypt`. The Panel token, registrar credentials, the
-probe user's VLESS UUID and the bridge password belong there and nowhere else:
+```text
+/etc/remnawave/fleet.yml     # panel URL, CIDRs, zone, squad, ACME email, dns_provider
+/etc/remnawave/secrets.yml   # ansible-vault encrypted: panel token, registrar, probe UUID
+/etc/remnawave/vault-pass    # the password for the file above
+```
+
+Both are loaded as **extra-vars files**: `./provision-node` adds them when they
+exist, and every Semaphore template names them in its arguments. That is not a
+detail — it is the only mechanism that works for both. Semaphore clones the
+repository fresh for every job, so a git-ignored file inside the checkout never
+reaches a run started from the UI; and this repository is public, so the real
+values cannot be committed. Two files on the controller, read the same way by the
+UI and the command line, is what keeps the two paths from drifting.
+
+An encrypted extra-vars file is also how a secret stays off the command line:
+Ansible decrypts it in-process, while a secret passed as `-e name=value` — which
+is what a Semaphore variable group does — is visible in `/proc` for the duration
+of the run.
+
+Two things therefore do **not** belong in a Semaphore variable group. Secrets, for
+the reason above. And anything node-specific: variable-group values arrive as
+extra vars, which outrank every file *and every host*, so one `node_id` there
+gives the whole fleet one identity and each run overwrites the previous node's
+panel objects. Preflight recomputes the identity from the inventory hostname and
+refuses a run where they disagree, so that mistake now fails instead of being
+published.
+
+Examples live in `ansible/examples/` and not in a `group_vars` directory: Ansible
+loads every `.yml` it finds there, so an example one rename away from `.yml` would
+define real variable names. Regression tests enforce all of this.
+
+`./setup-controller` writes both files and encrypts the second; the manual path is
+to copy `examples/fleet.yml.example` and `examples/secrets.yml.example` to
+`/etc/remnawave/` and run `ansible-vault encrypt` on the secrets. The Panel token,
+registrar credentials, the probe user's VLESS UUID and the bridge password belong
+there and nowhere else:
 
 ```yaml
 vault_remnawave_panel_token: ...
@@ -374,9 +400,9 @@ vault_verify_probe_vless_uuid: ...
 vault_node_root_password: ""   # optional: ./provision-node prompts instead
 ```
 
-Store the vault password in a file outside the repository (`setup-controller`
-offers to) and runs stop prompting for it:
-`export ANSIBLE_VAULT_PASSWORD_FILE=~/.config/remnawave/vault-pass`.
+The vault password goes in `/etc/remnawave/vault-pass` (`setup-controller` offers
+to write it). The wrapper picks it up, and the Semaphore variable group carries
+its **path** in `ANSIBLE_VAULT_PASSWORD_FILE` — a path, never the password.
 
 The SSH key is the primary way in and root with a password is the fallback that
 survives a wiped `authorized_keys`: `fleet.yml` sets
@@ -404,10 +430,11 @@ because Semaphore passes extra vars on the command line.
 
 ## Required data beyond the two facts
 
-Per fleet, set once in the git-ignored `zz-local.yml` (written by
+Per fleet, set once in `/etc/remnawave/fleet.yml` on the controller (written by
 `./setup-controller`): Panel URL, `remnawave_panel_cidrs`, `node_domain_zone`,
-`acme_email` and the Internal Squad name or UUID. The controller's own address is
-discovered, not configured, and no real address belongs in the tracked files.
+`acme_email`, the Internal Squad name or UUID, `dns_provider` and the probe user's
+username. The controller's own address is discovered, not configured, and no real
+address belongs in the tracked files.
 
 `host_specs` is a data model, not a one-Host-per-Node shortcut: a declaration can be
 direct, hidden or virtual and can carry an explicit `node_uuids` list. Remnawave 3.3.2
@@ -465,6 +492,15 @@ only, with the variable spelled out by hand.
 - **Inventory** is a static YAML inventory in Semaphore, holding the same one line
   per node as `hosts.yml`. It is the node registry, so it is the one piece of
   state that does not live in git — back it up.
+- **Deployment values** are `-e '@/etc/remnawave/fleet.yml' -e '@/etc/remnawave/secrets.yml'`
+  in each template's arguments, and `ANSIBLE_VAULT_PASSWORD_FILE` in the variable
+  group's environment (a path, not a password). A job runs from a fresh clone, so
+  this is the only way the real panel URL, zone and secrets reach it.
+  `semaphore_bootstrap.py` sets all three.
+- **The variable group holds no values at all** beyond that one environment
+  variable. Its values arrive as extra vars, which outrank every file and every
+  host: a secret there is visible in `/proc` for the length of the run, and a
+  `node_id` there gives the whole fleet one identity.
 - **The root password of a brand new VPS** is a *secret survey field* named
   `bootstrap_ssh_password`. Survey secrets are not stored in Semaphore's database
   (`Task.Secret` is `db:"-"`), which is exactly what a one-off credential wants;
@@ -537,6 +573,90 @@ python3 ansible/tools/semaphore_bootstrap.py
 It is idempotent by name and never writes a secret: the deployer key, the vault
 password and the panel token are added in the UI, and it prints exactly what is
 left to do by hand.
+
+## Publishing the UI
+
+By default the UI is reachable only through an SSH tunnel. It can be published on
+a name instead, and the shape of that is deliberate: **Semaphore never leaves
+loopback**. What listens on the public address is nginx, whose whole job is TLS,
+deciding who may knock, and passing the request to `127.0.0.1:3000`. A mistake in
+the proxy configuration cannot expose the admin panel directly, and the role
+checks with `ss` afterwards that 443 is public and the UI port is not.
+
+```yaml
+# /etc/remnawave/controller.yml
+controller_proxy_enabled: true
+controller_proxy_domain: web.your-domain.tld
+controller_proxy_acme_email: ops@your-domain.tld
+controller_proxy_allowed_cidrs: [203.0.113.9/32, 198.51.100.0/24]
+controller_proxy_basic_auth_users:
+  - {user: ops, hash: "$apr1$..."}
+```
+
+```bash
+ansible-playbook ansible/playbooks/controller.yml \
+  -i 'localhost,' -c local -e controller_group=localhost \
+  -e @/etc/remnawave/controller.yml
+```
+
+What that gets you, and why each part is there:
+
+- **TLS from Let's Encrypt over HTTP-01.** The first pass installs an HTTP-only
+  site that answers `/.well-known/acme-challenge/`, issues the certificate, and
+  only then writes the TLS site — so nothing is ever published without a
+  certificate. Renewal is certbot's own timer plus a deploy hook that reloads
+  nginx, because nginx keeps serving the old certificate until told otherwise.
+  Preflight refuses to run certbot at all if the name does not resolve to this
+  host: five failures per hour per hostname is the whole budget.
+- **An address list, and it is the control that matters.** Behind this login sits
+  the machine that provisions every node, so limiting who can reach the login page
+  is worth more than any header. `controller_proxy_allowed_cidrs` becomes both an
+  nginx `allow`/`deny` and an nftables rule. Leaving it empty publishes the panel
+  to the internet and requires `controller_proxy_ack_public: true` — an explicit
+  decision, not a default.
+- **Basic auth in front of Semaphore's own login.** Optional, cheap, and it is
+  what stops credential stuffing and scanners from ever reaching the login form.
+  Hashes only (`openssl passwd -apr1`); preflight rejects a value that looks like
+  a plaintext password, because nginx would accept it and authenticate nobody.
+- **The unauthenticated routes are blocked.** Verified against 2.18.29:
+  `/api/integrations/{alias}`, `/api/terraform/{alias}` and `/api/internal/runners`
+  are served with **no authentication**. Harmless on loopback; published, an alias
+  somebody guesses runs a task against the fleet. The proxy returns 404 for all
+  three. `/api/auth/recovery` stays reachable — it is the login page's own flow.
+- **Live task output keeps working.** Semaphore streams it over a WebSocket, so the
+  proxy passes `Upgrade`/`Connection` through (with the `map` that needs to live in
+  the `http` context) and raises the read timeout to an hour. Without that the UI
+  loads and then silently never shows a running task.
+- **The firewall opens 80 and 443 only.** Never the UI port — Semaphore binds
+  loopback, so there is nothing there to open. Port 80 stays open to everyone even
+  when the allow list is set, because Let's Encrypt validates from addresses nobody
+  can predict; nginx serves nothing there but the challenge path and a redirect.
+- **`web_host` follows the public name.** Semaphore builds links and cookie scope
+  from it; left pointing at loopback, a published instance redirects people to
+  `127.0.0.1`.
+
+### Accounts
+
+Semaphore 2.18.29 has **no self-registration route at all** — there is no setting
+to switch off, because accounts exist only because an admin created them. Two
+things are still worth setting, and the role sets both:
+`non_admin_can_create_project: false` and `password_login_disable: false` (people
+do need to log in).
+
+A second operator is created without touching the UI:
+
+```bash
+export SEMAPHORE_API_TOKEN='...' SEMAPHORE_NEW_USER_PASSWORD='...'
+python3 ansible/tools/semaphore_bootstrap.py \
+  --add-user mate --user-name "Second operator" --user-email mate@example.com
+```
+
+Not an admin, and `task_runner` in the project by default: they may press the
+three buttons and read the logs, but cannot rewrite a template into something
+else. `--user-role manager` if they should also edit templates. The password comes
+from the environment for that one command and is never written anywhere in this
+repository; the account is created only if the login does not already exist, so
+re-running never resets somebody's password.
 
 ## End-to-end probe
 

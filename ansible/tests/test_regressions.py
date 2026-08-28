@@ -148,8 +148,8 @@ class ProductionRegressionTests(unittest.TestCase):
         # Ansible loads every .yml it finds in a group_vars directory, so an
         # example kept there defines real variable names the moment somebody
         # drops the .example suffix. Examples live in ansible/examples/ instead.
-        self.assertTrue((ROOT / "examples" / "vault.yml.example").is_file())
-        self.assertTrue((ROOT / "examples" / "local-overrides.yml.example").is_file())
+        self.assertTrue((ROOT / "examples" / "secrets.yml.example").is_file())
+        self.assertTrue((ROOT / "examples" / "fleet.yml.example").is_file())
         for path in GROUP_VARS.rglob("*"):
             if path.is_file():
                 self.assertNotIn(
@@ -256,24 +256,43 @@ class OperatorWorkflowTests(unittest.TestCase):
         fleet = yaml.safe_load(self.read("playbooks/group_vars/remnawave_nodes/fleet.yml"))
         self.assertEqual("deployer", fleet["ansible_user"])
 
-    def test_local_overrides_win_over_the_published_documentation_values(self) -> None:
-        # The real deployment values are loaded last of the group files, so they
-        # override the documentation values that are safe to publish. Both are in
-        # the same precedence tier, so only the file name decides.
-        tracked = sorted(
-            path.name for path in (GROUP_VARS / "remnawave_nodes").glob("*.yml")
-        )
-        self.assertTrue(tracked)
-        for name in tracked:
-            self.assertLess(
-                name, "zz-local.yml",
-                "zz-local.yml must sort after every tracked group file",
-            )
-        gitignore = (REPO / ".gitignore").read_text(encoding="utf-8")
-        self.assertIn(
-            "ansible/playbooks/group_vars/remnawave_nodes/zz-local.yml", gitignore
-        )
-        self.assertIn("ansible/playbooks/group_vars/all/vault.yml", gitignore)
+    def test_real_values_reach_a_semaphore_job_and_the_cli_alike(self) -> None:
+        # Semaphore clones the repository for every job, so a git-ignored file
+        # inside the checkout never reaches a run started from the UI. The real
+        # values therefore live on the controller and are loaded as extra-vars
+        # files - by the wrapper, and by name in every template's arguments.
+        self.assertTrue((ROOT / "examples" / "fleet.yml.example").is_file())
+        self.assertTrue((ROOT / "examples" / "secrets.yml.example").is_file())
+        wrapper = (REPO / "provision-node").read_text(encoding="utf-8")
+        self.assertIn('REMNAWAVE_FLEET_VARS:-/etc/remnawave/fleet.yml', wrapper)
+        self.assertIn('value_args+=(-e "@$file")', wrapper)
+        tool = self.read("tools/semaphore_bootstrap.py")
+        self.assertIn('["-e", f"@{arguments.fleet_values}", "-e", f"@{arguments.secret_values}"]', tool)
+        # The vault password is a path in the variable group, never a value.
+        self.assertIn('"ANSIBLE_VAULT_PASSWORD_FILE": arguments.vault_password_file', tool)
+        self.assertIn('"json": "{}"', tool)
+
+    def test_the_published_documentation_values_cannot_reach_a_node(self) -> None:
+        # Everything tracked here is an example value. A run that still sees them
+        # lost its deployment values, and publishing a node against a panel that
+        # does not exist is worse than stopping.
+        preflight = self.read("roles/node_base/tasks/preflight_controller.yml")
+        panel = yaml.safe_load(self.read("playbooks/group_vars/all/panel.yml"))
+        self.assertEqual("https://panel.example.com", panel["remnawave_panel_url"])
+        self.assertIn("Refuse to run against the published documentation values", preflight)
+        self.assertIn("remnawave_panel_url != 'https://panel.example.com'", preflight)
+        self.assertIn("node_domain_zone != 'example.com'", preflight)
+
+    def test_a_fleet_wide_identity_cannot_be_smuggled_in(self) -> None:
+        # Extra vars outrank every file and every host, so one node_id supplied
+        # globally - a Semaphore variable group, a stray -e - would give the whole
+        # fleet one identity and make each run overwrite the previous node.
+        preflight = self.read("roles/node_base/tasks/preflight_controller.yml")
+        defaults = yaml.safe_load(self.read("roles/node_base/defaults/main.yml"))
+        self.assertIn("Refuse a node identity that did not come from its inventory hostname", preflight)
+        self.assertIn("node_public_ip == ansible_host", preflight)
+        self.assertIn("selfsteal_domain == inventory_hostname ~ '.' ~ node_domain_zone", preflight)
+        self.assertFalse(defaults["node_identity_override_ack"])
 
     def test_bootstrap_credentials_are_not_stored_in_inventory(self) -> None:
         defaults = self.read("roles/node_bootstrap/defaults/main.yml")
@@ -578,3 +597,92 @@ class ControllerTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PublishedUiTests(unittest.TestCase):
+    """Publishing the panel that provisions the fleet is the riskiest change here."""
+
+    def read(self, relative: str) -> str:
+        return (ROOT / relative).read_text(encoding="utf-8")
+
+    def test_semaphore_itself_never_leaves_loopback(self) -> None:
+        # The public listener is nginx. Semaphore keeps binding 127.0.0.1, so a
+        # mistake in the proxy cannot expose the admin panel directly.
+        defaults = yaml.safe_load(self.read("roles/semaphore_controller/defaults/main.yml"))
+        self.assertEqual("127.0.0.1", defaults["semaphore_interface"])
+        preflight = self.read("roles/semaphore_controller/tasks/preflight.yml")
+        self.assertIn("Refuse to expose the Semaphore UI beyond loopback", preflight)
+        proxy = self.read("roles/semaphore_controller/tasks/proxy.yml")
+        self.assertIn("Require 80 and 443 to be public and the UI port not to be", proxy)
+
+    def test_publishing_to_the_internet_needs_an_acknowledgement(self) -> None:
+        defaults = yaml.safe_load(self.read("roles/semaphore_controller/defaults/main.yml"))
+        preflight = self.read("roles/semaphore_controller/tasks/preflight.yml")
+        self.assertFalse(defaults["controller_proxy_enabled"])
+        self.assertEqual([], defaults["controller_proxy_allowed_cidrs"])
+        self.assertFalse(defaults["controller_proxy_ack_public"])
+        self.assertIn("Require an explicit decision before the UI is open to the internet", preflight)
+
+    def test_unauthenticated_semaphore_routes_are_blocked_by_the_proxy(self) -> None:
+        # Verified against Semaphore 2.18.29: /api/integrations/{alias},
+        # /api/terraform/{alias} and /api/internal/runners are served with no
+        # authentication. Harmless on loopback; published, a guessed alias runs a
+        # task against the fleet.
+        defaults = yaml.safe_load(self.read("roles/semaphore_controller/defaults/main.yml"))
+        self.assertEqual(
+            ["/api/integrations/", "/api/terraform/", "/api/internal/"],
+            defaults["controller_proxy_blocked_paths"],
+        )
+        site = self.read("roles/semaphore_controller/templates/semaphore-nginx.conf.j2")
+        self.assertIn("controller_proxy_blocked_paths", site)
+        self.assertIn("return 404;", site)
+
+    def test_live_task_output_survives_the_proxy(self) -> None:
+        # The WebSocket is what shows a running task. Without the upgrade headers
+        # the UI loads and then silently shows nothing.
+        site = self.read("roles/semaphore_controller/templates/semaphore-nginx.conf.j2")
+        self.assertIn("proxy_set_header Upgrade $http_upgrade;", site)
+        self.assertIn("proxy_set_header Connection $connection_upgrade;", site)
+        self.assertIn("proxy_read_timeout 3600s;", site)
+        # $connection_upgrade is a map, and a map belongs in the http context.
+        self.assertTrue(
+            (ROOT / "roles/semaphore_controller/templates/nginx-upgrade-map.conf.j2").is_file()
+        )
+
+    def test_basic_auth_refuses_plaintext_passwords(self) -> None:
+        preflight = self.read("roles/semaphore_controller/tasks/preflight.yml")
+        self.assertIn("controller_proxy_basic_auth_users entries need a user and a password *hash*", preflight)
+
+    def test_the_firewall_publishes_only_80_and_443(self) -> None:
+        firewall = self.read("roles/semaphore_controller/templates/remnawave-controller.nft.j2")
+        self.assertIn("tcp dport { 80, 443 } accept", firewall)
+        self.assertNotIn("dport 3000", firewall)
+        self.assertNotIn("dport { 80, 443, 3000 }", firewall)
+
+    def test_accounts_exist_only_because_an_admin_made_them(self) -> None:
+        # Semaphore 2.18.29 has no self-registration route at all, so there is no
+        # setting to switch off. What is left is that a non-admin must not be able
+        # to create projects, and that password login stays usable.
+        defaults = yaml.safe_load(self.read("roles/semaphore_controller/defaults/main.yml"))
+        config = self.read("roles/semaphore_controller/templates/semaphore-config.json.j2")
+        self.assertFalse(defaults["semaphore_non_admin_can_create_project"])
+        self.assertFalse(defaults["semaphore_password_login_disable"])
+        self.assertIn('"non_admin_can_create_project"', config)
+        self.assertIn('"password_login_disable"', config)
+
+    def test_a_second_operator_is_not_an_admin(self) -> None:
+        tool = self.read("tools/semaphore_bootstrap.py")
+        self.assertIn('"admin": False', tool)
+        self.assertIn('default="task_runner"', tool)
+        self.assertIn("SEMAPHORE_NEW_USER_PASSWORD", tool)
+        # The password is read from the environment for one command, never stored.
+        self.assertNotIn("password=", tool.replace('"password": password', ""))
+
+    def test_the_public_url_is_what_semaphore_believes_it_is(self) -> None:
+        # Semaphore builds links and cookie scope from web_host; left pointing at
+        # loopback, a published instance redirects people to 127.0.0.1.
+        defaults = self.read("roles/semaphore_controller/defaults/main.yml")
+        config = self.read("roles/semaphore_controller/templates/semaphore-config.json.j2")
+        self.assertIn("semaphore_web_host:", defaults)
+        self.assertIn("'https://' ~ controller_proxy_domain", defaults)
+        self.assertIn('"web_host": "{{ semaphore_web_host | trim }}"', config)

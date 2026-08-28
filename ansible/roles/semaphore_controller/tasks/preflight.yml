@@ -24,6 +24,84 @@
       it is reached with 'ssh -N -L {{ semaphore_port }}:127.0.0.1:{{ semaphore_port }} <controller>'.
       Publishing it would need TLS and an authenticating proxy, which this project does not set up.
 
+- name: Validate the public access declaration
+  ansible.builtin.assert:
+    that:
+      - controller_proxy_domain is match('^(?=.{1,253}$)([A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,63}$')
+      - controller_proxy_acme_email is search('@')
+      - controller_proxy_acme_environment in controller_proxy_acme_directories
+    fail_msg: >-
+      Publishing the UI needs controller_proxy_domain (a name that already resolves to this host),
+      controller_proxy_acme_email and a valid controller_proxy_acme_environment.
+  when: controller_proxy_enabled | bool
+
+- name: Require an explicit decision before the UI is open to the internet
+  # The panel behind this proxy provisions every node in the fleet. An address
+  # list in front of it is the control that actually limits the damage of a
+  # leaked password, so leaving it empty has to be a decision somebody made.
+  ansible.builtin.assert:
+    that:
+      - controller_proxy_allowed_cidrs | length > 0 or controller_proxy_ack_public | bool
+    fail_msg: >-
+      controller_proxy_enabled is true and controller_proxy_allowed_cidrs is empty, which publishes
+      the panel that provisions the fleet to the whole internet. List the office, VPN or home
+      addresses in controller_proxy_allowed_cidrs, or set controller_proxy_ack_public=true to state
+      that unrestricted access is intended. Basic auth
+      (controller_proxy_basic_auth_users) is worth adding either way.
+  when: controller_proxy_enabled | bool
+
+- name: Validate every address allowed to reach the UI
+  ansible.builtin.assert:
+    that:
+      - (item | ansible.utils.ipaddr) != false
+    fail_msg: "Invalid CIDR in controller_proxy_allowed_cidrs: {{ item }}"
+  loop: "{{ controller_proxy_allowed_cidrs | default([]) }}"
+  loop_control:
+    label: "{{ item }}"
+  when: controller_proxy_enabled | bool
+
+- name: Validate the basic-auth entries
+  ansible.builtin.assert:
+    that:
+      - item.user is match('^[A-Za-z0-9._-]{1,32}$')
+      - item.hash | default('') | length > 0
+      - not (item.hash | default('') is match('^[A-Za-z0-9._-]{0,20}$'))
+    fail_msg: >-
+      controller_proxy_basic_auth_users entries need a user and a password *hash*. Produce one with
+      'openssl passwd -apr1' and keep the plaintext out of the repository; a value that looks like a
+      plain password is refused here rather than written into a file nginx would happily accept.
+  loop: "{{ controller_proxy_basic_auth_users | default([]) }}"
+  loop_control:
+    label: "{{ item.user | default('?') }}"
+  no_log: true
+  when: controller_proxy_enabled | bool
+
+- name: Require the published name to resolve to this host
+  ansible.builtin.command:
+    argv: [getent, ahostsv4, "{{ controller_proxy_domain }}"]
+  register: controller_proxy_dns
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  when: controller_proxy_enabled | bool
+
+- name: Refuse to request a certificate for a name that does not point here
+  # ACME would fail anyway, and five failures per hour per hostname is the whole
+  # budget. Failing before certbot runs keeps that budget intact.
+  ansible.builtin.assert:
+    that:
+      - >-
+        (controller_proxy_dns.stdout | default('') | regex_findall('(?m)^([0-9.]+)\s+')) |
+        intersect(ansible_facts.all_ipv4_addresses | default([])) | length > 0
+        or controller_proxy_ack_dns_elsewhere | default(false) | bool
+    fail_msg: >-
+      {{ controller_proxy_domain }} resolves to
+      {{ controller_proxy_dns.stdout | default('') | regex_findall('(?m)^([0-9.]+)\s+') | unique }},
+      none of which is an address of this host
+      ({{ ansible_facts.all_ipv4_addresses | default([]) | join(', ') }}). Create the A record first.
+      Behind a proxy that terminates elsewhere, set controller_proxy_ack_dns_elsewhere=true.
+  when: controller_proxy_enabled | bool
+
 - name: Read an existing Semaphore configuration
   ansible.builtin.slurp:
     src: "{{ semaphore_config_path }}"

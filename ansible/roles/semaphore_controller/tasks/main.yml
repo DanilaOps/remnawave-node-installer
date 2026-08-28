@@ -15,6 +15,11 @@
   ansible.builtin.import_tasks: semaphore.yml
   tags: [semaphore]
 
+- name: Publish the UI behind a TLS reverse proxy
+  ansible.builtin.import_tasks: proxy.yml
+  when: controller_proxy_enabled | bool
+  tags: [proxy]
+
 - name: Install the controller firewall
   ansible.builtin.import_tasks: firewall.yml
   when: controller_firewall_enabled | bool

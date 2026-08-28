@@ -1,0 +1,123 @@
+# Managed by the semaphore_controller role.
+#
+# Semaphore listens on {{ semaphore_interface }}:{{ semaphore_port }} and nowhere
+# else. Everything public is here, and this file does four things: terminate TLS,
+# decide who may knock, hide the routes Semaphore serves without authentication,
+# and pass the rest through - including the WebSocket that carries live task
+# output, which is the one thing a naive proxy breaks.
+
+{% if controller_proxy_basic_auth_users | length > 0 %}
+# A second password in front of Semaphore's own login: scanners and credential
+# stuffing never reach the login form.
+{% endif %}
+
+server {
+    listen 80;
+    listen [::]:80;
+    server_name {{ controller_proxy_domain }};
+
+    # The challenge path stays open to everyone: Let's Encrypt validates from
+    # addresses nobody can predict, so an allow list here would break renewal.
+    location ^~ /.well-known/acme-challenge/ {
+        root {{ controller_proxy_webroot }};
+        default_type "text/plain";
+        allow all;
+    }
+
+{% if controller_proxy_tls_ready | default(false) %}
+    location / {
+        return 301 https://$host$request_uri;
+    }
+{% else %}
+    # No certificate yet - the TLS server below is written only once one exists,
+    # so nothing is published in the meantime.
+    location / {
+        return 503 "waiting for a certificate\n";
+    }
+{% endif %}
+}
+
+{% if controller_proxy_tls_ready | default(false) %}
+server {
+{% if controller_proxy_http2_directive | default(true) %}
+    listen 443 ssl;
+    listen [::]:443 ssl;
+    http2 on;
+{% else %}
+    # nginx before 1.25.1 has no 'http2 on' directive.
+    listen 443 ssl http2;
+    listen [::]:443 ssl http2;
+{% endif %}
+    server_name {{ controller_proxy_domain }};
+
+    ssl_certificate     {{ controller_proxy_certificate_dir }}/fullchain.pem;
+    ssl_certificate_key {{ controller_proxy_certificate_dir }}/privkey.pem;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_prefer_server_ciphers off;
+    ssl_session_cache shared:remnawave_ui:10m;
+    ssl_session_timeout 1d;
+    ssl_session_tickets off;
+{% if controller_proxy_ssl_stapling | default(true) %}
+    ssl_stapling on;
+    ssl_stapling_verify on;
+{% endif %}
+
+    add_header Strict-Transport-Security "max-age=31536000" always;
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header X-Frame-Options "DENY" always;
+    add_header Referrer-Policy "no-referrer" always;
+
+    # An admin panel has no business in a search index or in a proxy cache.
+    add_header X-Robots-Tag "noindex, nofollow" always;
+
+    client_max_body_size 32m;
+    access_log /var/log/nginx/remnawave-ui.access.log;
+    error_log  /var/log/nginx/remnawave-ui.error.log warn;
+
+{% if controller_proxy_allowed_cidrs | length > 0 %}
+    # Who may reach the panel at all. This is the control that limits the damage
+    # of a leaked password, so it comes before authentication rather than after.
+{% for cidr in controller_proxy_allowed_cidrs %}
+    allow {{ cidr }};
+{% endfor %}
+    deny all;
+{% else %}
+    # controller_proxy_allowed_cidrs is empty: reachable from anywhere. Declared
+    # deliberately via controller_proxy_ack_public.
+{% endif %}
+
+{% for path in controller_proxy_blocked_paths %}
+    # Served by Semaphore without authentication; nothing here uses it, and a
+    # guessed alias would run a task against the fleet.
+    location ^~ {{ path }} {
+        return 404;
+    }
+{% endfor %}
+
+    location / {
+{% if controller_proxy_basic_auth_users | length > 0 %}
+        auth_basic "Remnawave";
+        auth_basic_user_file /etc/nginx/remnawave-ui.htpasswd;
+{% endif %}
+        proxy_pass http://{{ semaphore_interface }}:{{ semaphore_port }};
+        proxy_http_version 1.1;
+
+        # Live task output is a WebSocket. Without these three lines the UI loads
+        # and then silently never shows a running task.
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $connection_upgrade;
+
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+
+        # A provisioning run streams for minutes; the default 60s read timeout
+        # would cut the log view mid-task.
+        proxy_connect_timeout 10s;
+        proxy_send_timeout 3600s;
+        proxy_read_timeout 3600s;
+        proxy_buffering off;
+    }
+}
+{% endif %}

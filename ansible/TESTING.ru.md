@@ -102,19 +102,25 @@ ansible-lint
 
 `ansible/inventories/test/` целиком в `.gitignore`: в нём реальные IP, которым нельзя попадать в публичный репозиторий. Для тестовых прогонов ставьте `certificate_acme_environment: staging`, иначе повторные попытки упрутся в лимиты Let's Encrypt.
 
-**Важно после реструктуризации.** Парковые переменные больше не лежат рядом с inventory — они в `ansible/playbooks/group_vars/`, и такие `group_vars` имеют приоритет **выше** инвентарных. Поэтому реальные значения, положенные рядом с тестовым inventory, будут молча перекрыты документационными. Настоящие значения идут в один git-ignored файл:
+**Важно.** Парковые переменные больше не лежат рядом с inventory — они в
+`ansible/playbooks/group_vars/`, и такие `group_vars` приоритетнее инвентарных,
+поэтому реальные значения, положенные рядом с тестовым inventory, будут молча
+перекрыты документационными. Настоящие значения живут **вне репозитория**, двумя
+файлами, которые грузятся как extra-vars — так же, как их грузит Semaphore:
 
 ```bash
-mkdir -p ansible/inventories/test
+mkdir -p ansible/inventories/test /etc/remnawave
 cp ansible/inventories/staging/hosts.yml ansible/inventories/test/hosts.yml
-cp ansible/examples/local-overrides.yml.example \
-   ansible/playbooks/group_vars/remnawave_nodes/zz-local.yml
-cp ansible/examples/vault.yml.example ansible/playbooks/group_vars/all/vault.yml
-ansible-vault encrypt ansible/playbooks/group_vars/all/vault.yml
-ansible-vault edit ansible/playbooks/group_vars/all/vault.yml
+cp ansible/examples/fleet.yml.example   /etc/remnawave/fleet.yml
+cp ansible/examples/secrets.yml.example /etc/remnawave/secrets.yml
+$EDITOR /etc/remnawave/fleet.yml
+ansible-vault encrypt /etc/remnawave/secrets.yml
+ansible-vault edit    /etc/remnawave/secrets.yml
 ```
 
-Файл `vault.yml` и `zz-local.yml` исключены из Git. Заполните в нём настоящий API token тестовой Panel и, если выбран парольный SSH, `vault_node_root_password`. Токену нужны права чтения и изменения Nodes, Config Profiles, Hosts, Internal Squads и Users, а также доступ к keygen. Cloudflare token нужен только для `cloudflare_dns`; в этом случае добавьте в открытые переменные ссылку `cloudflare_token: "{{ vault_cloudflare_token }}"`. `vault_bridge_secret` можно оставить пустым, тогда роль один раз сгенерирует пароль нового bridge-пользователя и далее будет переиспользовать его из Panel. Если пароль задаётся заранее, явно свяжите его через `bridge_secret: "{{ vault_bridge_secret }}"`.
+Путь переопределяется через `REMNAWAVE_FLEET_VARS` / `REMNAWAVE_SECRET_VARS`, если
+`/etc` недоступен. Preflight откажется работать на документационных значениях, так
+что забыть этот шаг незаметно нельзя. Заполните в нём настоящий API token тестовой Panel и, если выбран парольный SSH, `vault_node_root_password`. Токену нужны права чтения и изменения Nodes, Config Profiles, Hosts, Internal Squads и Users, а также доступ к keygen. Cloudflare token нужен только для `cloudflare_dns`; в этом случае добавьте в открытые переменные ссылку `cloudflare_token: "{{ vault_cloudflare_token }}"`. `vault_bridge_secret` можно оставить пустым, тогда роль один раз сгенерирует пароль нового bridge-пользователя и далее будет переиспользовать его из Panel. Если пароль задаётся заранее, явно свяжите его через `bridge_secret: "{{ vault_bridge_secret }}"`.
 
 Минимальный `ansible/inventories/test/hosts.yml` для direct EU-ноды:
 
@@ -154,7 +160,7 @@ node_ssh_allow_root_password: true
 
 Парковых переменных для теста писать не нужно: имя хоста в inventory даёт
 идентичность, а версии, политика сертификата и проверки берутся из
-`ansible/playbooks/group_vars/`. В git-ignored `zz-local.yml` остаётся только то,
+`ansible/playbooks/group_vars/`. В `/etc/remnawave/fleet.yml` остаётся только то,
 что относится к этому развёртыванию:
 
 ```yaml

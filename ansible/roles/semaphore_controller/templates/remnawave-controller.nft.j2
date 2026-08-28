@@ -19,6 +19,27 @@ table inet {{ controller_firewall_table }} {
     ip saddr {{ cidr }} tcp dport {{ ansible_port | default(22) }} accept
 {% endif %}
 {% endfor %}
+
+{% if controller_proxy_enabled | default(false) %}
+    # The published UI. 80 is the ACME challenge and the redirect; 443 is nginx.
+    # {{ semaphore_port }} is never opened: Semaphore binds loopback, and the
+    # only way in is through the proxy above it.
+{% if controller_proxy_allowed_cidrs | default([]) | length > 0 %}
+{% for cidr in controller_proxy_allowed_cidrs %}
+{% if ':' in cidr %}
+    ip6 saddr {{ cidr }} tcp dport { 80, 443 } accept
+{% else %}
+    ip saddr {{ cidr }} tcp dport { 80, 443 } accept
+{% endif %}
+{% endfor %}
+    # 80 stays open to everyone for the ACME challenge only - Let's Encrypt
+    # validates from addresses nobody can predict, and nginx serves nothing else
+    # there but the challenge path and a redirect.
+    tcp dport 80 accept
+{% else %}
+    tcp dport { 80, 443 } accept
+{% endif %}
+{% endif %}
   }
 
   chain forward {

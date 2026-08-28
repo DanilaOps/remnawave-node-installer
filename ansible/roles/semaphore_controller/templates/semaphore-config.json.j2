@@ -11,7 +11,9 @@
   "access_key_encryption": "{{ semaphore_effective_keys.access_key_encryption }}",
   "interface": "{{ semaphore_interface }}",
   "port": ":{{ semaphore_port }}",
-  "web_host": "http://{{ semaphore_interface }}:{{ semaphore_port }}/",
+  "web_host": "{{ semaphore_web_host | trim }}",
+  "password_login_disable": {{ semaphore_password_login_disable | bool | lower }},
+  "non_admin_can_create_project": {{ semaphore_non_admin_can_create_project | bool | lower }},
   "max_parallel_tasks": {{ semaphore_max_parallel_tasks | default(0) }},
   "ssh_config_path": "{{ semaphore_home }}/.ssh/config"
 }
