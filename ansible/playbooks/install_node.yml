@@ -1,18 +1,68 @@
 ---
-- name: Install Remnawave nodes
+# Three plays, in the only order that is safe:
+#
+#   1. controller-side preflight - reads the inventory and the panel, changes
+#      nothing anywhere, so a conflict stops the run before the registrar and the
+#      server have been touched. This is also the Semaphore "Preflight" template
+#      (--tags preflight --check).
+#   2. DNS - the record has to exist and resolve before ACME and before the node
+#      resolves its own selfsteal name.
+#   3. the node itself - node-side preflight, then installation and verification.
+#
+# One node per run: play 3 writes this node's inbound into one shared Config
+# Profile, and that write is a read-modify-write. node_allow_bulk exists for a
+# deliberate fleet-wide reconcile, which then still runs strictly one at a time.
+
+- name: Check the inventory and the panel before anything changes
   hosts: remnawave_nodes
-  become: true
-  gather_facts: true
+  # No connection to the node is made here on purpose: the panel and the
+  # inventory can be validated before the VPS even exists.
+  connection: local
+  gather_facts: false
+  become: false
+  any_errors_fatal: true
+
+  tasks:
+    - name: Refuse a fleet-wide run that was not asked for
+      ansible.builtin.assert:
+        that:
+          - ansible_play_hosts_all | length == 1 or node_allow_bulk | bool
+        fail_msg: >-
+          This run resolved to {{ ansible_play_hosts_all | length }} hosts
+          ({{ ansible_play_hosts_all | join(', ') }}). install_node.yml writes into one shared Config
+          Profile, so it reconciles one node at a time - pass --limit <host>, or set
+          node_allow_bulk=true for a deliberate fleet-wide reconcile.
+      run_once: true
+
+    - name: Run controller-side preflight
+      ansible.builtin.import_role:
+        name: node_base
+        tasks_from: preflight_controller.yml
+      tags: [preflight]
+
+- name: Reconcile the node's DNS record
+  hosts: remnawave_nodes
+  connection: local
+  gather_facts: false
+  become: false
+  serial: 1
   any_errors_fatal: true
 
   roles:
-    # DNS runs first and against the provider API from the controller: node_base's
-    # preflight resolves the selfsteal name from the node itself and ACME needs the
-    # record to be live, so nothing after this point can start before it resolves.
     - role: dns
-      become: false
       tags: [dns]
       when: dns_provider | default('none') != 'none'
+
+- name: Install and verify the node
+  hosts: remnawave_nodes
+  become: true
+  gather_facts: true
+  # The shared Config Profile is reconciled with a read-modify-write, so even a
+  # deliberate fleet-wide run touches it one node at a time.
+  serial: 1
+  any_errors_fatal: true
+
+  roles:
     - role: node_base
       tags: [node_base]
     - role: remnawave_panel

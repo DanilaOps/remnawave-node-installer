@@ -73,6 +73,15 @@ node_sysctl:
 remnawave_panel_validate_certs: true
 remnawave_api_timeout: 60
 preflight_check_dns: true
+# Turning the panel checks off removes everything that protects the shared Config
+# Profile from a conflicting node, so it has to be acknowledged for that run.
+preflight_ack_unchecked_panel: false
+# Inbound protocols the panel strips per node before pushing a config
+# (MANAGED_CLIENT_PROTOCOLS in the panel). An inbound of any other protocol is
+# delivered to every node in full, so the shared profile refuses to carry one
+# unless its tag is listed in shared_profile_allowed_unmanaged_inbound_tags.
+shared_profile_managed_protocols: [vless, trojan, shadowsocks, hysteria]
+shared_profile_allowed_unmanaged_inbound_tags: []
 preflight_check_panel: true
 preflight_check_ports: true
 preflight_require_ntp_sync: false

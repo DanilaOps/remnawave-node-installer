@@ -1,7 +1,8 @@
 ---
 # One command for a new node:
 #
-#   ansible-playbook playbooks/provision_node.yml --limit ee01
+#   ./provision-node ee01
+#   ansible-playbook ansible/playbooks/provision_node.yml --limit ee01
 #
 # bootstrap.yml decides for itself whether the managed account still has to be
 # created, so this playbook is safe to re-run on an already installed node and is

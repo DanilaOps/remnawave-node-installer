@@ -1,38 +1,12 @@
 ---
-- name: Detect the source address of the active Ansible SSH session
-  ansible.builtin.set_fact:
-    node_base_observed_ssh_source: >-
-      {{ ansible_env.SSH_CONNECTION.split()[0] if ansible_env.SSH_CONNECTION is defined else '' }}
-
-- name: Resolve the management allow list
-  # The controller's own address comes from the live connection, so it is never
-  # maintained by hand and a controller with a changing address cannot lock
-  # itself out. An explicitly configured management_cidrs wins; extras are always
-  # merged so a second operator or jump host keeps access.
-  ansible.builtin.set_fact:
-    management_cidrs: >-
-      {{ ((management_cidrs | default([], true))
-          if (management_cidrs | default([], true) | length > 0)
-          else ([node_base_observed_ssh_source ~
-                 ('/128' if ':' in node_base_observed_ssh_source else '/32')]
-                if node_base_observed_ssh_source | length > 0 else [])
-         ) + (management_cidrs_extra | default([])) | unique }}
-
-- name: Require a management allow list
+# Controller-side preflight. Nothing here touches the node and nothing here
+# changes anything anywhere: it runs entirely against the inventory and the panel
+# API, before the DNS record is reconciled and before the first packet reaches
+# the server. That is what makes the Semaphore "Preflight" template safe to press
+# and what lets a node be validated before its VPS even exists.
+- name: Validate the identity derived from the inventory
   ansible.builtin.assert:
     that:
-      - management_cidrs | length > 0
-    fail_msg: >-
-      Could not determine which address may reach SSH on this node. The controller
-      address is normally taken from the live SSH connection; with a non-SSH
-      connection set management_cidrs explicitly in the inventory.
-
-- name: Validate supported platform and required values
-  ansible.builtin.assert:
-    that:
-      - ansible_facts.distribution in node_base_supported_os
-      - ansible_facts.distribution_major_version in node_base_supported_os[ansible_facts.distribution]
-      - ansible_facts.architecture in node_base_supported_architectures
       - node_id is match('^[a-z][a-z0-9]*_[a-z0-9-]+$')
       - node_name is match('^[A-Za-z0-9][A-Za-z0-9._-]*$')
       - node_country is match('^[A-Za-z]{2}$')
@@ -41,34 +15,32 @@
       - remnawave_panel_url is match('^https://')
       - remnawave_node_port | int >= 1
       - remnawave_node_port | int <= 65535
-      - management_cidrs | length > 0
       - remnawave_panel_cidrs | length > 0
       - internal_squad_uuid | default('') | length > 0 or internal_squad_name | default('') | length > 0
     fail_msg: >-
-      Unsupported platform or invalid required variables. Supported systems are Debian 12, Debian 13 and
-      Ubuntu 24.04; a panel CIDR and an Internal Squad identity are mandatory. Identity is derived from the
-      inventory hostname, which is expected to look like "ee01" (country code plus sequence) - name the host
-      that way, or set node_id, node_name and node_country explicitly for this host.
+      Invalid or missing required variables. Identity is derived from the inventory hostname, which is
+      expected to look like "ee01" (country code plus sequence) - name the host that way, or set node_id,
+      node_name and node_country explicitly for this host. A panel CIDR and an Internal Squad identity
+      are mandatory.
 
-- name: Validate all management CIDRs
+- name: Require a display name for this node's country
+  ansible.builtin.assert:
+    that:
+      - node_host_remark | default('') | trim | length > 0
+    fail_msg: >-
+      Country code '{{ node_country | upper }}' (from inventory hostname '{{ inventory_hostname }}')
+      has no entry in ansible/playbooks/group_vars/all/countries.yml. Add one line there -
+      '"{{ node_country | upper }}": "<flag> <Country>"' - or set node_host_remark on this host if it
+      needs a label of its own. Publishing a Host with an empty label would show users a blank entry.
+
+- name: Validate every statically configured CIDR
   ansible.builtin.assert:
     that:
       - (item | ansible.utils.ipaddr) != false
-    fail_msg: "Invalid management CIDR: {{ item }}"
-  loop: "{{ management_cidrs + remnawave_panel_cidrs }}"
+    fail_msg: "Invalid CIDR in configuration: {{ item }}"
+  loop: "{{ (management_cidrs | default([])) + (management_cidrs_extra | default([])) + remnawave_panel_cidrs }}"
   loop_control:
     label: "{{ item }}"
-
-- name: Require the management allow list to include the source seen by sshd
-  ansible.builtin.assert:
-    that:
-      - node_base_observed_ssh_source | remnawave_ip_in_cidrs(management_cidrs)
-    fail_msg: >-
-      sshd sees this Controller as {{ node_base_observed_ssh_source }}, but the configured
-      management_cidrs does not include it. This commonly happens behind a provider TCP proxy;
-      refusing to apply a firewall that would lock out Ansible. Either remove the explicit
-      management_cidrs so the address is discovered, or add {{ node_base_observed_ssh_source }}.
-  when: node_base_observed_ssh_source | length > 0
 
 - name: Validate bridge input
   ansible.builtin.assert:
@@ -81,33 +53,7 @@
     fail_msg: bridge_spec must define entry_address, port, method and a valid service user.
   when: bridge_spec.enabled | default(false) | bool
 
-- name: Check root filesystem capacity
-  ansible.builtin.assert:
-    that:
-      - >-
-        (ansible_facts.mounts | selectattr('mount', 'equalto', '/') | map(attribute='size_available') | first | int)
-        >= (node_base_minimum_free_mb | int * 1024 * 1024)
-    fail_msg: "At least {{ node_base_minimum_free_mb }} MiB must be free on /."
-
-- name: Resolve the selfsteal domain from the node
-  ansible.builtin.command:
-    argv: [getent, ahostsv4, "{{ selfsteal_domain }}"]
-  register: node_base_dns_result
-  changed_when: false
-  failed_when: node_base_dns_result.rc != 0
-  check_mode: false
-  when: preflight_check_dns | bool
-
-- name: Require DNS to point to this VPS
-  ansible.builtin.assert:
-    that:
-      - node_public_ip in (node_base_dns_result.stdout | regex_findall('(?m)^([0-9.]+)\s+'))
-    fail_msg: "{{ selfsteal_domain }} does not resolve to {{ node_public_ip }} from the new node."
-  when: preflight_check_dns | bool
-
-# Everything below is read-only and runs before the first change to the node, so
-# a missing shared profile or a conflicting panel object stops the run while the
-# server is still untouched instead of half-installed.
+# --- Panel state -------------------------------------------------------------
 - name: Verify panel connectivity and token scope
   ansible.builtin.uri:
     url: "{{ remnawave_panel_url | regex_replace('/+$', '') }}/api/nodes"
@@ -163,6 +109,19 @@
   no_log: true
   changed_when: false
   check_mode: false
+  when: preflight_check_panel | bool
+
+- name: Treat an empty Config Profile list as a panel problem, not as a fresh panel
+  # A 200 with nothing in it is what a degraded panel or a token without the right
+  # scope looks like. Continuing from here is how a second "Default August" gets
+  # created next to the real one.
+  ansible.builtin.assert:
+    that:
+      - node_base_preflight_profiles.json | remnawave_response_items('configProfiles') | length > 0
+    fail_msg: >-
+      The panel returned an empty Config Profile list. This deployment always has at least the shared
+      profile '{{ profile_name }}', so an empty answer means a degraded panel or a token without the
+      Config Profile scope. Refusing to continue rather than treating it as an empty panel.
   when: preflight_check_panel | bool
 
 - name: Select the Config Profile this node will publish against
@@ -237,6 +196,31 @@
     - config_profile_require_routing | default(true) | bool
     - node_base_preflight_profile_detail is not skipped | default(false)
 
+- name: Require every inbound in the shared profile to be one the panel strips per node
+  # The panel removes inbounds of managed protocols that a node does not activate
+  # before it pushes the config. An inbound of any other protocol is delivered to
+  # every node with its settings, so one is only allowed in the shared profile
+  # when its tag is listed on purpose.
+  ansible.builtin.assert:
+    that:
+      - >-
+        node_base_preflight_profile_detail.json.response.config.inbounds | default([])
+        | rejectattr('protocol', 'in', shared_profile_managed_protocols)
+        | rejectattr('tag', 'in', shared_profile_allowed_unmanaged_inbound_tags | default([]))
+        | list | length == 0
+    fail_msg: >-
+      Config Profile '{{ profile_name }}' carries inbound(s)
+      {{ node_base_preflight_profile_detail.json.response.config.inbounds | default([])
+         | rejectattr('protocol', 'in', shared_profile_managed_protocols)
+         | rejectattr('tag', 'in', shared_profile_allowed_unmanaged_inbound_tags | default([]))
+         | map(attribute='tag') | list }}
+      whose protocol is not one the panel strips per node ({{ shared_profile_managed_protocols | join(', ') }}).
+      Every node in the fleet receives such an inbound in full, settings included. If that is intended,
+      list the tag in shared_profile_allowed_unmanaged_inbound_tags.
+  when:
+    - preflight_check_panel | bool
+    - node_base_preflight_profile_detail is not skipped | default(false)
+
 - name: Read the panel's Hosts for a conflict check
   ansible.builtin.uri:
     url: "{{ remnawave_panel_url | regex_replace('/+$', '') }}/api/hosts"
@@ -270,36 +254,52 @@
     label: "{{ item.remark }}"
   when: preflight_check_panel | bool
 
-- name: Check NTP synchronization state
-  ansible.builtin.command:
-    argv: [timedatectl, show, --property=NTPSynchronized, --value]
-  register: node_base_ntp_state
-  changed_when: false
-  failed_when: preflight_require_ntp_sync | bool and node_base_ntp_state.stdout | trim != 'yes'
-  check_mode: false
-
-- name: Detect an existing managed compose project
-  ansible.builtin.stat:
-    path: /opt/remnawave-node/compose.yml
-  register: node_base_existing_compose
-
-- name: Read listeners before a first installation
-  ansible.builtin.command:
-    argv: [ss, -H, -lnt]
-  register: node_base_listeners
-  changed_when: false
-  check_mode: false
-  when:
-    - preflight_check_ports | bool
-    - not node_base_existing_compose.stat.exists
-
-- name: Reject conflicting public listeners on a new node
+- name: Record that the panel was not checked
   ansible.builtin.assert:
     that:
-      - >-
-        node_base_listeners.stdout is not regex('(?m)(^|\s)(0\.0\.0\.0|\[::\]|\*):' ~ item ~ '\s')
-    fail_msg: "Required public port {{ item }} is already occupied before installation."
-  loop: "{{ (node_public_tcp_ports + [remnawave_node_port | int]) | unique }}"
+      - preflight_ack_unchecked_panel | bool
+    fail_msg: >-
+      preflight_check_panel is false, which removes every check that protects the shared Config Profile
+      and the panel from a conflicting node. Set preflight_ack_unchecked_panel=true to state that this
+      is intentional for this run.
+  when: not (preflight_check_panel | bool)
+
+# --- DNS state, reported and never changed here -------------------------------
+- name: Resolve the selfsteal name from the controller
+  ansible.builtin.command:
+    argv: [getent, ahostsv4, "{{ selfsteal_domain }}"]
+  register: node_base_preflight_dns
+  delegate_to: localhost
+  become: false
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  when: preflight_check_dns | bool
+
+- name: Report the DNS state this run will find
+  ansible.builtin.debug:
+    msg: >-
+      {{ selfsteal_domain }}:
+      {{ ('already resolves to ' ~ node_public_ip)
+         if node_public_ip in node_base_preflight_dns_addresses
+         else ((('resolves to ' ~ (node_base_preflight_dns_addresses | join(', ')))
+                if node_base_preflight_dns_addresses | length > 0 else 'does not resolve') ~
+               (' - the dns role will point it at ' ~ node_public_ip
+                if dns_provider | default('none') != 'none'
+                else ' - nothing in this run will fix that')) }}
+  vars:
+    node_base_preflight_dns_addresses: >-
+      {{ node_base_preflight_dns.stdout | default('') | regex_findall('(?m)^([0-9.]+)\s+') | unique }}
+  when: preflight_check_dns | bool
+
+- name: Require an unmanaged DNS record to already be correct
+  ansible.builtin.assert:
+    that:
+      - node_public_ip in (node_base_preflight_dns.stdout | default('') | regex_findall('(?m)^([0-9.]+)\s+'))
+    fail_msg: >-
+      {{ selfsteal_domain }} does not resolve to {{ node_public_ip }} and dns_provider is 'none', so
+      nothing in this run will create the record. Create the A record at the registrar (or set
+      dns_provider) and run again - the certificate and the masking site both depend on it.
   when:
-    - preflight_check_ports | bool
-    - not node_base_existing_compose.stat.exists
+    - preflight_check_dns | bool
+    - dns_provider | default('none') == 'none'

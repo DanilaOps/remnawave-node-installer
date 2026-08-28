@@ -1,6 +1,9 @@
 ---
-- name: Run immutable preflight checks
-  ansible.builtin.import_tasks: preflight.yml
+# The controller-side half runs in its own play in install_node.yml, before the
+# DNS record is reconciled and before anything reaches this server. What is left
+# here needs the node itself.
+- name: Run node-side preflight checks
+  ansible.builtin.import_tasks: preflight_node.yml
   tags: [always, preflight]
 
 - name: Configure the base operating system
