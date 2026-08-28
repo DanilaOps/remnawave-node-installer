@@ -27,10 +27,17 @@ jobs:
         run: shellcheck -S warning provision-node setup-controller ansible/tests/*.sh
 
       - name: Reject CRLF and trailing whitespace in tracked text files
+        # Guards the files this project writes. LICENSE came from upstream with
+        # CRLF and nobody will ever edit it, so it is excluded by name rather
+        # than rewritten: a gate that fails on a file that is never touched is a
+        # gate people learn to ignore.
         run: |
           bad=0
           while IFS= read -r file; do
-            case "$file" in *.png|*.jpg|*.ico|*.zip) continue ;; esac
+            case "$file" in
+              *.png|*.jpg|*.ico|*.zip) continue ;;
+              LICENSE) continue ;;
+            esac
             if grep -qlU $'\r' "$file" 2>/dev/null; then
               echo "CRLF in $file"; bad=1
             fi
