@@ -180,6 +180,7 @@
     state: link
     owner: root
     group: root
+  when: not ansible_check_mode or controller_xray_binary.stat.exists
 
 - name: Read the installed controller Xray version
   ansible.builtin.command:

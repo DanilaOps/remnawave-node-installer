@@ -525,6 +525,10 @@ class ControllerTests(unittest.TestCase):
             "- name: Publish the pinned controller Xray client", 1
         )[0]
         self.assertIn("not ansible_check_mode", extract)
+        publish = runtime.split("- name: Publish the pinned controller Xray client", 1)[1].split(
+            "- name: Read the installed controller Xray version", 1
+        )[0]
+        self.assertIn("not ansible_check_mode", publish)
 
     def test_the_controller_does_not_touch_ssh_authentication(self) -> None:
         # The controller is the machine an operator must be able to get back
