@@ -43,6 +43,7 @@ TEMPLATES = [
         ),
         "arguments": ["--tags", "preflight", "--check"],
         "allow_parallel_tasks": True,
+        "survey_vars": [],
     },
     {
         "name": "02 - Install / Reconcile Node",
@@ -53,6 +54,26 @@ TEMPLATES = [
         ),
         "arguments": [],
         "allow_parallel_tasks": False,
+        "survey_vars": [
+            {
+                "name": "bootstrap_ssh_password",
+                "title": "Fresh VPS root password",
+                "type": "secret",
+                "description": "Leave empty after the deployer account has been created.",
+            },
+            {
+                "name": "bootstrap_trust_new_host_keys",
+                "title": "Trust a new SSH host key",
+                "required": True,
+                "type": "enum",
+                "description": "Enable only for an explicitly accepted fresh VPS.",
+                "values": [
+                    {"name": "No", "value": "false"},
+                    {"name": "Yes - fresh VPS", "value": "true"},
+                ],
+                "default_value": "false",
+            },
+        ],
     },
     {
         "name": "03 - Verify Node",
@@ -62,6 +83,7 @@ TEMPLATES = [
         ),
         "arguments": ["--tags", "node_verify"],
         "allow_parallel_tasks": True,
+        "survey_vars": [],
     },
 ]
 
@@ -229,6 +251,8 @@ def main() -> int:
                 "environment_id": environment["id"],
                 "playbook": PLAYBOOK,
                 "arguments": json.dumps(wanted["arguments"]),
+                "survey_vars": wanted["survey_vars"],
+                "allow_parallel_tasks": wanted["allow_parallel_tasks"],
                 "allow_override_args_in_task": False,
                 "app": "ansible",
             }
@@ -245,10 +269,6 @@ def main() -> int:
             "\nStill to do by hand, because it needs secrets or judgement:\n"
             "  - Key Store: the deployer SSH private key and the Ansible vault password\n"
             "  - Variable group: the panel token as a secret\n"
-            "  - Template 02: a secret survey field named bootstrap_ssh_password, and a\n"
-            "    survey checkbox bootstrap_trust_new_host_keys for a brand new VPS\n"
-            "  - Template 02: turn off 'allow parallel tasks' (the API field for this\n"
-            "    differs between Semaphore versions, so it is not set from here)\n"
             "  - Inventory: one line per node"
         )
     except ApiError as error:

@@ -568,6 +568,13 @@ class ControllerTests(unittest.TestCase):
         )[0]
         self.assertIn("not ansible_check_mode", enable)
 
+    def test_semaphore_templates_enforce_serial_installs_and_secret_bootstrap(self) -> None:
+        tool = self.read("tools/semaphore_bootstrap.py")
+        self.assertIn('"allow_parallel_tasks": wanted["allow_parallel_tasks"]', tool)
+        self.assertIn('"name": "bootstrap_ssh_password"', tool)
+        self.assertIn('"type": "secret"', tool)
+        self.assertIn('"name": "bootstrap_trust_new_host_keys"', tool)
+
 
 if __name__ == "__main__":
     unittest.main()
