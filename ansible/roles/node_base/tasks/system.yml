@@ -144,7 +144,7 @@
 
 - name: Install SSH hardening drop-in before cloud-init overrides
   ansible.builtin.template:
-    src: 90-remnawave-ssh.conf.j2
+    src: 00-remnawave-ssh.conf.j2
     dest: /etc/ssh/sshd_config.d/00-remnawave.conf
     owner: root
     group: root

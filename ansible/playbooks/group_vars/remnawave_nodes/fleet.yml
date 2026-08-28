@@ -10,6 +10,7 @@
 ansible_user: deployer
 ansible_port: 22
 node_role: direct
+node_ssh_allow_root_password: true
 
 # A freshly created VPS has no entry in known_hosts. Accepting the key on first
 # contact is reasonable for a brand new server and wrong for an existing one, so
