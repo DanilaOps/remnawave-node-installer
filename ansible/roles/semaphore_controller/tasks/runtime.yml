@@ -34,6 +34,49 @@
     - path: "{{ semaphore_home }}/.ssh"
       mode: "0700"
 
+- name: Create the deployment values directory
+  # Readable by the service user, writable only by root: it holds the panel URL,
+  # the zone and the encrypted secrets that every run needs.
+  ansible.builtin.file:
+    path: "{{ controller_values_dir }}"
+    state: directory
+    owner: root
+    group: "{{ semaphore_group }}"
+    mode: "0750"
+
+- name: Look for the deployment values
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  loop:
+    - "{{ controller_fleet_values_path }}"
+    - "{{ controller_secret_values_path }}"
+    - "{{ controller_vault_password_path }}"
+  register: controller_values_present
+
+- name: Report deployment values that still have to be filled in
+  # Not a failure: a controller can legitimately be built before the fleet is
+  # configured. It is the node run that refuses to proceed on documentation
+  # values, and it says exactly this file's name when it does.
+  ansible.builtin.debug:
+    msg: >-
+      Missing on this controller:
+      {{ controller_values_present.results | rejectattr('stat.exists') | map(attribute='item') | list }}.
+      Copy ansible/examples/fleet.yml.example and ansible/examples/secrets.yml.example there
+      (encrypt the second with ansible-vault) and put the vault password in
+      {{ controller_vault_password_path }}. Until then every node run stops in preflight, which is
+      the intended behaviour.
+  when: controller_values_present.results | rejectattr('stat.exists') | list | length > 0
+
+- name: Restrict the deployment values
+  ansible.builtin.file:
+    path: "{{ item.item }}"
+    owner: root
+    group: "{{ semaphore_group }}"
+    mode: "0640"
+  loop: "{{ controller_values_present.results | selectattr('stat.exists') | list }}"
+  loop_control:
+    label: "{{ item.item }}"
+
 - name: Clone or update the project checkout
   ansible.builtin.git:
     repo: "{{ semaphore_repository }}"

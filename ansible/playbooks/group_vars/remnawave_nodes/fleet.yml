@@ -44,7 +44,7 @@ xray_checksums:
 # --- DNS ---------------------------------------------------------------------
 # Registrar automation is off in the published defaults: it needs credentials in
 # the vault and the controller's address allow-listed at the registrar. Turn it
-# on in zz-local.yml.
+# on in /etc/remnawave/fleet.yml.
 dns_provider: none
 # A second A record for the same name is reported, not guessed at.
 dns_prune_extra_records: false

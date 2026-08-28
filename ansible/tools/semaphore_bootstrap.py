@@ -34,6 +34,17 @@ INVENTORY = "Production nodes"
 ENVIRONMENT = "Production"
 PLAYBOOK = "ansible/playbooks/provision_node.yml"
 
+# Semaphore clones the repository fresh for every job, so nothing that is not
+# committed reaches a run started from the UI - and this repository is public, so
+# the real values of the deployment cannot be committed. Both files therefore live
+# on the controller and are loaded as extra-vars files named in every template's
+# arguments. ./provision-node loads the same two files, so the UI and the command
+# line read one source. An extra-vars file is also how a secret stays off the
+# command line: Ansible decrypts it in-process, unlike -e name=value.
+DEFAULT_FLEET_VALUES = "/etc/remnawave/fleet.yml"
+DEFAULT_SECRET_VALUES = "/etc/remnawave/secrets.yml"
+DEFAULT_VAULT_PASSWORD = "/etc/remnawave/vault-pass"
+
 TEMPLATES = [
     {
         "name": "01 - Preflight",
@@ -141,6 +152,60 @@ def find(items, name: str):
     return None
 
 
+def add_project_user(api: "Semaphore", project_id: int, arguments) -> None:
+    """Create a second operator account and give it access to this project.
+
+    Semaphore 2.18.29 has no self-registration route at all - accounts exist only
+    because an admin created them - so this is the only way a teammate gets in,
+    and it is deliberately not an admin: task_runner may press the buttons and
+    read the logs, but cannot rewrite a template into something else.
+    """
+
+    login = arguments.add_user
+    password = os.environ.get("SEMAPHORE_NEW_USER_PASSWORD", "")
+
+    users = api.get("/users")
+    user = next(
+        (item for item in users or [] if item.get("username") == login),
+        None,
+    )
+    if user is None:
+        if not password:
+            raise ApiError(
+                f"user '{login}' does not exist and SEMAPHORE_NEW_USER_PASSWORD is not set. "
+                "Export it for this one command; it is never written to the repository."
+            )
+        print(f"  user '{login}': creating (not an admin)")
+        user = api.post(
+            "/users",
+            {
+                "name": arguments.user_name or login,
+                "username": login,
+                "email": arguments.user_email or f"{login}@localhost",
+                "password": password,
+                "admin": False,
+            },
+        )
+    else:
+        print(f"  user '{login}': exists (id {user['id']}), password left alone")
+
+    members = api.get(f"/project/{project_id}/users")
+    member = next(
+        (item for item in members or [] if item.get("id") == user.get("id")),
+        None,
+    )
+    if member is None:
+        print(f"  project access for '{login}': granting {arguments.user_role}")
+        api.post(
+            f"/project/{project_id}/users",
+            {"project_id": project_id, "user_id": user["id"], "role": arguments.user_role},
+        )
+    else:
+        print(
+            f"  project access for '{login}': already {member.get('role', 'unknown')}, left alone"
+        )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--dry-run", action="store_true", help="print, change nothing")
@@ -148,6 +213,38 @@ def main() -> int:
     parser.add_argument("--repository-url", default=os.environ.get("SEMAPHORE_REPOSITORY_URL", ""))
     parser.add_argument("--branch", default=os.environ.get("SEMAPHORE_REPOSITORY_BRANCH", "main"))
     parser.add_argument("--ssh-key-name", default="deployer", help="Key Store entry used to reach nodes")
+    parser.add_argument(
+        "--fleet-values",
+        default=os.environ.get("REMNAWAVE_FLEET_VARS", DEFAULT_FLEET_VALUES),
+        help="deployment values file on the controller, loaded by every template",
+    )
+    parser.add_argument(
+        "--secret-values",
+        default=os.environ.get("REMNAWAVE_SECRET_VARS", DEFAULT_SECRET_VALUES),
+        help="ansible-vault encrypted secrets file on the controller",
+    )
+    parser.add_argument(
+        "--add-user",
+        default="",
+        metavar="LOGIN",
+        help="create this login if absent and give it access to the project",
+    )
+    parser.add_argument("--user-name", default="", help="display name for --add-user")
+    parser.add_argument("--user-email", default="", help="email for --add-user")
+    parser.add_argument(
+        "--user-role",
+        default="task_runner",
+        choices=["owner", "manager", "task_runner", "guest"],
+        help=(
+            "project role for --add-user. task_runner may run the templates but not "
+            "change them, which is what a second operator needs"
+        ),
+    )
+    parser.add_argument(
+        "--vault-password-file",
+        default=os.environ.get("ANSIBLE_VAULT_PASSWORD_FILE", DEFAULT_VAULT_PASSWORD),
+        help="vault password file on the controller, exported to every run",
+    )
     arguments = parser.parse_args()
 
     base = os.environ.get("SEMAPHORE_URL", "http://127.0.0.1:3000")
@@ -234,7 +331,22 @@ def main() -> int:
             print(f"  variable group '{ENVIRONMENT}': creating (secrets are added in the UI)")
             environment = api.post(
                 f"{scope}/environment",
-                {"name": ENVIRONMENT, "project_id": project_id, "json": "{}", "env": "{}"},
+                {
+                    "name": ENVIRONMENT,
+                    "project_id": project_id,
+                    # No values here on purpose. Variable-group values arrive as
+                    # extra vars, which outrank every file and every host: a
+                    # node_id or an ansible_host placed here would be applied to
+                    # the whole fleet at once, and every run would overwrite the
+                    # previous node's panel objects. Preflight refuses a run whose
+                    # identity did not come from the inventory hostname, so that
+                    # mistake now fails instead of being published.
+                    "json": "{}",
+                    # Only where to find the vault password - not a secret itself.
+                    "env": json.dumps(
+                        {"ANSIBLE_VAULT_PASSWORD_FILE": arguments.vault_password_file}
+                    ),
+                },
             )
         else:
             print(f"  variable group '{ENVIRONMENT}': exists (id {environment['id']})")
@@ -250,7 +362,10 @@ def main() -> int:
                 "repository_id": repository["id"],
                 "environment_id": environment["id"],
                 "playbook": PLAYBOOK,
-                "arguments": json.dumps(wanted["arguments"]),
+                "arguments": json.dumps(
+                    ["-e", f"@{arguments.fleet_values}", "-e", f"@{arguments.secret_values}"]
+                    + wanted["arguments"]
+                ),
                 "survey_vars": wanted["survey_vars"],
                 "allow_parallel_tasks": wanted["allow_parallel_tasks"],
                 "allow_override_args_in_task": False,
@@ -265,11 +380,29 @@ def main() -> int:
             else:
                 print(f"  template '{wanted['name']}': exists (id {template['id']}, left alone)")
 
+        if arguments.add_user:
+            add_project_user(api, project_id, arguments)
+
+        print(
+            f"\nEvery template loads {arguments.fleet_values} and {arguments.secret_values}\n"
+            f"and reads the vault password from {arguments.vault_password_file}. Those three files\n"
+            "live on the controller, not in the repository and not in Semaphore's database.\n"
+        )
         print(
             "\nStill to do by hand, because it needs secrets or judgement:\n"
             "  - Key Store: the deployer SSH private key and the Ansible vault password\n"
-            "  - Variable group: the panel token as a secret\n"
+            "  - /etc/remnawave/fleet.yml and secrets.yml on the controller, from\n"
+            "    ansible/examples/*.example - without them every run stops in preflight\n"
             "  - Inventory: one line per node"
+        )
+        print(
+            "\nOn a published instance, check once by hand:\n"
+            "  - there is no self-registration route in 2.18.29, so no setting to turn off:\n"
+            "    accounts exist only because an admin created them. Verify the user list holds\n"
+            "    only the people you expect.\n"
+            "  - /api/auth/recovery, /api/integrations/*, /api/terraform/* and\n"
+            "    /api/internal/* are served without authentication. The reverse proxy blocks\n"
+            "    the last three; recovery stays open because it is the login page's own flow."
         )
     except ApiError as error:
         print(f"\nSemaphore API refused the request:\n  {error}", file=sys.stderr)

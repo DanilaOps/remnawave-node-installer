@@ -39,6 +39,16 @@ semaphore_sqlite_path: "{{ semaphore_home }}/database.sqlite"
 # ssh -N -L 3000:127.0.0.1:3000 <controller>.
 semaphore_interface: 127.0.0.1
 semaphore_port: 3000
+semaphore_web_host: >-
+  {{ ('https://' ~ controller_proxy_domain ~ '/')
+     if (controller_proxy_enabled | bool and controller_proxy_domain | length > 0)
+     else ('http://' ~ semaphore_interface ~ ':' ~ semaphore_port ~ '/') }}
+# Semaphore 2.18.29 has no self-registration route at all - accounts exist only
+# because an admin created them. These two are the remaining reachable surfaces:
+# password login has to stay on (it is how people log in), and a non-admin must
+# not be able to create projects of their own.
+semaphore_password_login_disable: false
+semaphore_non_admin_can_create_project: false
 
 # --- Project checkout -------------------------------------------------------
 semaphore_project_root: /opt/remnawave-node-installer
@@ -93,6 +103,58 @@ controller_firewall_rollback_seconds: 120
 # Sources allowed to reach SSH. The address of the live session is always
 # included, so this role cannot lock out the operator running it.
 controller_ssh_allowed_cidrs: []
+
+# --- Public access to the UI ------------------------------------------------
+# Semaphore itself never leaves loopback. When this is on, nginx terminates TLS on
+# 443 and proxies to it - so the thing on the public address is a web server whose
+# only job is TLS and access control, and the admin panel behind it is reachable
+# no other way.
+controller_proxy_enabled: false
+controller_proxy_domain: ""
+controller_proxy_acme_email: ""
+# 'staging' first proves DNS, port 80 and the challenge path without spending a
+# production issuance; Let's Encrypt allows five failures per hour per hostname.
+controller_proxy_acme_environment: production
+controller_proxy_acme_directories:
+  staging: https://acme-staging-v02.api.letsencrypt.org/directory
+  production: https://acme-v02.api.letsencrypt.org/directory
+controller_proxy_webroot: /var/www/remnawave-acme
+# Overridden only by the test that validates the rendered configuration with a
+# real nginx and a throwaway certificate.
+controller_proxy_certificate_dir: "/etc/letsencrypt/live/{{ controller_proxy_domain }}"
+controller_proxy_packages: [nginx-light, certbot]
+
+# Who may reach the UI at all. This is the control that matters: Semaphore's own
+# login is one password away from the machine that provisions every node, so an
+# address list in front of it is worth more than any header. Empty means the whole
+# internet, which has to be acknowledged explicitly.
+controller_proxy_allowed_cidrs: []
+controller_proxy_ack_public: false
+
+# A second password in front of Semaphore's own login. Not a replacement for it -
+# it is what stops credential stuffing and scanners from ever reaching the login
+# form. Entries are {user, hash}; produce a hash with
+# `openssl passwd -apr1` and keep the plaintext out of this repository.
+controller_proxy_basic_auth_users: []
+
+# Routes Semaphore serves without authentication. On a loopback-only instance they
+# are harmless; published, an integration alias that somebody guesses runs a task
+# on the fleet. Blocked at the proxy unless a deployment actually uses them.
+controller_proxy_blocked_paths:
+  - /api/integrations/
+  - /api/terraform/
+  - /api/internal/
+
+# --- Deployment values ------------------------------------------------------
+# Where the real values of this deployment live. Outside the repository because
+# Semaphore clones the repository for every job: nothing that is not committed
+# reaches a run started from the UI. Both files are loaded as extra-vars files -
+# named in each template's arguments, and picked up automatically by
+# ./provision-node - so the UI and the CLI read the same two files.
+controller_values_dir: /etc/remnawave
+controller_fleet_values_path: "{{ controller_values_dir }}/fleet.yml"
+controller_secret_values_path: "{{ controller_values_dir }}/secrets.yml"
+controller_vault_password_path: "{{ controller_values_dir }}/vault-pass"
 
 # --- Backup -----------------------------------------------------------------
 # The Semaphore inventory is the node registry and the one piece of state that

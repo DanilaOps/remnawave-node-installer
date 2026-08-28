@@ -82,6 +82,18 @@ with open(target, "w", encoding="utf-8") as handle:
     json.dump(config, handle, indent=2, sort_keys=True)
 PY
 
+# --- deployment values ------------------------------------------------------
+# fleet.yml and the encrypted secrets.yml are what make a rebuilt controller
+# usable at all, so they travel with the backup. The vault password does not:
+# shipping it next to the ciphertext would make one file lose everything.
+if [[ -d "{{ controller_values_dir }}" ]]; then
+  mkdir -p "$work/values"
+  for name in fleet.yml secrets.yml; do
+    [[ -r "{{ controller_values_dir }}/$name" ]] && cp -p "{{ controller_values_dir }}/$name" "$work/values/$name"
+  done
+  log "included the deployment values (vault password deliberately excluded)"
+fi
+
 # --- manifest ---------------------------------------------------------------
 {
   printf 'created=%s\n' "$stamp"

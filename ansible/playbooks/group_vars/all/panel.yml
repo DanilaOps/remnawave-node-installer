@@ -2,11 +2,12 @@
 # Panel-wide values: one Remnawave panel serves the whole fleet, so these are
 # declared once instead of per node.
 #
-# Everything here is a documentation value. Real values never enter this public
-# repository: put them in the git-ignored
-# group_vars/remnawave_nodes/zz-local.yml (see examples/local-overrides.yml.example),
-# which is loaded last and therefore wins, or pass them from Semaphore as extra
-# vars, which outrank every file.
+# Everything here is a documentation value, and preflight refuses to run against
+# them. The real values live on the controller in /etc/remnawave/fleet.yml and are
+# loaded as an extra-vars file - automatically by ./provision-node and by name in
+# every Semaphore template's argument list. They are not committed because this
+# repository is public, and not kept inside the checkout because Semaphore clones
+# the repository fresh for every job. See ansible/examples/fleet.yml.example.
 
 remnawave_panel_url: https://panel.example.com
 remnawave_panel_token: "{{ vault_remnawave_panel_token }}"
@@ -28,8 +29,8 @@ shared_profile_allowed_unmanaged_inbound_tags: []
 # discovered from the live SSH connection, so it is never maintained by hand and a
 # controller with a changing address cannot lock itself out. Put the addresses
 # that must keep SSH access even when nobody runs from them - a workstation, a
-# jump or rescue host - in management_cidrs_extra, in zz-local.yml rather than
-# here. Setting management_cidrs explicitly opts out of the discovery entirely.
+# jump or rescue host - in management_cidrs_extra in /etc/remnawave/fleet.yml
+# rather than here. Setting management_cidrs explicitly opts out of the discovery entirely.
 management_cidrs_extra: []
 # The panel's address, allowed to reach NODE_PORT. Keep it explicit: resolving it
 # from the panel URL would silently point at a CDN if the panel ever moves behind

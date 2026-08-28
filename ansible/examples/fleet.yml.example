@@ -1,0 +1,43 @@
+---
+# Real values of this deployment. Copy to /etc/remnawave/fleet.yml on the
+# controller (root:semaphore, 0640).
+#
+# Why an absolute path outside the repository instead of a git-ignored file
+# inside it: Semaphore clones the repository fresh for every job, so nothing that
+# is not committed ever reaches a run started from the UI. This file is loaded as
+# `-e @/etc/remnawave/fleet.yml` - by the template's own arguments in the UI and
+# automatically by ./provision-node on the command line - so the UI and the CLI
+# read exactly the same values from exactly one place. The path is a default:
+# REMNAWAVE_FLEET_VARS overrides it for the CLI, and the template arguments name
+# it explicitly for the UI.
+#
+# It holds fleet-wide values only. Anything node-specific belongs in the
+# inventory: these values arrive as extra vars, which outrank every file and
+# every host, so a node_id or a selfsteal_domain here would be applied to the
+# whole fleet at once. Preflight refuses a run whose identity did not come from
+# the inventory hostname, which is what catches that mistake.
+
+remnawave_panel_url: https://panel.your-domain.tld
+# The panel's own address, allowed to reach NODE_PORT on every node.
+remnawave_panel_cidrs:
+  - 198.51.100.20/32
+
+profile_name: Default August
+internal_squad_name: Default
+
+node_domain_zone: your-domain.tld
+acme_email: ops@your-domain.tld
+
+# Addresses that must keep SSH access to every node even when nobody runs from
+# them: a workstation, a jump or rescue host. The controller's own address is
+# discovered from the live SSH connection and does not belong here.
+management_cidrs_extra:
+  - 203.0.113.9/32
+
+# Registrar automation, once the credentials are in secrets.yml.
+dns_provider: regru
+
+# End-to-end probe: the username of the panel user whose VLESS UUID is in
+# secrets.yml as vault_verify_probe_vless_uuid.
+verify_probe_username: probe
+verify_probe_xray_binary: /usr/local/bin/xray

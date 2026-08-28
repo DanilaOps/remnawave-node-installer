@@ -1,0 +1,49 @@
+---
+# Controller settings. Copy to /etc/remnawave/controller.yml and pass it to the
+# controller playbook:
+#
+#   ansible-playbook ansible/playbooks/controller.yml \
+#     -i 'localhost,' -c local -e controller_group=localhost \
+#     -e @/etc/remnawave/controller.yml --check
+#
+# Same reasoning as fleet.yml: it holds real addresses, so it stays out of a
+# public repository, and it is an extra-vars file so one copy serves every way of
+# running the playbook.
+
+# --- Adopting an instance that was installed by hand -------------------------
+semaphore_config_path: /etc/semaphore/config.json
+semaphore_db_dialect: sqlite
+
+# --- Publishing the UI -------------------------------------------------------
+# Semaphore itself never leaves loopback; nginx terminates TLS and proxies to it.
+controller_proxy_enabled: true
+controller_proxy_domain: web.your-domain.tld
+controller_proxy_acme_email: ops@your-domain.tld
+# Use staging while the DNS record and port 80 are still being sorted out:
+# Let's Encrypt allows five failures per hour per hostname.
+controller_proxy_acme_environment: production
+
+# Who may reach the panel at all. This is the control that limits the damage of a
+# leaked password, because behind this login sits the machine that provisions
+# every node. Leave it empty only with controller_proxy_ack_public: true.
+controller_proxy_allowed_cidrs:
+  - 203.0.113.9/32          # office
+  - 198.51.100.0/24         # VPN pool
+# controller_proxy_ack_public: true
+
+# A second password in front of Semaphore's own login: scanners and credential
+# stuffing never reach the login form. Hashes only - generate with
+# `openssl passwd -apr1` and keep the plaintext in a password manager.
+controller_proxy_basic_auth_users:
+  - user: ops
+    hash: "$apr1$REPLACE$WITHYOUROWNHASHVALUE0"
+
+# --- Backup ------------------------------------------------------------------
+# The Semaphore inventory is the node registry and lives nowhere else.
+controller_backup_remote: backup@backup.your-domain.tld:/srv/remnawave/
+
+# --- SSH to the controller ---------------------------------------------------
+# The address of the live session is always allowed, so this is for the machines
+# that must keep access when nobody is running from them.
+controller_ssh_allowed_cidrs:
+  - 203.0.113.9/32
