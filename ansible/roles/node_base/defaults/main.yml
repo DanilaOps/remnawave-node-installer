@@ -76,6 +76,11 @@ preflight_check_dns: true
 # Turning the panel checks off removes everything that protects the shared Config
 # Profile from a conflicting node, so it has to be acknowledged for that run.
 preflight_ack_unchecked_panel: false
+# A node whose identity is deliberately not derived from its inventory hostname
+# sets this in its own host block. It exists so that the check which catches a
+# fleet-wide identity - one supplied as a global extra var - has an escape hatch
+# that is per host and visible in the inventory.
+node_identity_override_ack: false
 # Inbound protocols the panel strips per node before pushing a config
 # (MANAGED_CLIENT_PROTOCOLS in the panel). An inbound of any other protocol is
 # delivered to every node in full, so the shared profile refuses to carry one

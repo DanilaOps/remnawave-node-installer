@@ -1,0 +1,141 @@
+---
+# Two guards protect a run that lost its deployment values, and both are cheap to
+# get wrong, so they are checked without a panel and without a node:
+#
+#   1. a run that still sees the repository's documentation values must stop,
+#      rather than publish a node against a panel that does not exist;
+#   2. a node identity supplied globally - a Semaphore variable group, a stray -e -
+#      must stop, because extra vars outrank every host and would give the whole
+#      fleet one identity.
+#
+# It runs against the staging inventory, so inventory_hostname and ansible_host
+# are real inventory facts rather than something this test invented:
+#
+#   ansible-playbook -i ansible/inventories/staging/hosts.yml -c local \
+#     ansible/tests/preflight_guards.yml --limit ee01
+- name: Verify the preflight guards on deployment values and identity
+  hosts: remnawave_nodes
+  connection: local
+  gather_facts: false
+  become: false
+
+  tasks:
+    - name: Real deployment values and a derived identity
+      block:
+        - name: Declare scenario 1
+          ansible.builtin.set_fact:
+            remnawave_panel_url: https://panel.real-zone.tld
+            node_domain_zone: real-zone.tld
+            node_id: ee_01
+            node_name: EE-01
+            node_public_ip: "{{ ansible_host }}"
+            selfsteal_domain: "{{ inventory_hostname }}.real-zone.tld"
+            node_identity_override_ack: false
+        - name: Run preflight for scenario 1
+          ansible.builtin.import_role:
+            name: node_base
+            tasks_from: preflight_controller.yml
+          vars: &guard_baseline
+            preflight_check_panel: false
+            preflight_check_dns: false
+            preflight_ack_unchecked_panel: true
+            node_country: EE
+            node_host_remark: Estonia
+            internal_squad_name: Default
+            internal_squad_uuid: ""
+            remnawave_panel_cidrs: ["198.51.100.20/32"]
+            management_cidrs_extra: []
+            remnawave_node_port: 2222
+            acme_email: ops@real-zone.tld
+            config_profile_mode: shared
+            config_profile_create: false
+            config_profile_require_routing: true
+            profile_name: Default August
+            profile_uuid: ""
+            shared_profile_allowed_unmanaged_inbound_tags: []
+            inbound_specs:
+              - tag: EE_01_REALITY
+                port: 443
+                network: raw
+            host_specs:
+              - remark: Estonia
+                address: ee01.real-zone.tld
+                inbound_tag: EE_01_REALITY
+                port: 443
+            bridge_spec:
+              enabled: false
+        - name: Scenario 1 passed
+          ansible.builtin.debug:
+            msg: real values with a derived identity -> accepted
+
+    - name: The repository's documentation values
+      block:
+        - name: Declare scenario 2
+          ansible.builtin.set_fact:
+            remnawave_panel_url: https://panel.example.com
+            node_domain_zone: example.com
+            node_id: ee_01
+            node_name: EE-01
+            node_public_ip: "{{ ansible_host }}"
+            selfsteal_domain: "{{ inventory_hostname }}.example.com"
+            node_identity_override_ack: false
+        - name: Run preflight for scenario 2
+          ansible.builtin.import_role:
+            name: node_base
+            tasks_from: preflight_controller.yml
+          vars: *guard_baseline
+        - name: Scenario 2 must not be reached
+          ansible.builtin.fail:
+            msg: >-
+              A run still holding the repository's documentation values was accepted. It would have
+              published this node against a panel that does not exist.
+      rescue:
+        - name: Scenario 2 refused
+          ansible.builtin.debug:
+            msg: documentation values -> refused, as they must be
+
+    - name: An identity supplied globally instead of per host
+      block:
+        - name: Declare scenario 3
+          ansible.builtin.set_fact:
+            remnawave_panel_url: https://panel.real-zone.tld
+            node_domain_zone: real-zone.tld
+            node_id: kr_01
+            node_name: KR-01
+            node_public_ip: "{{ ansible_host }}"
+            selfsteal_domain: kr01.real-zone.tld
+            node_identity_override_ack: false
+        - name: Run preflight for scenario 3
+          ansible.builtin.import_role:
+            name: node_base
+            tasks_from: preflight_controller.yml
+          vars: *guard_baseline
+        - name: Scenario 3 must not be reached
+          ansible.builtin.fail:
+            msg: >-
+              A node identity that does not follow the inventory hostname was accepted without an
+              acknowledgement. Supplied globally, it would give every node in the fleet one identity.
+      rescue:
+        - name: Scenario 3 refused
+          ansible.builtin.debug:
+            msg: identity that ignores the inventory hostname -> refused
+
+    - name: A deliberate per-host identity override
+      block:
+        - name: Declare scenario 4
+          ansible.builtin.set_fact:
+            remnawave_panel_url: https://panel.real-zone.tld
+            node_domain_zone: real-zone.tld
+            node_id: ee_01
+            node_name: EE-01
+            node_public_ip: "{{ ansible_host }}"
+            selfsteal_domain: node-ee-01.real-zone.tld
+            node_identity_override_ack: true
+        - name: Run preflight for scenario 4
+          ansible.builtin.import_role:
+            name: node_base
+            tasks_from: preflight_controller.yml
+          vars: *guard_baseline
+        - name: Scenario 4 passed
+          ansible.builtin.debug:
+            msg: acknowledged per-host override -> accepted
