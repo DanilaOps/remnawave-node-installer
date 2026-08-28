@@ -451,6 +451,19 @@ class ControllerTests(unittest.TestCase):
         self.assertIn("checksum:", tasks)
         self.assertIn("Require the installed binary to be the pinned version", tasks)
 
+    def test_the_declared_service_command_exists_in_the_pinned_cli(self) -> None:
+        unit = self.read("roles/semaphore_controller/templates/semaphore.service.j2")
+        self.assertIn(" server --config=", unit)
+        self.assertNotIn(" service --config", unit)
+
+    def test_sqlite_is_a_supported_existing_database(self) -> None:
+        defaults = yaml.safe_load(self.read("roles/semaphore_controller/defaults/main.yml"))
+        preflight = self.read("roles/semaphore_controller/tasks/preflight.yml")
+        config = self.read("roles/semaphore_controller/templates/semaphore-config.json.j2")
+        self.assertIn("sqlite3", defaults["controller_packages"])
+        self.assertIn("'sqlite'", preflight)
+        self.assertIn('"sqlite":', config)
+
     def test_encryption_keys_are_generated_once_and_reused(self) -> None:
         preflight = self.read("roles/semaphore_controller/tasks/preflight.yml")
         tasks = self.read("roles/semaphore_controller/tasks/semaphore.yml")

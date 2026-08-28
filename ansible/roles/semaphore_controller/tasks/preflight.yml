@@ -4,7 +4,7 @@
     that:
       - ansible_facts.distribution in ['Debian', 'Ubuntu']
       - semaphore_version is match('^[0-9]+\.[0-9]+\.[0-9]+$')
-      - semaphore_db_dialect in ['bolt', 'mysql', 'postgres']
+      - semaphore_db_dialect in ['bolt', 'sqlite', 'mysql', 'postgres']
       - semaphore_port | int >= 1
       - semaphore_port | int <= 65535
       - semaphore_user is match('^[a-z_][a-z0-9_-]{0,31}$')

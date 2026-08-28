@@ -15,7 +15,7 @@ argument_specs:
       semaphore_db_dialect:
         type: str
         required: true
-        choices: [bolt, mysql, postgres]
+        choices: [bolt, sqlite, mysql, postgres]
         description: Database backend. Changing it on an existing instance is refused.
       semaphore_interface:
         type: str

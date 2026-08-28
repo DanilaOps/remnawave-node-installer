@@ -2,6 +2,8 @@
   "dialect": "{{ semaphore_db_dialect }}",
 {% if semaphore_db_dialect == 'bolt' %}
   "bolt": {"host": "{{ semaphore_bolt_path }}"},
+{% elif semaphore_db_dialect == 'sqlite' %}
+  "sqlite": {"host": "{{ semaphore_sqlite_path }}"},
 {% endif %}
   "tmp_path": "{{ semaphore_tmp_path }}",
   "cookie_hash": "{{ semaphore_effective_keys.cookie_hash }}",

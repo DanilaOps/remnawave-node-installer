@@ -16,7 +16,7 @@ Environment=SEMAPHORE_INTERFACE={{ semaphore_interface }}
 Environment=SEMAPHORE_PORT=:{{ semaphore_port }}
 Environment=PATH={{ semaphore_venv_path }}/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 WorkingDirectory={{ semaphore_home }}
-ExecStart={{ semaphore_binary_path }} service --config {{ semaphore_config_path }}
+ExecStart={{ semaphore_binary_path }} server --config={{ semaphore_config_path }}
 Restart=on-failure
 RestartSec=5
 

@@ -57,6 +57,7 @@ controller_packages:
   - openssh-client
   - sshpass
   - unzip
+  - sqlite3
   - fail2ban
   - unattended-upgrades
   - nftables
