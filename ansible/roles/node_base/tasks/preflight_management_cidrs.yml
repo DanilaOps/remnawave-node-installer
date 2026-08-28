@@ -1,0 +1,48 @@
+---
+# Who may reach SSH on this node. Kept in its own file because getting it wrong
+# locks Ansible out of the node it just configured, so it is unit-tested on its
+# own (ansible/tests/management_cidrs.yml) instead of only being read.
+- name: Resolve the management allow list
+  # The controller's own address comes from the live connection, so it is never
+  # maintained by hand and a controller with a changing address cannot lock
+  # itself out. An explicitly configured management_cidrs wins; extras are always
+  # merged so a workstation, jump or rescue host keeps access. The parentheses
+  # matter: | unique binds tighter than +, so unique must wrap the whole sum or
+  # the discovered address appears twice when it is also listed in the extras.
+  ansible.builtin.set_fact:
+    management_cidrs: >-
+      {{ (((management_cidrs | default([], true))
+           if (management_cidrs | default([], true) | length > 0)
+           else ([node_base_observed_ssh_source ~
+                  ('/128' if ':' in node_base_observed_ssh_source else '/32')]
+                 if node_base_observed_ssh_source | length > 0 else []))
+          + (management_cidrs_extra | default([]))) | unique }}
+
+- name: Require a management allow list
+  ansible.builtin.assert:
+    that:
+      - management_cidrs | length > 0
+    fail_msg: >-
+      Could not determine which address may reach SSH on this node. The controller
+      address is normally taken from the live SSH connection; with a non-SSH
+      connection set management_cidrs explicitly in the inventory.
+
+- name: Validate the resolved management allow list
+  ansible.builtin.assert:
+    that:
+      - (item | ansible.utils.ipaddr) != false
+    fail_msg: "Invalid management CIDR: {{ item }}"
+  loop: "{{ management_cidrs + (remnawave_panel_cidrs | default([])) }}"
+  loop_control:
+    label: "{{ item }}"
+
+- name: Require the management allow list to include the source seen by sshd
+  ansible.builtin.assert:
+    that:
+      - node_base_observed_ssh_source | remnawave_ip_in_cidrs(management_cidrs)
+    fail_msg: >-
+      sshd sees this Controller as {{ node_base_observed_ssh_source }}, but the configured
+      management_cidrs does not include it. This commonly happens behind a provider TCP proxy;
+      refusing to apply a firewall that would lock out Ansible. Either remove the explicit
+      management_cidrs so the address is discovered, or add {{ node_base_observed_ssh_source }}.
+  when: node_base_observed_ssh_source | length > 0
