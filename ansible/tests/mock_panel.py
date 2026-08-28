@@ -50,6 +50,11 @@ class Store:
 
 class Handler(BaseHTTPRequestHandler):
     store: Store
+    # Simulates a second writer: after the Nth read of a Config Profile the stored
+    # profile gains an inbound, exactly as if another provisioning run or a person
+    # in the panel had written between this run's read and its write.
+    mutate_after_profile_read: int = 0
+    profile_reads: int = 0
 
     def log_message(self, _format: str, *_args: Any) -> None:
         return
@@ -106,6 +111,12 @@ class Handler(BaseHTTPRequestHandler):
                 response = self.store.profile_response(item)
                 self.store.save()
                 self.send_json(200, {"response": response})
+                Handler.profile_reads += 1
+                if (
+                    Handler.mutate_after_profile_read
+                    and Handler.profile_reads == Handler.mutate_after_profile_read
+                ):
+                    self.simulate_concurrent_writer(item)
             else:
                 self.send_json(404, {"message": "not found"})
             return
@@ -135,6 +146,20 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(200 if item else 404, {"response": item} if item else {"message": "not found"})
             return
         self.send_json(404, {"message": "not found"})
+
+    def simulate_concurrent_writer(self, profile: dict[str, Any]) -> None:
+        profile["config"].setdefault("inbounds", []).append(
+            {
+                "uuid": "33333333-3333-3333-3333-333333333333",
+                "tag": "CONCURRENT_NODE_REALITY",
+                "port": 443,
+                "listen": "0.0.0.0",
+                "protocol": "vless",
+                "settings": {"clients": [], "decryption": "none"},
+                "streamSettings": {"network": "raw", "security": "reality"},
+            }
+        )
+        self.store.save()
 
     def create(self, collection: str, body: dict[str, Any]) -> dict[str, Any]:
         item = {"uuid": self.store.new_uuid(), **body}
@@ -234,8 +259,15 @@ def main() -> None:
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=18080)
     parser.add_argument("--state", type=pathlib.Path, required=True)
+    parser.add_argument(
+        "--mutate-after-profile-read",
+        type=int,
+        default=0,
+        help="append a foreign inbound after the Nth Config Profile read",
+    )
     args = parser.parse_args()
     Handler.store = Store(args.state)
+    Handler.mutate_after_profile_read = args.mutate_after_profile_read
     ThreadingHTTPServer((args.host, args.port), Handler).serve_forever()
 
 

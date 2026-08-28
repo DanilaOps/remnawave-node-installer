@@ -16,6 +16,12 @@ config_profile_mode: shared
 config_profile_create: false
 config_profile_require_routing: true
 inbound_prune_tags: []
+# Inbound protocols the panel strips per node before it pushes a config
+# (MANAGED_CLIENT_PROTOCOLS in the panel), so a node never receives a neighbour's
+# Reality key. An inbound of any other protocol reaches every node in full, so
+# the shared profile refuses to carry one unless its tag is listed here.
+shared_profile_managed_protocols: [vless, trojan, shadowsocks, hysteria]
+shared_profile_allowed_unmanaged_inbound_tags: []
 profile_uuid: ""
 profile_name: Default August
 inbound_specs:
