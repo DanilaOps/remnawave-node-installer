@@ -37,6 +37,7 @@
   when:
     - controller_swap_enabled | bool
     - not controller_swap_file.stat.exists
+    - not ansible_check_mode
   changed_when: true
 
 - name: Restrict the swap file
@@ -48,6 +49,7 @@
   when:
     - controller_swap_enabled | bool
     - not controller_swap_file.stat.exists
+    - not ansible_check_mode
 
 - name: Format the swap file
   ansible.builtin.command:

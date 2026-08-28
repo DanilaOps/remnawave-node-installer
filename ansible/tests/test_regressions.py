@@ -520,6 +520,13 @@ class ControllerTests(unittest.TestCase):
                 for forbidden in ("PermitRootLogin", "PasswordAuthentication", "sshd_config"):
                     self.assertNotIn(forbidden, text, f"{path} changes SSH policy")
 
+    def test_controller_dry_run_does_not_chmod_an_uncreated_swap_file(self) -> None:
+        system = self.read("roles/semaphore_controller/tasks/system.yml")
+        restrict = system.split("- name: Restrict the swap file", 1)[1].split(
+            "- name: Format the swap file", 1
+        )[0]
+        self.assertIn("not ansible_check_mode", restrict)
+
     def test_the_firewall_cannot_lock_out_the_live_session(self) -> None:
         firewall = self.read("roles/semaphore_controller/tasks/firewall.yml")
         self.assertIn("controller_observed_ssh_source", firewall)
