@@ -261,6 +261,9 @@ class OperatorWorkflowTests(unittest.TestCase):
         self.assertIn("Environment=SEMAPHORE_INTERFACE=127.0.0.1", unit)
         self.assertIn("Environment=SEMAPHORE_HOME_DIR_MODE=user_home", unit)
         self.assertNotIn("Environment=ANSIBLE_CONFIG=", unit)
+        jail = self.read("semaphore/fail2ban-sshd.local")
+        self.assertIn("backend = systemd", jail)
+        self.assertIn("maxretry = 5", jail)
 
 
 if __name__ == "__main__":
