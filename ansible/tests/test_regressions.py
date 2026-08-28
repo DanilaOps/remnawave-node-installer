@@ -489,6 +489,15 @@ class ControllerTests(unittest.TestCase):
         defaults = yaml.safe_load(self.read("roles/semaphore_controller/defaults/main.yml"))
         self.assertNotIn("docker", " ".join(defaults["controller_packages"]))
 
+    def test_the_controller_installs_the_pinned_xray_probe_client(self) -> None:
+        defaults = yaml.safe_load(self.read("roles/semaphore_controller/defaults/main.yml"))
+        runtime = self.read("roles/semaphore_controller/tasks/runtime.yml")
+        self.assertEqual("26.6.27", defaults["controller_xray_version"])
+        self.assertEqual("/usr/local/bin/xray", defaults["controller_xray_binary_path"])
+        self.assertIn("Download the pinned controller Xray archive", runtime)
+        self.assertIn("controller_xray_checksums", runtime)
+        self.assertIn("Require the installed controller Xray client to match the pin", runtime)
+
     def test_the_controller_does_not_touch_ssh_authentication(self) -> None:
         # The controller is the machine an operator must be able to get back
         # into; this role is never the reason they cannot.

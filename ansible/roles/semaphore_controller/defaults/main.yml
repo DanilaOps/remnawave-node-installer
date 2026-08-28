@@ -56,6 +56,7 @@ controller_packages:
   - python3-venv
   - openssh-client
   - sshpass
+  - unzip
   - fail2ban
   - unattended-upgrades
   - nftables
@@ -67,6 +68,19 @@ controller_unattended_upgrades_enabled: true
 controller_fail2ban_enabled: true
 controller_fail2ban_maxretry: 5
 controller_fail2ban_bantime: 1h
+
+# Pinned Xray client used only by node_verify for the end-to-end VLESS/Reality
+# probe. The controller does not run an Xray service.
+controller_xray_version: 26.6.27
+controller_xray_release_repository: XTLS/Xray-core
+controller_xray_assets:
+  x86_64: Xray-linux-64.zip
+  aarch64: Xray-linux-arm64-v8a.zip
+controller_xray_checksums:
+  x86_64: b3e5902d06d6282fe53cfa2fc426058b9aeaa429b2c812e20887cd47f26d08bf
+  aarch64: 13a251379bea366c2cf10363ad71e75734193d401f26f518bf0c25e5c8f8c931
+controller_xray_install_dir: "/opt/remnawave-controller/xray-core-{{ controller_xray_version }}"
+controller_xray_binary_path: /usr/local/bin/xray
 
 # Root and password logins are deliberately left alone here: the controller is
 # the machine an operator has to be able to get back into, and this role must

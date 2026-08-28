@@ -126,3 +126,67 @@
     - community.general
     - ansible.posix
     - ansible.utils
+
+- name: Validate the controller Xray asset declaration
+  ansible.builtin.assert:
+    that:
+      - ansible_facts.architecture in controller_xray_assets
+      - ansible_facts.architecture in controller_xray_checksums
+    fail_msg: "No pinned controller Xray asset for {{ ansible_facts.architecture }}."
+
+- name: Create the pinned controller Xray directory
+  ansible.builtin.file:
+    path: "{{ controller_xray_install_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Inspect the pinned controller Xray binary
+  ansible.builtin.stat:
+    path: "{{ controller_xray_install_dir }}/xray"
+  register: controller_xray_binary
+
+- name: Download the pinned controller Xray archive
+  ansible.builtin.get_url:
+    url: >-
+      https://github.com/{{ controller_xray_release_repository }}/releases/download/v{{
+      controller_xray_version }}/{{ controller_xray_assets[ansible_facts.architecture] }}
+    dest: "/var/cache/{{ controller_xray_assets[ansible_facts.architecture] }}"
+    checksum: "sha256:{{ controller_xray_checksums[ansible_facts.architecture] }}"
+    owner: root
+    group: root
+    mode: "0644"
+    timeout: 300
+  register: controller_xray_archive
+
+- name: Extract the pinned controller Xray client
+  ansible.builtin.unarchive:
+    src: "/var/cache/{{ controller_xray_assets[ansible_facts.architecture] }}"
+    dest: "{{ controller_xray_install_dir }}"
+    remote_src: true
+    owner: root
+    group: root
+  when: controller_xray_archive.changed or not controller_xray_binary.stat.exists
+
+- name: Publish the pinned controller Xray client
+  ansible.builtin.file:
+    src: "{{ controller_xray_install_dir }}/xray"
+    dest: "{{ controller_xray_binary_path }}"
+    state: link
+    owner: root
+    group: root
+
+- name: Read the installed controller Xray version
+  ansible.builtin.command:
+    argv: ["{{ controller_xray_binary_path }}", version]
+  register: controller_xray_version_output
+  changed_when: false
+  when: not ansible_check_mode or controller_xray_binary.stat.exists
+
+- name: Require the installed controller Xray client to match the pin
+  ansible.builtin.assert:
+    that:
+      - controller_xray_version_output.stdout is match('^Xray ' ~ controller_xray_version ~ ' ')
+    fail_msg: "Installed controller Xray does not match {{ controller_xray_version }}."
+  when: not ansible_check_mode or controller_xray_binary.stat.exists
