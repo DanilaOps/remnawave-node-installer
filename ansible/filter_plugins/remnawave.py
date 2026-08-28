@@ -7,6 +7,7 @@ other operators.
 
 from __future__ import annotations
 
+import base64
 from copy import deepcopy
 from ipaddress import ip_address, ip_network
 from typing import Any, Iterable
@@ -257,6 +258,45 @@ def remnawave_normalize_host_links(host: Any) -> dict[str, Any]:
     return normalized
 
 
+def remnawave_reality_public_key(private_key: str) -> str:
+    """Derive the Reality X25519 public key from the server's private key.
+
+    The end-to-end probe needs the public half to connect, and only the private
+    half is stored. Xray prints both when it generates a key, but by the time a
+    node is verified the keypair may have come from the panel instead, and the
+    controller deliberately has no Docker to run `xray x25519` in. cryptography
+    is already a dependency of community.crypto, so the derivation is local,
+    offline and deterministic.
+    """
+
+    if not isinstance(private_key, str) or not private_key.strip():
+        raise AnsibleFilterError("Reality private key must be a non-empty string")
+    try:
+        from cryptography.hazmat.primitives import serialization
+        from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
+    except ImportError as error:  # pragma: no cover - dependency of community.crypto
+        raise AnsibleFilterError(
+            f"cryptography is required to derive the Reality public key: {error}"
+        ) from error
+
+    text = private_key.strip()
+    padded = text + "=" * (-len(text) % 4)
+    try:
+        raw = base64.urlsafe_b64decode(padded)
+    except Exception as error:
+        raise AnsibleFilterError(f"Reality private key is not base64url: {error}") from error
+    if len(raw) != 32:
+        raise AnsibleFilterError(
+            f"Reality private key must decode to 32 bytes, got {len(raw)}"
+        )
+    public = (
+        X25519PrivateKey.from_private_bytes(raw)
+        .public_key()
+        .public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)
+    )
+    return base64.urlsafe_b64encode(public).decode().rstrip("=")
+
+
 def remnawave_ip_in_cidrs(address: str, cidrs: Iterable[str]) -> bool:
     """Return whether address belongs to at least one declared network."""
 
@@ -281,5 +321,6 @@ class FilterModule:
             "remnawave_strip_inbound_uuids": remnawave_strip_inbound_uuids,
             "remnawave_normalize_node_links": remnawave_normalize_node_links,
             "remnawave_normalize_host_links": remnawave_normalize_host_links,
+            "remnawave_reality_public_key": remnawave_reality_public_key,
             "remnawave_ip_in_cidrs": remnawave_ip_in_cidrs,
         }

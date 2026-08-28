@@ -85,6 +85,11 @@
   hosts: remnawave_nodes
   gather_facts: false
   any_errors_fatal: true
+  # When this play carries a password, its task output is suppressed as a whole:
+  # a single task without no_log is enough to leak the credential into a log that
+  # Semaphore stores. The key-only path keeps normal output, so the common case
+  # stays debuggable.
+  no_log: "{{ bootstrap_ssh_password | default('') | trim | length > 0 }}"
   vars:
     ansible_user: "{{ bootstrap_ssh_user | default('root') }}"
     ansible_password: >-
@@ -93,6 +98,20 @@
          else omit }}
     ansible_ssh_private_key_file: "{{ bootstrap_ssh_private_key_file | default(omit) }}"
     ansible_become: false
+
+  pre_tasks:
+    - name: Refuse to run with a password at raised verbosity
+      # -vv and above print task arguments and connection details. Semaphore
+      # passes the password as --extra-vars on the command line, so a verbose run
+      # is the one way this credential reaches stored output.
+      ansible.builtin.assert:
+        that:
+          - ansible_verbosity | int <= 1
+        fail_msg: >-
+          This run carries a root password and was started with -vv or higher.
+          Re-run without raised verbosity, or bootstrap with an SSH key instead.
+      no_log: false
+      when: bootstrap_ssh_password | default('') | trim | length > 0
 
   roles:
     - role: node_bootstrap

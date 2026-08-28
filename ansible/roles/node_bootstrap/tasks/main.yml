@@ -70,3 +70,6 @@
     msg: >-
       {{ inventory_hostname }} is ready for ansible_user={{ bootstrap_user }}.
       sshd policy, firewall and hardening are applied later by node_base.
+  # Visible even when the play suppressed its output because a password was used:
+  # the operator still needs to see that the account exists.
+  no_log: false

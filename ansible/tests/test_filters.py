@@ -203,3 +203,26 @@ class SharedProfileMergeTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RealityPublicKeyTests(unittest.TestCase):
+    """The probe connects with the public half of the node's Reality key."""
+
+    # Generated once with cryptography; the pair is fixed so the derivation is
+    # checked against a known answer rather than against itself.
+    PRIVATE = "oLpYJEHmHMIA2KCpmsoUihaKHH_nfKzH3ex-yM9p8Ek"
+    PUBLIC = "j2nxh8TooQQvk3cO_adThfAo6f-GE6gMTu5yReH9SmA"
+
+    def test_public_key_is_derived_from_the_private_key(self) -> None:
+        self.assertEqual(self.PUBLIC, MODULE.remnawave_reality_public_key(self.PRIVATE))
+
+    def test_unpadded_and_padded_input_agree(self) -> None:
+        self.assertEqual(
+            MODULE.remnawave_reality_public_key(self.PRIVATE),
+            MODULE.remnawave_reality_public_key(self.PRIVATE + "="),
+        )
+
+    def test_garbage_is_rejected_loudly(self) -> None:
+        for value in ("", "   ", "not-base64!!", "c2hvcnQ="):
+            with self.assertRaises(Exception):
+                MODULE.remnawave_reality_public_key(value)

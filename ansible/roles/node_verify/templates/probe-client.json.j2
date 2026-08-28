@@ -1,0 +1,44 @@
+{
+  "log": {"loglevel": "warning"},
+  "inbounds": [
+    {
+      "tag": "probe-socks",
+      "listen": "127.0.0.1",
+      "port": {{ verify_probe_socks_port | int }},
+      "protocol": "socks",
+      "settings": {"auth": "noauth", "udp": false}
+    }
+  ],
+  "outbounds": [
+    {
+      "tag": "probe-node",
+      "protocol": "vless",
+      "settings": {
+        "vnext": [
+          {
+            "address": {{ host_specs[0].address | to_json }},
+            "port": {{ host_specs[0].port | int }},
+            "users": [
+              {
+                "id": {{ verify_probe_vless_uuid | to_json }},
+                "encryption": "none",
+                "flow": "xtls-rprx-vision"
+              }
+            ]
+          }
+        ]
+      },
+      "streamSettings": {
+        "network": "raw",
+        "security": "reality",
+        "realitySettings": {
+          "serverName": {{ (host_specs[0].sni | default(selfsteal_domain)) | to_json }},
+          "fingerprint": {{ (host_specs[0].fingerprint | default(reality_fingerprint | default('firefox'))) | to_json }},
+          "publicKey": {{ node_verify_probe_public_key | to_json }},
+          "shortId": {{ (remnawave_reality_short_ids | first) | to_json }},
+          "spiderX": "/"
+        }
+      }
+    }
+  ]
+}

@@ -80,16 +80,13 @@
     - node_firewall_enabled | bool
     - verify_require_node_port_denied_probe | bool
 
-- name: Require a configured valid-tunnel probe in strict mode
-  ansible.builtin.assert:
-    that:
-      - verify_tunnel_probe_command | length > 0
-    fail_msg: >-
-      Strict acceptance requires verify_tunnel_probe_command: a Controller-side command that exits 0 only after a valid
-      VLESS/Reality connection and an internet request through this Node succeed.
-  when: verify_require_tunnel_probe | bool
+- name: Prove the node carries traffic with the built-in probe
+  ansible.builtin.include_tasks: tunnel_probe.yml
+  when:
+    - verify_require_tunnel_probe | bool
+    - verify_tunnel_probe_command | length == 0
 
-- name: Execute valid VLESS tunnel probe
+- name: Execute the custom valid-tunnel probe instead
   ansible.builtin.command:
     argv: "{{ verify_tunnel_probe_command }}"
   register: remnawave_verify_tunnel_probe

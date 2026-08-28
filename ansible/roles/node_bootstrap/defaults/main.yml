@@ -24,9 +24,17 @@ bootstrap_supported_os:
   Debian: ["12", "13"]
   Ubuntu: ["24.04"]
 
-# Login used for the very first connection, before bootstrap_user exists. The
-# password is read from the environment (./provision-node prompts for it and
-# never writes it to disk) and falls back to the vault for unattended runs.
+# Login used for the very first connection, before bootstrap_user exists.
+#
+# Three sources, in the order that wins:
+#   1. -e bootstrap_ssh_password=... - what Semaphore passes from a secret survey
+#      field of that exact name. Survey secrets are never stored in Semaphore's
+#      database, so a one-off VPS password belongs there rather than in a
+#      Variable Group, which keeps its secrets at rest.
+#   2. NODE_ROOT_PASSWORD in the environment - ./provision-node prompts for it and
+#      never writes it to disk or into argv.
+#   3. vault_node_root_password - for unattended runs; normally left empty.
+# Empty from all three means key-only bootstrap, which is the target state.
 bootstrap_ssh_user: root
 bootstrap_ssh_password: >-
   {{ lookup('env', 'NODE_ROOT_PASSWORD')
