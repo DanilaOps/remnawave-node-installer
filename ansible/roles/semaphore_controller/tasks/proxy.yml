@@ -83,7 +83,6 @@
     owner: root
     group: root
     mode: "0644"
-    validate: "nginx -t -c /etc/nginx/nginx.conf -q"
   vars:
     controller_proxy_tls_ready: "{{ controller_proxy_certificate.stat.exists }}"
   register: controller_proxy_site
@@ -100,6 +99,15 @@
     path: /etc/nginx/sites-enabled/default
     state: absent
   notify: Reload nginx
+
+- name: Validate the complete nginx configuration
+  # Not template's validate: that hands the module a temporary copy of this one
+  # file, and a site file is a fragment - its server blocks are only valid inside
+  # http {}. The whole configuration is what has to be correct, and checking it
+  # here means a broken file is never started or reloaded into a running nginx.
+  ansible.builtin.command:
+    argv: [nginx, -t]
+  changed_when: false
 
 - name: Start nginx so the challenge path is served
   ansible.builtin.systemd_service:
@@ -180,11 +188,16 @@
     owner: root
     group: root
     mode: "0644"
-    validate: "nginx -t -c /etc/nginx/nginx.conf -q"
   vars:
     controller_proxy_tls_ready: true
   when: controller_proxy_certificate_final.stat.exists
   notify: Reload nginx
+
+- name: Validate the complete nginx configuration with TLS enabled
+  ansible.builtin.command:
+    argv: [nginx, -t]
+  changed_when: false
+  when: controller_proxy_certificate_final.stat.exists
 
 - name: Reload nginx after a renewal instead of leaving the old certificate served
   ansible.builtin.copy:

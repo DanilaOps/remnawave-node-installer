@@ -686,3 +686,31 @@ class PublishedUiTests(unittest.TestCase):
         self.assertIn("semaphore_web_host:", defaults)
         self.assertIn("'https://' ~ controller_proxy_domain", defaults)
         self.assertIn('"web_host": "{{ semaphore_web_host | trim }}"', config)
+
+
+class ValidateArgumentTests(unittest.TestCase):
+    """template/copy validate must contain %s, and must fit what it validates."""
+
+    def test_every_validate_names_the_temporary_file(self) -> None:
+        # Ansible refuses a validate command without %s, and it refuses it at
+        # runtime on the target - so a missing %s is a task that only ever fails
+        # on a real host, which is exactly what happened once.
+        offenders = []
+        for path in (ROOT / "roles").rglob("tasks/*.yml"):
+            for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+                stripped = line.strip()
+                if stripped.startswith("validate:") and "%s" not in stripped:
+                    offenders.append(f"{path.relative_to(ROOT)}:{number}: {stripped}")
+        self.assertEqual([], offenders, "validate without %s: " + "; ".join(offenders))
+
+    def test_the_nginx_site_is_checked_as_part_of_the_whole_config(self) -> None:
+        # A site file is a fragment: its server blocks are only valid inside
+        # http {}, so it cannot be validated on its own. The whole configuration
+        # is checked instead, before nginx is started or reloaded.
+        proxy = (ROOT / "roles/semaphore_controller/tasks/proxy.yml").read_text(encoding="utf-8")
+        self.assertIn("argv: [nginx, -t]", proxy)
+        self.assertLess(
+            proxy.index("argv: [nginx, -t]"),
+            proxy.index("Start nginx so the challenge path is served"),
+        )
+        self.assertIn("Validate the complete nginx configuration with TLS enabled", proxy)
