@@ -561,6 +561,13 @@ class ControllerTests(unittest.TestCase):
         # And the keys that would decrypt it never travel with it.
         self.assertIn("excluded=encryption_keys,vault_password,deployer_private_key", script)
 
+    def test_new_backup_units_do_not_break_controller_check_mode(self) -> None:
+        backup = self.read("roles/semaphore_controller/tasks/backup.yml")
+        enable = backup.split("- name: Enable the nightly backup timer", 1)[1].split(
+            "- name: Say plainly", 1
+        )[0]
+        self.assertIn("not ansible_check_mode", enable)
+
 
 if __name__ == "__main__":
     unittest.main()
