@@ -42,6 +42,7 @@
             node_country: EE
             node_host_remark: Estonia
             internal_squad_name: Default
+            remnawave_panel_token: mock-token
             internal_squad_uuid: ""
             remnawave_panel_cidrs: ["198.51.100.20/32"]
             management_cidrs_extra: []

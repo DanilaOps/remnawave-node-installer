@@ -23,6 +23,21 @@
       node_name and node_country explicitly for this host. A panel CIDR and an Internal Squad identity
       are mandatory.
 
+- name: Require a panel token before anything asks the panel for something
+  # Without this the first API call fails with an opaque 401 inside a no_log
+  # task, which is the least helpful way to learn that the secrets file was not
+  # loaded.
+  ansible.builtin.assert:
+    that:
+      - remnawave_panel_token | default('') | trim | length > 0
+    fail_msg: >-
+      remnawave_panel_token is empty. It comes from vault_remnawave_panel_token in
+      /etc/remnawave/secrets.yml, which every Semaphore template loads as
+      '-e' '@/etc/remnawave/secrets.yml' and ./provision-node loads automatically. Check that the
+      file exists, that it is decryptable with the vault password, and that the template's arguments
+      still name it.
+  no_log: true
+
 - name: Refuse to run against the published documentation values
   # Everything tracked in this public repository carries example values. A run
   # that still sees them did not get its deployment values: on the command line

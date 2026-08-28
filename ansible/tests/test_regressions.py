@@ -349,6 +349,7 @@ class OperatorWorkflowTests(unittest.TestCase):
             "Treat an empty Config Profile list as a panel problem",
             "Require a display name for this node's country",
             "Require an unmanaged DNS record to already be correct",
+            "Require a panel token before anything asks the panel for something",
         ):
             self.assertIn(check, preflight)
 
