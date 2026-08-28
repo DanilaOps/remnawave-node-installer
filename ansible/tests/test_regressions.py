@@ -253,6 +253,14 @@ class OperatorWorkflowTests(unittest.TestCase):
         # The probe must not silently record trust in a new server's host key.
         self.assertIn("UserKnownHostsFile=/dev/null", wrapper)
 
+    def test_semaphore_runs_from_the_repository_root(self) -> None:
+        config = (ROOT.parent / "ansible.cfg").read_text(encoding="utf-8")
+        unit = self.read("semaphore/semaphore.service")
+        self.assertIn("roles_path = ansible/roles", config)
+        self.assertIn("filter_plugins = ansible/filter_plugins", config)
+        self.assertIn("Environment=SEMAPHORE_INTERFACE=127.0.0.1", unit)
+        self.assertNotIn("Environment=ANSIBLE_CONFIG=", unit)
+
 
 if __name__ == "__main__":
     unittest.main()
