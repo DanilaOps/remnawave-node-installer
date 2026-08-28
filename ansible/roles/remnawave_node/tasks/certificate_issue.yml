@@ -53,6 +53,27 @@
   community.crypto.x509_certificate_info:
     path: "/etc/letsencrypt/live/{{ certificate_name }}/fullchain.pem"
   register: remnawave_certificate_phase_info
+  # In a dry-run certbot did not run, so a node that has no certificate for this
+  # name has no file to inspect. Where one exists the inspection still happens
+  # and its result is reported below.
+  when: remnawave_certificate_before_phase.stat.exists or not ansible_check_mode
+
+- name: Report what a dry-run can say about the certificate for this phase
+  ansible.builtin.debug:
+    msg: >-
+      Dry-run:
+      {{ ('no certificate exists for ' ~ certificate_name ~ ' yet, so the '
+          ~ remnawave_certificate_phase ~ ' phase cannot be verified')
+         if remnawave_certificate_phase_info is skipped else
+         ('the installed certificate is issued by "'
+          ~ remnawave_certificate_phase_info.issuer.commonName | default('unknown')
+          ~ '", which ' ~ ('matches' if ((remnawave_certificate_phase_info.issuer.organizationName
+              | default('') ~ ' ' ~ remnawave_certificate_phase_info.issuer.commonName | default(''))
+              is search('(?i)staging')) == (remnawave_certificate_phase == 'staging')
+             else 'does NOT match') ~ ' the ' ~ remnawave_certificate_phase ~ ' phase') }}.
+      A real run issues the certificate and then requires the issuer to match the requested ACME
+      environment before going on to the next phase.
+  when: ansible_check_mode
 
 - name: Require the installed certificate to match phase {{ remnawave_certificate_phase }}
   ansible.builtin.assert:
@@ -66,3 +87,6 @@
       The {{ remnawave_certificate_phase }} phase left a certificate issued by
       '{{ remnawave_certificate_phase_info.issuer.commonName | default('unknown') }}'. Stopping here rather
       than continuing to the next phase with an unexpected certificate installed.
+  # A dry-run would judge a certificate certbot was not allowed to issue or
+  # renew; what it found is reported above instead of failing the run.
+  when: not ansible_check_mode

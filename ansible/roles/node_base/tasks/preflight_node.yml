@@ -17,7 +17,13 @@
   ansible.builtin.assert:
     that:
       - ansible_facts.distribution in node_base_supported_os
-      - ansible_facts.distribution_major_version in node_base_supported_os[ansible_facts.distribution]
+      # Debian is listed by major version ("12"), Ubuntu by its full release
+      # ("24.04", so that 24.10 is not silently accepted). Both spellings are
+      # compared: distribution_major_version is "24" on Ubuntu 24.04, which used
+      # to reject a supported platform.
+      - >-
+        ansible_facts.distribution_major_version in node_base_supported_os[ansible_facts.distribution]
+        or ansible_facts.distribution_version in node_base_supported_os[ansible_facts.distribution]
       - ansible_facts.architecture in node_base_supported_architectures
     fail_msg: >-
       Unsupported platform. Supported systems are Debian 12, Debian 13 and Ubuntu 24.04 on

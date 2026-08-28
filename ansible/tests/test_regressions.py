@@ -761,3 +761,179 @@ class ProxyCertificateTests(unittest.TestCase):
         certbot = proxy.index("- name: Issue the certificate")
         following = proxy[certbot:proxy.index("- name: Confirm the certificate is now installed")]
         self.assertIn("notify: Reload nginx", following)
+
+
+class DryRunTests(unittest.TestCase):
+    """A --check run must be honest: real reads, no faked verification, no crash.
+
+    Every case here was a run that either failed with an undefined attribute or
+    reported a check it could not have made.
+    """
+
+    def read(self, relative: str) -> str:
+        return (ROOT / relative).read_text(encoding="utf-8")
+
+    def task(self, relative: str, name: str) -> dict:
+        for entry in yaml.safe_load(self.read(relative)):
+            if isinstance(entry, dict) and entry.get("name") == name:
+                return entry
+        self.fail(f"{relative} has no task named {name!r}")
+
+    def test_platform_check_accepts_ubuntu_2404(self) -> None:
+        # ansible_facts.distribution_major_version is "24" on Ubuntu 24.04, so
+        # comparing it with the documented "24.04" rejected a supported platform.
+        import jinja2
+
+        condition = self.task(
+            "roles/node_base/tasks/preflight_node.yml", "Validate supported platform"
+        )["ansible.builtin.assert"]["that"]
+        defaults = yaml.safe_load(self.read("roles/node_base/defaults/main.yml"))
+        environment = jinja2.Environment(undefined=jinja2.StrictUndefined)
+
+        def accepts(distribution: str, major: str, version: str) -> bool:
+            context = {
+                "ansible_facts": {
+                    "distribution": distribution,
+                    "distribution_major_version": major,
+                    "distribution_version": version,
+                    "architecture": "x86_64",
+                },
+                "node_base_supported_os": defaults["node_base_supported_os"],
+                "node_base_supported_architectures": defaults[
+                    "node_base_supported_architectures"
+                ],
+            }
+            return all(
+                environment.from_string("{{ (" + test + ") }}").render(context) == "True"
+                for test in condition
+            )
+
+        self.assertTrue(accepts("Ubuntu", "24", "24.04"))
+        self.assertTrue(accepts("Debian", "12", "12.11"))
+        self.assertTrue(accepts("Debian", "13", "13.0"))
+        self.assertFalse(accepts("Ubuntu", "22", "22.04"))
+        self.assertFalse(accepts("Ubuntu", "24", "24.10"))
+        self.assertFalse(accepts("Debian", "11", "11.9"))
+
+    def test_panel_reads_run_in_check_mode(self) -> None:
+        # Every one of these is a GET. Skipping them in check mode left the next
+        # task dereferencing an empty result.
+        for relative, name in [
+            ("roles/remnawave_panel/tasks/authenticate.yml", "Validate Panel API token"),
+            ("roles/remnawave_panel/tasks/authenticate.yml", "Request RemnaNode SECRET_KEY"),
+            ("roles/remnawave_panel/tasks/profile.yml", "List Config Profiles"),
+            (
+                "roles/remnawave_panel/tasks/profile.yml",
+                "Read reconciled Config Profile and panel-assigned inbound UUIDs",
+            ),
+            ("roles/remnawave_panel/tasks/node.yml", "List Nodes"),
+            ("roles/remnawave_panel/tasks/node.yml", "Read reconciled Node"),
+            ("roles/remnawave_panel/tasks/hosts.yml", "List existing Hosts"),
+            ("roles/remnawave_panel/tasks/hosts.yml", "Re-read Hosts after reconciliation"),
+            ("roles/remnawave_panel/tasks/squad.yml", "List Internal Squads"),
+            ("roles/node_verify/tasks/panel.yml", "Wait until Panel reports Node online"),
+        ]:
+            with self.subTest(task=name):
+                self.assertIs(self.task(relative, name).get("check_mode"), False)
+
+    def test_generated_secrets_are_produced_in_check_mode_too(self) -> None:
+        # Generating a random string changes nothing, so a dry-run may do it and
+        # then validate what it built. Both used to be skipped, leaving the
+        # consumer with an undefined stdout.
+        for relative, name in [
+            (
+                "roles/remnawave_panel/tasks/bridge_identity.yml",
+                "Generate a new bridge secret only for a new service user",
+            ),
+            (
+                "roles/remnawave_panel/tasks/profile.yml",
+                "Generate a Reality short ID when none can be reused",
+            ),
+        ]:
+            with self.subTest(task=name):
+                task = self.task(relative, name)
+                self.assertIs(task.get("check_mode"), False)
+                # The Panel write below is the change, not the generation.
+                self.assertIs(task.get("changed_when"), False)
+
+    def test_object_uuids_prefer_what_the_panel_already_has(self) -> None:
+        # The POST is skipped in check mode, so reading its response first meant
+        # falling back to matches[0] of an empty list.
+        for relative in [
+            "roles/remnawave_panel/tasks/node.yml",
+            "roles/remnawave_panel/tasks/squad.yml",
+            "roles/remnawave_panel/tasks/host_item.yml",
+        ]:
+            with self.subTest(file=relative):
+                text = self.read(relative)
+                self.assertIn("| length > 0\n", text)
+                self.assertIn(".json.response.uuid | default('')", text)
+
+    def test_a_real_run_still_requires_every_uuid(self) -> None:
+        # The empty fallback above must never make a real run pass silently.
+        for relative, name in [
+            ("roles/remnawave_panel/tasks/node.yml", "Require a Node UUID on a real run"),
+            (
+                "roles/remnawave_panel/tasks/squad.yml",
+                "Require an Internal Squad UUID on a real run",
+            ),
+            (
+                "roles/remnawave_panel/tasks/hosts.yml",
+                "Require one reconciled UUID for every declared Host",
+            ),
+        ]:
+            with self.subTest(task=name):
+                self.assertEqual(self.task(relative, name).get("when"), "not ansible_check_mode")
+
+    def test_a_dry_run_stops_instead_of_configuring_an_unregistered_node(self) -> None:
+        main = self.read("roles/remnawave_panel/tasks/main.yml")
+        self.assertIn("remnawave_panel_pending_objects", main)
+        self.assertIn("ansible.builtin.meta: end_host", main)
+        profile = self.read("roles/remnawave_panel/tasks/profile.yml")
+        self.assertIn("End the dry-run for a node that has no Reality key yet", profile)
+
+    def test_certificate_checks_wait_for_a_certificate_to_exist(self) -> None:
+        issue = self.read("roles/remnawave_node/tasks/certificate_issue.yml")
+        plan = self.read("roles/remnawave_node/tasks/certificate.yml")
+        self.assertIn(
+            "when: remnawave_certificate_before_phase.stat.exists or not ansible_check_mode", issue
+        )
+        self.assertIn(
+            "when: remnawave_certificate_file.stat.exists or not ansible_check_mode", plan
+        )
+        # ...and the assert is still there for a real run.
+        self.assertIn("when: not ansible_check_mode", issue)
+        self.assertIn("when: remnawave_certificate_final is not skipped", plan)
+
+    def test_ssh_policy_is_still_proven_when_the_dropin_is_unchanged(self) -> None:
+        # The check must only stand down where this run would have rewritten the
+        # drop-in; on every re-run it has to execute for real.
+        system = self.read("roles/node_base/tasks/system.yml")
+        self.assertIn("register: node_base_ssh_dropin", system)
+        self.assertIn(
+            "when: not (ansible_check_mode and node_base_ssh_dropin is changed)", system
+        )
+
+    def test_acceptance_stands_down_only_for_what_the_run_would_change(self) -> None:
+        local = self.read("roles/node_verify/tasks/local.yml")
+        self.assertIn(
+            "not (ansible_check_mode and node_base_firewall_template.changed | default(false))",
+            local,
+        )
+        # Containers, listeners, logs and the Panel's view stay asserted.
+        self.assertIn("fail_msg: RemnaNode or nginx selfsteal is absent, stopped or unhealthy.", local)
+        self.assertNotIn("ignore_errors", local)
+
+    def test_the_tunnel_probe_is_announced_rather_than_faked(self) -> None:
+        probe = self.read("roles/node_verify/tasks/tunnel_probe.yml")
+        self.assertIn("when: not ansible_check_mode", probe)
+        self.assertIn("Report that a dry-run cannot carry real traffic through the node", probe)
+        # The panel-side preconditions are still checked for real.
+        self.assertIn("check_mode: false", probe)
+
+    def test_no_check_is_disabled_by_brute_force(self) -> None:
+        for path in sorted((ROOT / "roles").rglob("*.yml")):
+            text = path.read_text(encoding="utf-8")
+            with self.subTest(file=str(path.relative_to(ROOT))):
+                self.assertNotIn("ignore_errors: true", text)
+                self.assertNotIn("failed_when: false\n  when: not ansible_check_mode", text)

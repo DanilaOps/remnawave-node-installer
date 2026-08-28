@@ -12,19 +12,37 @@
     lock_timeout: 300
 
 - name: Read the installed nginx version
+  # Reading a version changes nothing, so it runs in check mode too; and on a
+  # host that has no nginx yet it reports nothing instead of failing.
   ansible.builtin.command:
     argv: [nginx, -v]
   register: controller_proxy_nginx_version
   changed_when: false
+  failed_when: false
   check_mode: false
 
-- name: Decide which HTTP/2 syntax this nginx understands
+- name: Work out which nginx the configuration is written for
   # 'http2 on' arrived in 1.25.1. Debian 13 has a newer one, Ubuntu 24.04 does
   # not, and the wrong form is a hard configuration error rather than a warning.
+  # With no nginx yet - only possible in a dry-run, since the package is
+  # installed above - the newer form is assumed and reported as assumed.
   ansible.builtin.set_fact:
-    controller_proxy_http2_directive: >-
-      {{ ((controller_proxy_nginx_version.stderr ~ controller_proxy_nginx_version.stdout)
-          | regex_search('nginx/([0-9.]+)', '\1') | first) is version('1.25.1', '>=') }}
+    controller_proxy_nginx_release: >-
+      {{ (((controller_proxy_nginx_version.stderr | default('')) ~
+           (controller_proxy_nginx_version.stdout | default('')))
+          | regex_search('nginx/([0-9.]+)', '\1')) | default(['1.26.0'], true) | first }}
+
+- name: Choose the HTTP/2 syntax
+  ansible.builtin.set_fact:
+    controller_proxy_http2_directive: "{{ controller_proxy_nginx_release is version('1.25.1', '>=') }}"
+
+- name: Report which nginx the configuration is written for
+  ansible.builtin.debug:
+    msg: >-
+      nginx {{ controller_proxy_nginx_release }}
+      {{ '(assumed: not installed yet in this dry-run)'
+         if controller_proxy_nginx_version.rc | default(1) != 0 else '' }}
+      -> {{ 'http2 on;' if controller_proxy_http2_directive | bool else 'listen ... ssl http2;' }}
 
 - name: Install the WebSocket upgrade map
   ansible.builtin.template:
@@ -126,10 +144,13 @@
   register: controller_proxy_site
 
 - name: Enable the site
+  # force: the target is a file this role owns, and without it a dry-run refuses
+  # to describe the link because the source has only been simulated.
   ansible.builtin.file:
     src: /etc/nginx/sites-available/remnawave-ui.conf
     dest: /etc/nginx/sites-enabled/remnawave-ui.conf
     state: link
+    force: true
   notify: Reload nginx
 
 - name: Disable the distribution's default site

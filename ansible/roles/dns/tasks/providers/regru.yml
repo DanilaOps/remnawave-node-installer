@@ -32,6 +32,8 @@
   become: false
   no_log: true
   changed_when: false
+  # Read-only: it runs in check mode too, so a dry-run sees real state.
+  check_mode: false
 
 - name: Require a successful zone read
   ansible.builtin.assert:

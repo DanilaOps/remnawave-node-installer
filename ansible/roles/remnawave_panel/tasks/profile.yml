@@ -46,6 +46,8 @@
   become: false
   no_log: true
   changed_when: false
+  # Read-only: it runs in check mode too, so a dry-run sees real state.
+  check_mode: false
 
 - name: Select Config Profile candidates
   ansible.builtin.set_fact:
@@ -165,6 +167,26 @@
       {{ reality_rotate_keys | bool or
          (reality_private_key | length == 0 and remnawave_existing_reality.privateKey | default('') | length == 0) }}
 
+- name: Explain why a dry-run cannot go past a node that has no Reality key yet
+  ansible.builtin.debug:
+    msg: >-
+      Dry-run stops after this play: this node has no Reality key in Config Profile
+      '{{ profile_name }}' yet, and one can only be produced by running the pinned RemnaNode image
+      ({{ remnawave_node_image }}) - which a simulation deliberately does not do, so every check
+      below would be measured against a key that does not exist. Everything up to here was checked
+      for real: the inventory, the panel token, the shared Config Profile and its routing, DNS, the
+      platform, the SSH policy and the firewall inputs. Run without --check to install the node;
+      every later --check then walks the whole role. To walk it now, set reality_private_key.
+  when:
+    - ansible_check_mode
+    - remnawave_generate_reality_key | bool
+
+- name: End the dry-run for a node that has no Reality key yet
+  ansible.builtin.meta: end_host
+  when:
+    - ansible_check_mode
+    - remnawave_generate_reality_key | bool
+
 - name: Pull the pinned RemnaNode image for X25519 generation
   community.docker.docker_image:
     name: "{{ remnawave_node_image }}"
@@ -199,7 +221,11 @@
   ansible.builtin.command:
     argv: [openssl, rand, -hex, "8"]
   register: remnawave_short_id_generation
-  changed_when: true
+  # Generating a random string changes nothing; the write to the Config Profile
+  # below is the change. Running it in check mode too is what lets a dry-run
+  # validate the short IDs instead of failing on an empty list.
+  changed_when: false
+  check_mode: false
   no_log: true
   when:
     - reality_rotate_keys | bool or (reality_short_ids | length == 0 and remnawave_existing_reality.shortIds | default([]) | length == 0)
@@ -208,7 +234,7 @@
   ansible.builtin.set_fact:
     remnawave_reality_short_ids: >-
       {{ [remnawave_short_id_generation.stdout | trim]
-         if remnawave_short_id_generation is not skipped | default(false) else
+         if remnawave_short_id_generation is not skipped else
          (reality_short_ids if reality_rotate_keys | bool and reality_short_ids | length > 0 else
           remnawave_existing_reality.shortIds | default(reality_short_ids)) }}
   no_log: true
@@ -434,6 +460,11 @@
   become: false
   no_log: true
   changed_when: false
+  # Read-only: it runs in check mode too, so a dry-run resolves the real inbound
+  # UUIDs and can compare Hosts. Skipped only when there is no profile to read,
+  # which on a real run cannot happen - it was created above.
+  check_mode: false
+  when: remnawave_config_profile_uuid | default('') | length > 0
 
 - name: Confirm the reconciled profile is the one named in inventory
   ansible.builtin.assert:
@@ -442,7 +473,9 @@
     fail_msg: >-
       Reconciled Config Profile is named '{{ remnawave_profile_final.json.response.name }}',
       not '{{ profile_name }}'. Hosts would be published against the wrong Xray JSON.
-  when: profile_uuid | length == 0
+  when:
+    - profile_uuid | length == 0
+    - remnawave_profile_final is not skipped
 
 - name: Require every inbound the shared profile already held to still be there
   # The failure this catches is the dangerous one: a write that succeeds and
@@ -463,6 +496,11 @@
          difference(inbound_prune_tags | default([])) }}
       were in Config Profile '{{ profile_name }}' before this run and are not there now. That is another
       node's traffic. Restore the profile from the panel's history before running anything else.
+  when:
+    - remnawave_profile_final is not skipped
+    # In check mode this read returns the state before the write, so the check
+    # would be vacuous rather than reassuring; it is announced below instead.
+    - not ansible_check_mode
 
 - name: Initialize inbound UUID map
   ansible.builtin.set_fact:
@@ -471,21 +509,44 @@
 - name: Map panel-assigned inbound UUIDs by tag
   ansible.builtin.set_fact:
     remnawave_inbound_uuid_map: "{{ remnawave_inbound_uuid_map | combine({item.tag: item.uuid}) }}"
-  loop: "{{ remnawave_profile_final.json.response.inbounds | default(remnawave_profile_final.json.response.config.inbounds) }}"
+  loop: >-
+    {{ (remnawave_profile_final.json.response.inbounds
+        | default(remnawave_profile_final.json.response.config.inbounds))
+       if remnawave_profile_final is not skipped else [] }}
   loop_control:
     label: "{{ item.tag }}"
+
+- name: Determine which managed inbounds the Panel does not carry yet
+  ansible.builtin.set_fact:
+    remnawave_missing_inbound_tags: >-
+      {{ remnawave_managed_inbound_tags | reject('in', remnawave_inbound_uuid_map) | list }}
 
 - name: Require UUIDs for all managed inbounds
   ansible.builtin.assert:
     that:
-      - item in remnawave_inbound_uuid_map
-    fail_msg: "Panel did not return an inbound UUID for tag {{ item }}."
-  loop: "{{ remnawave_managed_inbound_tags }}"
+      - remnawave_missing_inbound_tags | length == 0
+    fail_msg: >-
+      Panel returned no inbound UUID for tag(s) {{ remnawave_missing_inbound_tags | join(', ') }}
+      after the Config Profile was written.
+  # A dry-run wrote nothing, so an inbound this run would create is legitimately
+  # absent; that case is reported below instead of failing.
+  when: not ansible_check_mode
+
+- name: Report what a dry-run could not verify about the shared Config Profile
+  ansible.builtin.debug:
+    msg: >-
+      Dry-run: nothing was written, so the read above shows the Config Profile as it is now.
+      {{ ('Inbound(s) ' ~ remnawave_missing_inbound_tags | join(', ') ~ ' do not exist yet and a real '
+          ~ 'run would create them. ')
+         if remnawave_missing_inbound_tags | length > 0 else '' }}A real run writes the merged profile
+      and then proves that no other node's inbound disappeared - a check a simulation cannot make.
+  when: ansible_check_mode
 
 - name: Store managed inbound UUIDs and profile change state
   ansible.builtin.set_fact:
     remnawave_managed_inbound_uuids: >-
-      {{ inbound_specs | map(attribute='tag') | map('extract', remnawave_inbound_uuid_map) | list }}
+      {{ inbound_specs | map(attribute='tag') | select('in', remnawave_inbound_uuid_map)
+         | map('extract', remnawave_inbound_uuid_map) | list }}
     remnawave_panel_profile_changed: >-
       {{ remnawave_profile_create is not skipped | default(false) or
          remnawave_profile_update is not skipped | default(false) }}

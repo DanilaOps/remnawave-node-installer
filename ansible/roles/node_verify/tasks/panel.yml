@@ -14,6 +14,10 @@
   become: false
   no_log: true
   changed_when: false
+  # Read-only: it runs in check mode too. Acceptance is the one place where a
+  # dry-run is most useful as it is - it re-checks a node that is already
+  # installed against the Panel instead of reporting nothing.
+  check_mode: false
   retries: "{{ verify_panel_retries }}"
   delay: "{{ verify_panel_delay }}"
   until:
@@ -45,6 +49,8 @@
   become: false
   no_log: true
   changed_when: false
+  # Read-only: it runs in check mode too, so a dry-run sees real state.
+  check_mode: false
 
 - name: Store final Panel resource responses
   ansible.builtin.set_fact:

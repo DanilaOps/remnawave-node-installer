@@ -131,6 +131,9 @@ jobs:
           bash ansible/tests/test_panel_errors.sh
           bash ansible/tests/test_shared_profile_concurrency.sh
 
+      - name: Verify --check --diff is honest before, during and after reconciliation
+        run: bash ansible/tests/test_check_mode_panel.sh
+
       - name: Verify the end-to-end probe is fail-closed and works
         run: bash ansible/tests/test_tunnel_probe.sh
 

@@ -22,6 +22,8 @@
   delegate_to: localhost
   become: false
   changed_when: false
+  # Read-only: it runs in check mode too, so a dry-run sees real state.
+  check_mode: false
 
 - name: Require a non-empty selfsteal page
   ansible.builtin.assert:

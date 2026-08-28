@@ -84,6 +84,18 @@
     - controller_swap_path not in (controller_swap_active.stdout | default(''))
   changed_when: true
 
+- name: Create the fail2ban jail directory
+  # The package creates it, but a dry-run has only simulated the package, and the
+  # template module refuses a destination directory that does not exist. Creating
+  # it explicitly costs nothing and makes the first run order-independent.
+  ansible.builtin.file:
+    path: /etc/fail2ban/jail.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  when: controller_fail2ban_enabled | bool
+
 - name: Configure fail2ban for the controller's own SSH
   ansible.builtin.template:
     src: fail2ban-sshd.local.j2

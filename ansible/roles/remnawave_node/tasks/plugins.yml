@@ -23,6 +23,8 @@
   become: false
   no_log: true
   changed_when: false
+  # Read-only: it runs in check mode too, so a dry-run sees real state.
+  check_mode: false
 
 - name: Match Node Plugin profile
   ansible.builtin.set_fact:

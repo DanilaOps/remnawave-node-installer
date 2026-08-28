@@ -89,11 +89,24 @@
   changed_when: true
   when: remnawave_host_matches | length == 0
 
+- name: Report the Host a dry-run would create
+  ansible.builtin.debug:
+    msg: >-
+      Would create Host '{{ remnawave_host_spec.remark }}' for
+      {{ remnawave_host_spec.address }}:{{ remnawave_host_spec.port }} on inbound
+      {{ remnawave_host_spec.inbound_tag }} - the Panel carries no Host with that identity.
+  when:
+    - ansible_check_mode
+    - remnawave_host_matches | length == 0
+
 - name: Store created or existing Host UUID
   ansible.builtin.set_fact:
+    # Ordered so that a dry-run, where the POST above did not run, still gets a
+    # usable value for an existing Host and an empty one for a Host that would
+    # have been created. A real run is covered by the assert in hosts.yml.
     remnawave_current_host_uuid: >-
-      {{ remnawave_host_create.json.response.uuid
-         if remnawave_host_create is not skipped | default(false) else remnawave_host_matches[0].uuid }}
+      {{ remnawave_host_matches[0].uuid if remnawave_host_matches | length > 0
+         else remnawave_host_create.json.response.uuid | default('') }}
 
 - name: Update Host only when managed fields differ
   ansible.builtin.uri:
@@ -116,10 +129,22 @@
     - remnawave_host_matches | length == 1
     - remnawave_host_needs_update | bool
 
+- name: Report the Host update a dry-run would make
+  ansible.builtin.debug:
+    msg: >-
+      Would update Host '{{ remnawave_host_spec.remark }}' ({{ remnawave_current_host_uuid }}):
+      its managed fields differ from what the Panel holds.
+  when:
+    - ansible_check_mode
+    - remnawave_host_matches | length == 1
+    - remnawave_host_needs_update | bool
+
 - name: Append Host reconciliation result
   ansible.builtin.set_fact:
-    remnawave_host_uuids: "{{ remnawave_host_uuids + [remnawave_current_host_uuid] }}"
+    remnawave_host_uuids: >-
+      {{ remnawave_host_uuids +
+         ([remnawave_current_host_uuid] if remnawave_current_host_uuid | length > 0 else []) }}
     remnawave_panel_hosts_changed: >-
       {{ remnawave_panel_hosts_changed | bool or
-         remnawave_host_create is not skipped | default(false) or
-         remnawave_host_update is not skipped | default(false) }}
+         remnawave_host_matches | length == 0 or
+         remnawave_host_needs_update | bool }}

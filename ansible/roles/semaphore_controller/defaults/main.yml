@@ -47,6 +47,9 @@ semaphore_web_host: >-
 # because an admin created them. These two are the remaining reachable surfaces:
 # password login has to stay on (it is how people log in), and a non-admin must
 # not be able to create projects of their own.
+# Shown instead of a real key when a dry-run cannot generate one. A real run
+# refuses to write it.
+semaphore_key_placeholder: <generated on a real run>
 semaphore_password_login_disable: false
 semaphore_non_admin_can_create_project: false
 

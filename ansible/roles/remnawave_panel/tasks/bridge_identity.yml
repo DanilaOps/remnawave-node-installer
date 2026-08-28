@@ -24,6 +24,8 @@
   become: false
   no_log: true
   changed_when: false
+  # Read-only: it runs in check mode too, so a dry-run sees real state.
+  check_mode: false
 
 - name: Reject a bridge user without a reusable Shadowsocks password
   ansible.builtin.assert:
@@ -37,7 +39,10 @@
   ansible.builtin.command:
     argv: [openssl, rand, -hex, "16"]
   register: remnawave_generated_bridge_secret
-  changed_when: true
+  # Generating a random string on the controller changes nothing on the Panel, so
+  # it may run in check mode too; the POST that creates the user is the change.
+  changed_when: false
+  check_mode: false
   no_log: true
   when:
     - remnawave_bridge_user_lookup.status == 404

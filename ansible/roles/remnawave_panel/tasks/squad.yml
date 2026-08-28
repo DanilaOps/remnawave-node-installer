@@ -14,6 +14,8 @@
   become: false
   no_log: true
   changed_when: false
+  # Read-only: it runs in check mode too, so a dry-run sees real state.
+  check_mode: false
 
 - name: Extract and match Internal Squad
   ansible.builtin.set_fact:
@@ -64,11 +66,31 @@
   changed_when: true
   when: remnawave_squad_matches | length == 0
 
+- name: Report the Internal Squad a dry-run would create
+  ansible.builtin.debug:
+    msg: >-
+      Would create Internal Squad '{{ internal_squad_name }}' with
+      {{ remnawave_squad_desired_inbounds | length }} inbound(s) - the Panel carries no Squad with
+      that name or UUID.
+  when:
+    - ansible_check_mode
+    - remnawave_squad_matches | length == 0
+
 - name: Store Internal Squad UUID
   ansible.builtin.set_fact:
+    # Ordered so that a dry-run, where the POST above did not run, still gets the
+    # UUID of an existing Squad and an empty one for a Squad that would be created.
     remnawave_internal_squad_uuid: >-
-      {{ remnawave_squad_create.json.response.uuid
-         if remnawave_squad_create is not skipped | default(false) else remnawave_squad_matches[0].uuid }}
+      {{ remnawave_squad_matches[0].uuid if remnawave_squad_matches | length > 0
+         else remnawave_squad_create.json.response.uuid | default('') }}
+
+- name: Require an Internal Squad UUID on a real run
+  ansible.builtin.assert:
+    that:
+      - remnawave_internal_squad_uuid | length > 0
+    fail_msg: The Panel returned no Internal Squad UUID, so the Squad was neither found nor created.
+  # A dry-run that would create the Squad legitimately has none yet.
+  when: not ansible_check_mode
 
 - name: Update Internal Squad additively
   ansible.builtin.uri:
@@ -89,6 +111,18 @@
   no_log: true
   changed_when: true
   when:
+    - remnawave_squad_matches | length == 1
+    - remnawave_squad_current_inbounds | sort != remnawave_squad_desired_inbounds | sort
+
+- name: Report the Internal Squad update a dry-run would make
+  ansible.builtin.debug:
+    msg: >-
+      Would add inbound(s)
+      {{ remnawave_squad_desired_inbounds | difference(remnawave_squad_current_inbounds) | join(', ') }}
+      to Internal Squad '{{ internal_squad_name }}' ({{ remnawave_internal_squad_uuid }}); nothing is
+      removed.
+  when:
+    - ansible_check_mode
     - remnawave_squad_matches | length == 1
     - remnawave_squad_current_inbounds | sort != remnawave_squad_desired_inbounds | sort
 

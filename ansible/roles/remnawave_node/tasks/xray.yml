@@ -39,18 +39,35 @@
     owner: root
     group: root
     mode: "0755"
+  # A dry-run only simulates the download and the extraction above, so on a host
+  # without Xray the binary this task would fix does not exist yet.
+  when: not (ansible_check_mode and not remnawave_xray_binary.stat.exists)
 
 - name: Read pinned Xray version
   ansible.builtin.command:
     argv: ["{{ xray_binary_path }}", version]
   register: remnawave_xray_version_output
   changed_when: false
+  # Read-only: it runs in check mode too, so a dry-run verifies the version of an
+  # Xray that is already installed. A real run must still succeed.
+  check_mode: false
+  failed_when:
+    - remnawave_xray_version_output.rc != 0
+    - not ansible_check_mode
+
+- name: Report that a dry-run cannot verify an Xray that is not installed yet
+  ansible.builtin.debug:
+    msg: >-
+      Dry-run: {{ xray_binary_path }} is not installed, so the pinned version
+      {{ xray_version }} cannot be verified. A real run downloads it by checksum first.
+  when: remnawave_xray_version_output.rc | default(1) != 0
 
 - name: Verify exact pinned Xray version
   ansible.builtin.assert:
     that:
       - remnawave_xray_version_output.stdout is match('^Xray ' ~ xray_version ~ ' ')
     fail_msg: "Installed Xray does not match pinned version {{ xray_version }}."
+  when: remnawave_xray_version_output.rc | default(1) == 0
 
 - name: Create state directory
   ansible.builtin.file:

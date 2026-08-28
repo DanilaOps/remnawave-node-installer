@@ -33,6 +33,36 @@
   ansible.builtin.import_tasks: bridge_user.yml
   when: bridge_spec.enabled | default(false) | bool
 
+- name: Collect the Panel objects a dry-run would still have to create
+  ansible.builtin.set_fact:
+    remnawave_panel_pending_objects: >-
+      {{ (['the Node'] if remnawave_node_uuid | length == 0 else []) +
+         (['the Internal Squad'] if remnawave_internal_squad_uuid | length == 0 else []) +
+         (['inbound(s) ' ~ remnawave_missing_inbound_tags | join(', ')]
+          if remnawave_missing_inbound_tags | length > 0 else []) +
+         (['Host(s) ' ~ (host_specs | length - remnawave_host_uuids | length) | string]
+          if remnawave_host_uuids | length < host_specs | length else []) }}
+
+- name: Explain why a dry-run cannot configure a node the Panel has not registered
+  ansible.builtin.debug:
+    msg: >-
+      Dry-run stops after this play: {{ remnawave_panel_pending_objects | join(', ') }} do not exist
+      in the Panel yet, so the node's own configuration would be rendered against identifiers the
+      Panel has not issued and every check on it would be meaningless. Everything above was checked
+      for real: the Panel token, the shared Config Profile and its routing, the ownership of every
+      inbound tag, DNS, the platform, the SSH policy and the firewall inputs. Run without --check to
+      register the node; every later --check then walks the whole run, including nginx, the
+      certificate, the container and verification.
+  when:
+    - ansible_check_mode
+    - remnawave_panel_pending_objects | length > 0
+
+- name: End the dry-run for a node the Panel has not registered
+  ansible.builtin.meta: end_host
+  when:
+    - ansible_check_mode
+    - remnawave_panel_pending_objects | length > 0
+
 - name: Publish Panel reconciliation facts
   ansible.builtin.set_stats:
     data:

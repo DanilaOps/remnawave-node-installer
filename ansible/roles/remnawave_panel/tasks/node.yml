@@ -3,7 +3,9 @@
   ansible.builtin.set_fact:
     remnawave_node_active_inbounds: >-
       {{ remnawave_managed_inbound_uuids +
-         ([remnawave_inbound_uuid_map[bridge_spec.tag]] if bridge_spec.enabled | default(false) | bool else []) }}
+         ([remnawave_inbound_uuid_map[bridge_spec.tag]]
+          if bridge_spec.enabled | default(false) | bool and bridge_spec.tag in remnawave_inbound_uuid_map
+          else []) }}
 
 - name: List Nodes
   ansible.builtin.uri:
@@ -20,6 +22,8 @@
   become: false
   no_log: true
   changed_when: false
+  # Read-only: it runs in check mode too, so a dry-run sees real state.
+  check_mode: false
 
 - name: Match Node by stable name, then by address
   ansible.builtin.set_fact:
@@ -83,11 +87,30 @@
   changed_when: true
   when: remnawave_node_matches | length == 0
 
+- name: Report the Node a dry-run would create
+  ansible.builtin.debug:
+    msg: >-
+      Would create Node '{{ node_name }}' at {{ node_public_ip }}:{{ remnawave_node_port }}
+      ({{ node_country | upper }}) - the Panel carries no Node with that name or address.
+  when:
+    - ansible_check_mode
+    - remnawave_node_matches | length == 0
+
 - name: Store created or existing Node UUID
   ansible.builtin.set_fact:
+    # Ordered so that a dry-run, where the POST above did not run, still gets the
+    # UUID of an existing Node and an empty one for a Node that would be created.
     remnawave_node_uuid: >-
-      {{ remnawave_node_create.json.response.uuid
-         if remnawave_node_create is not skipped | default(false) else remnawave_node_matches[0].uuid }}
+      {{ remnawave_node_matches[0].uuid if remnawave_node_matches | length > 0
+         else remnawave_node_create.json.response.uuid | default('') }}
+
+- name: Require a Node UUID on a real run
+  ansible.builtin.assert:
+    that:
+      - remnawave_node_uuid | length > 0
+    fail_msg: The Panel returned no Node UUID, so the Node was neither found nor created.
+  # A dry-run that would create the Node legitimately has none yet.
+  when: not ansible_check_mode
 
 - name: Update Node only when managed fields differ
   ansible.builtin.uri:
@@ -110,6 +133,16 @@
     - remnawave_node_matches | length == 1
     - remnawave_node_needs_update | bool
 
+- name: Report the Node update a dry-run would make
+  ansible.builtin.debug:
+    msg: >-
+      Would update Node '{{ node_name }}' ({{ remnawave_node_uuid }}): its name, address, port,
+      country or active inbounds differ from what the Panel holds.
+  when:
+    - ansible_check_mode
+    - remnawave_node_matches | length == 1
+    - remnawave_node_needs_update | bool
+
 - name: Read reconciled Node
   ansible.builtin.uri:
     url: "{{ remnawave_api_base }}/nodes/{{ remnawave_node_uuid }}"
@@ -125,6 +158,10 @@
   become: false
   no_log: true
   changed_when: false
+  # Read-only: it runs in check mode too. Skipped only when there is no Node to
+  # read, which on a real run the assert above has already ruled out.
+  check_mode: false
+  when: remnawave_node_uuid | length > 0
 
 - name: Verify Node profile and active inbound links
   ansible.builtin.assert:
@@ -134,4 +171,16 @@
         remnawave_node_active_inbounds | difference(
           remnawave_node_final.json.response.configProfile.activeInbounds | remnawave_uuid_list) | length == 0
     fail_msg: Panel did not retain the expected Config Profile or active inbounds on the Node.
+  when:
+    - remnawave_node_final is not skipped
+    # In check mode this read shows the Node before the patch, so a Node that
+    # legitimately still needs one would fail this. Reported below instead.
+    - not ansible_check_mode
+
+- name: Report what a dry-run could not verify about the Node
+  ansible.builtin.debug:
+    msg: >-
+      Dry-run: nothing was written, so the Node's Config Profile and active inbound links are not
+      proven. A real run creates or patches the Node and then reads it back to prove them.
+  when: ansible_check_mode
 

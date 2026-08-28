@@ -127,6 +127,44 @@ is still validated against what sshd reports. Every branch of that resolution is
 covered by `ansible/tests/management_cidrs.yml`, including the one that matters:
 an explicit list that would lock the controller out is refused, not applied.
 
+## What a dry-run really tells you
+
+`--check --diff` is meant to be pressed before a real run, so it is built to be
+honest rather than merely quiet. Reads run for real in a dry-run: the panel is
+queried, the Config Profile and its inbound UUIDs are resolved, DNS is resolved
+from the node, `sshd -T`, `ss` and `nft` are read, the containers are inspected
+and the public selfsteal page is fetched. Writes are not made, and nothing that
+depends on a write is reported as proven.
+
+That gives three honest outcomes rather than one:
+
+* **A node the panel already carries.** The dry-run walks the whole run and is a
+  full health check: it says which Hosts, inbounds and Node fields it would
+  change, and every acceptance check that does not depend on this run's own
+  writes really executes.
+* **A node that exists but whose firewall ruleset or certificate this run would
+  rewrite.** Those two acceptance checks stand down — verifying live state
+  against a change the dry-run was not allowed to apply would report a failure
+  the same run is about to fix — and say so in the output. Everything else is
+  still asserted.
+* **A node the panel has never seen.** The run stops at the end of the panel
+  play with one message naming what is missing (the Node, the Internal Squad,
+  the inbound, the Hosts) instead of rendering the node's configuration against
+  identifiers the panel has not issued. Everything before that point — the
+  token, the shared profile and its routing, the ownership of every inbound tag,
+  DNS, the platform, the SSH policy, the firewall inputs — was checked for real.
+
+The end-to-end tunnel probe is never simulated: it is announced as not executed,
+because a probe that reports success without carrying a packet is worse than no
+probe.
+
+Two tests keep this true. `ansible/tests/test_check_mode.py` fails the build if
+any task registers a result from a module Ansible skips in check mode and a
+later task reads it without a guard — the exact bug that used to surface as an
+undefined attribute halfway through a run. `ansible/tests/test_check_mode_panel.sh`
+runs a dry-run against the mock panel before, during and after reconciliation and
+requires the last one to report no change at all.
+
 ## Roles and execution order
 
 `install_node.yml` contains no deployment tasks. It is three plays, in the only

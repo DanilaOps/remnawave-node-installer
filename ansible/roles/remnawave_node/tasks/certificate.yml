@@ -103,6 +103,21 @@
   loop_control:
     loop_var: remnawave_certificate_phase
 
+# The three checks below judge a certificate on disk. A dry-run did not let
+# certbot run, so on a node that has none there is nothing to judge; the fact is
+# reported once instead of failing three times. A node that already has a
+# certificate is checked for real in a dry-run as well.
+- name: Report that a dry-run cannot check a certificate that does not exist yet
+  ansible.builtin.debug:
+    msg: >-
+      Dry-run: {{ certificate_name }} has no certificate on this node and certbot was not run, so
+      the file, the private key and the issuer cannot be checked. A real run issues the certificate
+      and then requires it to match certificate_acme_target_environment
+      ({{ certificate_acme_target_environment | trim }}).
+  when:
+    - ansible_check_mode
+    - not remnawave_certificate_file.stat.exists
+
 - name: Verify certificate and private key exist
   ansible.builtin.stat:
     path: "{{ item }}"
@@ -111,11 +126,13 @@
     - "/etc/letsencrypt/live/{{ certificate_name }}/privkey.pem"
   register: remnawave_certificate_artifacts
   failed_when: not remnawave_certificate_artifacts.stat.exists
+  when: remnawave_certificate_file.stat.exists or not ansible_check_mode
 
 - name: Re-inspect the installed certificate
   community.crypto.x509_certificate_info:
     path: "/etc/letsencrypt/live/{{ certificate_name }}/fullchain.pem"
   register: remnawave_certificate_final
+  when: remnawave_certificate_file.stat.exists or not ansible_check_mode
 
 - name: Require the installed certificate to match the target ACME environment
   ansible.builtin.assert:
@@ -130,3 +147,4 @@
       '{{ remnawave_certificate_final.issuer.commonName | default('unknown') }}', which does not match
       certificate_acme_target_environment={{ certificate_acme_target_environment | trim }}. A staging
       certificate is not trusted by clients and must never be left on a production node.
+  when: remnawave_certificate_final is not skipped

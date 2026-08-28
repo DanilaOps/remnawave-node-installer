@@ -18,6 +18,8 @@
   become: false
   no_log: true
   changed_when: false
+  # Read-only: it runs in check mode too, so a dry-run sees real state.
+  check_mode: false
   retries: "{{ remnawave_api_retries }}"
   delay: "{{ remnawave_api_delay }}"
   until: remnawave_auth_check.status == 200
@@ -75,6 +77,9 @@
   become: false
   no_log: true
   changed_when: false
+  # A GET that mints nothing on the Panel, so a dry-run may ask for it and prove
+  # the token really carries the Keygen scope instead of failing on an empty key.
+  check_mode: false
   when:
     - remnawave_secret_key_override | length == 0
     - (remnawave_rotate_node_secret_key | bool) or (remnawave_existing_secret_keys | default([]) | length == 0)

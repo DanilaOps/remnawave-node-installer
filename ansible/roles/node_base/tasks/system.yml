@@ -17,12 +17,16 @@
     argv: [findmnt, -n, -o, SOURCE, /]
   register: node_base_root_source
   changed_when: false
+  # Read-only: it runs in check mode too, so a dry-run sees real state.
+  check_mode: false
 
 - name: Resolve the parent disk of the root filesystem
   ansible.builtin.command:
     argv: [lsblk, -n, -o, PKNAME, "{{ node_base_root_source.stdout | trim }}"]
   register: node_base_root_parent_disk
   changed_when: false
+  # Read-only: it runs in check mode too, so a dry-run sees real state.
+  check_mode: false
 
 - name: Detect EFI boot mode
   ansible.builtin.stat:
@@ -35,6 +39,8 @@
   register: node_base_grub_pc_status
   changed_when: false
   failed_when: node_base_grub_pc_status.rc not in [0, 1]
+  # Read-only: it runs in check mode too, so a dry-run sees real state.
+  check_mode: false
 
 - name: Validate the detected BIOS boot disk
   ansible.builtin.assert:
@@ -149,6 +155,7 @@
     owner: root
     group: root
     mode: "0644"
+  register: node_base_ssh_dropin
   notify: Restart SSH
 
 - name: Validate the complete SSH daemon configuration
@@ -161,6 +168,8 @@
     argv: [/usr/sbin/sshd, -T]
   register: node_base_sshd_effective_config
   changed_when: false
+  # Read-only: it runs in check mode too, so a dry-run sees real state.
+  check_mode: false
 
 - name: Verify the requested SSH authentication policy is effective
   ansible.builtin.assert:
@@ -175,6 +184,21 @@
     fail_msg: >-
       The effective sshd policy does not match node_ssh_allow_root_password.
       Check earlier vendor or cloud-init SSH configuration files before continuing.
+  # In a dry-run the drop-in above was not written and sshd was not reloaded, so
+  # what was read is the policy before the change. Where the drop-in is already
+  # in place - every re-run - the check still runs for real.
+  when: not (ansible_check_mode and node_base_ssh_dropin is changed)
+
+- name: Report that a dry-run cannot prove the SSH policy it would install
+  ansible.builtin.debug:
+    msg: >-
+      Dry-run: /etc/ssh/sshd_config.d/00-remnawave.conf would be written and sshd reloaded, so the
+      effective policy read above is still the old one. A real run installs the drop-in, reloads sshd
+      and then proves that PasswordAuthentication and PermitRootLogin match
+      node_ssh_allow_root_password ({{ node_ssh_allow_root_password }}).
+  when:
+    - ansible_check_mode
+    - node_base_ssh_dropin is changed
 
 - name: Check whether a reboot is required
   ansible.builtin.stat:
