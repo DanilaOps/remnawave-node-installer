@@ -87,9 +87,18 @@ for config in "$work/nginx.conf" "$work/controller-ui.conf"; do
   label="$(basename "$config")"
   if docker info >/dev/null 2>&1; then
     echo "validating $label with the pinned image ($image)"
+    # The workspace stays read-only so the container cannot touch the rendered
+    # files, but "nginx -t" opens error_log and access_log for writing before it
+    # reports success. A tmpfs over the log directory alone is the smallest
+    # writable surface that satisfies it: no host path becomes writable, and the
+    # workspace is left exactly as this script built it. Nothing else needs to be
+    # writable - the pid file and the proxy/client temp paths live under the
+    # image's own writable layer, not under $work, and "nginx -t" does not create
+    # them anyway.
     docker run --rm \
       --volume "$config:/etc/nginx/nginx.conf:ro" \
       --volume "$work:$work:ro" \
+      --tmpfs "$work/logs" \
       "$image" nginx -t
   elif command -v nginx >/dev/null 2>&1; then
     echo "validating $label with the local nginx binary"
