@@ -138,14 +138,20 @@ grep -Eq 'changed=0([[:space:]]|$)' "$output" || {
 # 10. Reconciling an existing node keeps its identity. The reconcile path derives
 #     the name from the inventory hostname and never asks the allocator, so a
 #     second run of tr01 is TR-01 again - not "TR-01 exists, so TR-02 is next".
-node_env="$(mktemp)"; rm -f "$node_env"
-trap 'kill "${server_pid:-}" 2>/dev/null || true; rm -f "$state" "$output" "$node_env"' EXIT
+# The role hardens the directory of the identity file to 0700 and one owner, so
+# the fixture gives it a directory of its own inside a workspace this test
+# created. A bare mktemp file would make that directory /tmp itself.
+node_work="$(mktemp -d)"
+node_env="$node_work/identity/.env"
+trap 'kill "${server_pid:-}" 2>/dev/null || true; rm -rf "$state" "$output" "$node_work"' EXIT
 
 reconcile() {
   ANSIBLE_CONFIG="$repo/ansible.cfg" ansible-playbook \
     -i localhost, -c local "$root/tests/panel_idempotency.yml" \
     -e remnawave_panel_url=http://127.0.0.1:18083 \
     -e test_node_env_path="$node_env" \
+    -e "remnawave_node_identity_owner=$(id -un)" \
+    -e "remnawave_node_identity_group=$(id -gn)" \
     -e node_id=tr_01 -e node_name=TR-01 -e profile_name=TR-01 \
     -e config_profile_create=true -e node_country=TR \
     -e xray_json_template_name= \

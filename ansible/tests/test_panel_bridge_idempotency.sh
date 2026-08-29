@@ -6,12 +6,14 @@ repo="$(cd "$root/.." && pwd)"
 state="$(mktemp)"
 first="$(mktemp)"
 second="$(mktemp)"
-node_env="$(mktemp)"
-rm -f "$node_env"
-
+# The role hardens the directory of the identity file to 0700 and one owner, so
+# the fixture gives it a directory of its own inside a workspace this test
+# created. A bare mktemp file would make that directory /tmp itself.
+node_work="$(mktemp -d)"
+node_env="$node_work/identity/.env"
 cleanup() {
   kill "${server_pid:-}" 2>/dev/null || true
-  rm -f "$state" "$first" "$second" "$node_env"
+  rm -rf "$state" "$first" "$second" "$node_work"
 }
 trap cleanup EXIT
 
@@ -35,6 +37,8 @@ for output in "$first" "$second"; do
     -i localhost, -c local "$root/tests/panel_idempotency.yml" \
     -e remnawave_panel_url=http://127.0.0.1:18082 \
     -e test_node_env_path="$node_env" \
+    -e "remnawave_node_identity_owner=$(id -un)" \
+    -e "remnawave_node_identity_group=$(id -gn)" \
     -e @"$root/tests/bridge_vars.yml" | tee "$output"
 done
 

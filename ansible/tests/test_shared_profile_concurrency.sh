@@ -43,7 +43,9 @@ run_panel_role() { # run_panel_role <logfile> [extra ansible args...]
   local log="$1"; shift
   ANSIBLE_CONFIG="$repo/ansible.cfg" ansible-playbook \
     -i localhost, -c local "$root/tests/panel_idempotency.yml" \
-    -e test_node_env_path="$work/node.env" "$@" >"$log" 2>&1
+    -e test_node_env_path="$work/identity/node.env" \
+    -e "remnawave_node_identity_owner=$(id -un)" \
+    -e "remnawave_node_identity_group=$(id -gn)" "$@" >"$log" 2>&1
 }
 
 # --- 1. a concurrent writer must not be overwritten -------------------------

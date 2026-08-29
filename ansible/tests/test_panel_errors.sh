@@ -5,13 +5,15 @@ root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 repo="$(cd "$root/.." && pwd)"
 state="$(mktemp)"
 output="$(mktemp)"
-node_env="$(mktemp)"
+# The role hardens the directory of the identity file to 0700 and one owner, so
+# the fixture gives it a directory of its own inside a workspace this test
+# created. A bare mktemp file would make that directory /tmp itself.
+node_work="$(mktemp -d)"
+node_env="$node_work/identity/.env"
 rm -f "$state"
-rm -f "$node_env"
-
 cleanup() {
   kill "${server_pid:-}" 2>/dev/null || true
-  rm -f "$state" "$output" "$node_env"
+  rm -rf "$state" "$output" "$node_work"
 }
 trap cleanup EXIT
 
@@ -28,7 +30,9 @@ expect_failure() {
   if ANSIBLE_CONFIG="$repo/ansible.cfg" ansible-playbook \
     -i localhost, -c local "$root/tests/panel_idempotency.yml" \
     -e remnawave_panel_url=http://127.0.0.1:18081 \
-    -e test_node_env_path="$node_env" "$@" >"$output" 2>&1; then
+    -e test_node_env_path="$node_env" \
+    -e "remnawave_node_identity_owner=$(id -un)" \
+    -e "remnawave_node_identity_group=$(id -gn)" "$@" >"$output" 2>&1; then
     echo "Expected $label deployment to fail" >&2
     cat "$output" >&2
     exit 1

@@ -111,12 +111,28 @@
     fail_msg: Panel keygen returned no secretKey; grant Keygen scope or provide remnawave_secret_key_override securely.
   no_log: true
 
+- name: Refuse to harden a shared directory as the node identity directory
+  # The task below makes this directory 0700 and owned by one account. Pointed at
+  # a directory other things share - most easily by an env path like /tmp/xyz,
+  # whose dirname is /tmp - it would take the system's scratch directory away
+  # from every other process on the machine. As root that succeeds silently,
+  # which is the worst of the two outcomes.
+  ansible.builtin.assert:
+    that:
+      - remnawave_node_env_path | dirname not in remnawave_node_identity_forbidden_dirs
+    fail_msg: >-
+      remnawave_node_env_path is '{{ remnawave_node_env_path }}', so its directory is
+      '{{ remnawave_node_env_path | dirname }}' - a directory the whole system shares. This run
+      would make it 0700 and owned by {{ remnawave_node_identity_owner }}. Point
+      remnawave_node_env_path at a directory of its own, such as
+      '{{ remnawave_node_env_path | dirname }}/remnawave-identity/.env'.
+
 - name: Create the protected RemnaNode identity directory
   ansible.builtin.file:
     path: "{{ remnawave_node_env_path | dirname }}"
     state: directory
-    owner: root
-    group: root
+    owner: "{{ remnawave_node_identity_owner }}"
+    group: "{{ remnawave_node_identity_group }}"
     mode: "0700"
 
 - name: Persist RemnaNode identity before further Panel mutations
@@ -125,8 +141,8 @@
       NODE_PORT={{ remnawave_node_port }}
       SECRET_KEY={{ remnawave_node_secret_key }}
     dest: "{{ remnawave_node_env_path }}"
-    owner: root
-    group: root
+    owner: "{{ remnawave_node_identity_owner }}"
+    group: "{{ remnawave_node_identity_group }}"
     mode: "0600"
   no_log: true
   diff: false

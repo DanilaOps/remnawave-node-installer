@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import pathlib
+import re
 import unittest
 
 import yaml
@@ -1220,3 +1221,125 @@ class NoProfileTemplateConfusionTests(unittest.TestCase):
         settings = yaml.safe_load(example)
         self.assertEqual("August Default", settings["xray_json_template_name"])
         self.assertNotIn("profile_name", settings)
+
+
+class IdentityDirectoryTests(unittest.TestCase):
+    """The identity directory is hardened, so it must be a directory of its own.
+
+    A fixture that passed the role a bare `mktemp` file made the directory it
+    hardens `/tmp`: as an unprivileged CI user that fails with `Operation not
+    permitted: b'/tmp'`, and as root it succeeds and takes the machine's scratch
+    directory away from everything else running on it. The second outcome is the
+    dangerous one, because nothing reports it.
+    """
+
+    SHARED_ROOTS = ["/", "/tmp", "/var/tmp", "/dev/shm", "/run", "/home", "/root", "/etc"]
+
+    def read(self, relative: str) -> str:
+        return (ROOT / relative).read_text(encoding="utf-8")
+
+    def test_the_role_still_wants_root_on_a_node(self) -> None:
+        defaults = yaml.safe_load(self.read("roles/remnawave_panel/defaults/main.yml"))
+        self.assertEqual("root", defaults["remnawave_node_identity_owner"])
+        self.assertEqual("root", defaults["remnawave_node_identity_group"])
+        for root in self.SHARED_ROOTS:
+            with self.subTest(directory=root):
+                self.assertIn(root, defaults["remnawave_node_identity_forbidden_dirs"])
+
+    def test_no_production_variable_file_overrides_the_owner(self) -> None:
+        # Production takes root ownership. Only a test may say otherwise, and
+        # then only for its own scratch copy.
+        for path in sorted(GROUP_VARS.rglob("*.yml")) + [
+            ROOT / "examples" / "fleet.yml.example",
+            ROOT / "examples" / "secrets.yml.example",
+        ]:
+            with self.subTest(file=str(path.relative_to(ROOT))):
+                self.assertNotIn("remnawave_node_identity_owner", path.read_text(encoding="utf-8"))
+
+    def test_the_shared_directory_guard_actually_rejects_a_temp_file(self) -> None:
+        import jinja2
+
+        task = next(
+            entry
+            for entry in yaml.safe_load(self.read("roles/remnawave_panel/tasks/authenticate.yml"))
+            if entry.get("name") == "Refuse to harden a shared directory as the node identity directory"
+        )
+        condition = task["ansible.builtin.assert"]["that"][0]
+        defaults = yaml.safe_load(self.read("roles/remnawave_panel/defaults/main.yml"))
+        environment = jinja2.Environment(undefined=jinja2.StrictUndefined)
+        environment.filters["dirname"] = lambda value: str(pathlib.PurePosixPath(value).parent)
+
+        def accepted(env_path: str) -> bool:
+            return environment.from_string("{{ " + condition + " }}").render(
+                remnawave_node_env_path=env_path,
+                remnawave_node_identity_forbidden_dirs=defaults[
+                    "remnawave_node_identity_forbidden_dirs"
+                ],
+            ) == "True"
+
+        # What production uses, and what a well-made fixture uses.
+        self.assertTrue(accepted("/opt/remnawave-node/remnanode/.env"))
+        self.assertTrue(accepted("/etc/remnawave/node.env"))
+        self.assertTrue(accepted("/tmp/tmp.abc123/identity/.env"))
+        # What broke CI, and the shapes next to it.
+        self.assertFalse(accepted("/tmp/tmp.abc123"))
+        self.assertFalse(accepted("/var/tmp/x"))
+        self.assertFalse(accepted("/root/.env"))
+        self.assertFalse(accepted("/etc/node.env"))
+
+    def test_no_fixture_hands_the_role_a_bare_temp_file(self) -> None:
+        offenders = []
+        for path in sorted((ROOT / "tests").glob("*.sh")):
+            text = path.read_text(encoding="utf-8")
+            if "test_node_env_path" not in text:
+                continue
+            for number, line in enumerate(text.splitlines(), start=1):
+                stripped = line.strip()
+                if stripped.startswith("node_env=") and "mktemp -d" not in stripped:
+                    # It must build the path under a directory the test made, so
+                    # the directory the role hardens belongs to the test.
+                    if not re.search(r'node_env="\$\w+/', stripped):
+                        offenders.append(f"{path.relative_to(ROOT)}:{number}: {stripped}")
+                if "test_node_env_path=" in stripped and '"$' not in stripped:
+                    offenders.append(
+                        f"{path.relative_to(ROOT)}:{number}: an absolute identity path: {stripped}"
+                    )
+        self.assertEqual([], offenders, "\n" + "\n".join(offenders))
+
+    def test_no_test_playbook_writes_to_a_fixed_shared_path(self) -> None:
+        # The same shape as the identity bug, one level up: a fixed name in a
+        # directory the whole machine shares. Two users running the suite on one
+        # machine collide, and the second one fails on a rename it may not make.
+        offenders = []
+        for path in sorted((ROOT / "tests").glob("*.yml")):
+            for number, line in enumerate(
+                path.read_text(encoding="utf-8").splitlines(), start=1
+            ):
+                for root in ("/tmp/", "/var/tmp/", "/dev/shm/", "/run/"):
+                    if root in line and "render_dir" not in line and not line.strip().startswith("#"):
+                        offenders.append(f"{path.relative_to(ROOT)}:{number}: {line.strip()}")
+        self.assertEqual([], offenders, "\n" + "\n".join(offenders))
+
+    def test_the_render_workspace_is_what_ci_validates(self) -> None:
+        # The workflow reads two rendered rulesets back with nft, so the path it
+        # passes in and the path the playbook writes to have to stay one thing.
+        workflow = (REPO / ".github" / "workflows" / "qa.yml").read_text(encoding="utf-8")
+        self.assertIn("-e render_output_dir=", workflow)
+        self.assertIn('"$render_dir/remnawave-filter-test.nft"', workflow)
+        self.assertIn('"$render_dir/remnawave-controller-test.nft"', workflow)
+        playbook = self.read("tests/render_templates.yml")
+        self.assertIn("render_output_dir | default(render_workspace.path, true)", playbook)
+        for name in ("remnawave-filter-test.nft", "remnawave-controller-test.nft"):
+            with self.subTest(file=name):
+                self.assertIn("{{ render_dir }}/" + name, playbook)
+
+    def test_every_fixture_owns_the_identity_it_asks_for(self) -> None:
+        # The suite runs unprivileged in CI: a fixture that leaves the owner at
+        # root cannot chown its own scratch directory and stops the run.
+        for path in sorted((ROOT / "tests").glob("*.sh")):
+            text = path.read_text(encoding="utf-8")
+            if "test_node_env_path" not in text:
+                continue
+            with self.subTest(file=str(path.relative_to(ROOT))):
+                self.assertIn("remnawave_node_identity_owner=$(id -un)", text)
+                self.assertIn("remnawave_node_identity_group=$(id -gn)", text)

@@ -105,9 +105,12 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq nftables
-          ansible-playbook -i localhost, -c local ansible/tests/render_templates.yml
-          sudo nft -c -f /tmp/remnawave-filter-test.nft
-          sudo nft -c -f /tmp/remnawave-controller-test.nft
+          render_dir="$RUNNER_TEMP/remnawave-render"
+          mkdir -p "$render_dir"
+          ansible-playbook -i localhost, -c local ansible/tests/render_templates.yml \
+            -e render_output_dir="$render_dir"
+          sudo nft -c -f "$render_dir/remnawave-filter-test.nft"
+          sudo nft -c -f "$render_dir/remnawave-controller-test.nft"
 
       - name: Run Ansible lint
         run: ansible-lint

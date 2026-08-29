@@ -6,12 +6,14 @@ repo="$(cd "$root/.." && pwd)"
 state="$(mktemp)"
 first="$(mktemp)"
 second="$(mktemp)"
-node_env="$(mktemp)"
-rm -f "$node_env"
-
+# The role hardens the directory of the identity file to 0700 and one owner, so
+# the fixture gives it a directory of its own inside a workspace this test
+# created. A bare mktemp file would make that directory /tmp itself.
+node_work="$(mktemp -d)"
+node_env="$node_work/identity/.env"
 cleanup() {
   kill "${server_pid:-}" 2>/dev/null || true
-  rm -f "$state" "$first" "$second" "$node_env"
+  rm -rf "$state" "$first" "$second" "$node_work"
 }
 trap cleanup EXIT
 
@@ -29,10 +31,14 @@ done
 
 ANSIBLE_CONFIG="$repo/ansible.cfg" ansible-playbook \
   -i localhost, -c local "$root/tests/panel_idempotency.yml" \
-  -e test_node_env_path="$node_env" | tee "$first"
+  -e test_node_env_path="$node_env" \
+  -e "remnawave_node_identity_owner=$(id -un)" \
+  -e "remnawave_node_identity_group=$(id -gn)" | tee "$first"
 ANSIBLE_CONFIG="$repo/ansible.cfg" ansible-playbook \
   -i localhost, -c local "$root/tests/panel_idempotency.yml" \
-  -e test_node_env_path="$node_env" | tee "$second"
+  -e test_node_env_path="$node_env" \
+  -e "remnawave_node_identity_owner=$(id -un)" \
+  -e "remnawave_node_identity_group=$(id -gn)" | tee "$second"
 
 grep -Eq 'changed=0([[:space:]]|$)' "$second" || {
   echo "Second Panel reconciliation was not idempotent" >&2

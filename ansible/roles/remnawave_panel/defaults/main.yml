@@ -7,6 +7,28 @@ remnawave_adopt_existing_profile: false
 remnawave_validate_xray_profile: true
 remnawave_secret_key_override: ""
 remnawave_node_env_path: "{{ remnawave_node_dir | default('/opt/remnawave-node/remnanode') }}/.env"
+# Who owns the file that holds the node's SECRET_KEY. root on a node, and the
+# role is written for a node - these exist so that a run against something that
+# is not a node (the mock-panel tests, which reconcile the Panel from an
+# unprivileged account and have no node at all) can own its own scratch copy
+# instead of demanding an ownership it cannot take. Production never sets them.
+remnawave_node_identity_owner: root
+remnawave_node_identity_group: root
+# Directories the whole system shares, which must never become the 0700
+# single-owner identity directory. Only the roots themselves: a directory *under*
+# any of them is a fine place for it.
+remnawave_node_identity_forbidden_dirs:
+  - /
+  - /tmp
+  - /var/tmp
+  - /dev/shm
+  - /run
+  - /home
+  - /root
+  - /etc
+  - /usr
+  - /var
+  - /opt
 remnawave_rotate_node_secret_key: false
 
 # One shared Config Profile carries the Xray JSON (including routing) that every
