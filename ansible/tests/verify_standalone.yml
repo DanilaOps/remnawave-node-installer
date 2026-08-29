@@ -63,7 +63,11 @@
           - remnawave_host_uuids | length == host_specs | length
           - remnawave_managed_inbound_uuids | length == inbound_specs | length
           - remnawave_xray_json_template_uuid | length > 0
-          - remnawave_reality_private_key | length > 0
-          - remnawave_reality_short_ids | length > 0
+          # Not just "non-empty": the key acceptance resolved has to be the
+          # one the reconciler actually published for THIS node's inbound.
+          - remnawave_reality_private_key == test_expected_reality_key
+          - remnawave_reality_short_ids == test_expected_short_ids
+          - remnawave_inbound_uuid_map[inbound_specs[0].tag] | length > 0
+          - remnawave_managed_inbound_uuids == [remnawave_inbound_uuid_map[inbound_specs[0].tag]]
           - not (subscription_refresh_required | bool)
         fail_msg: standalone acceptance left a Panel reference unresolved

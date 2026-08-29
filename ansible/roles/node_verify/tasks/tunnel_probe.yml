@@ -90,6 +90,11 @@
         dest: "{{ verify_probe_workdir }}/remnawave-probe-{{ node_id }}.json"
         mode: "0600"
       no_log: true
+      # Acceptance changes nothing. This file is the probe's own scratch client
+      # configuration on the controller, written and removed inside this block,
+      # and reporting it as a change made every single run of an unchanged node
+      # end in "changed", which is what an operator reads as drift.
+      changed_when: false
 
     - name: Start the probe client
       ansible.builtin.command:
@@ -176,3 +181,6 @@
       ansible.builtin.file:
         path: "{{ verify_probe_workdir }}/remnawave-probe-{{ node_id }}.json"
         state: absent
+      # Removing the scratch file this block created is not a change to the
+      # node either; see the render task above.
+      changed_when: false

@@ -294,6 +294,15 @@ class OperatorWorkflowTests(unittest.TestCase):
             yaml.safe_load(identity)["node_public_ip"], "{{ ansible_host }}"
         )
 
+    def test_the_mock_panel_returns_the_live_inbound_shape(self) -> None:
+        # CI let a resolver through that only understood the flat Xray shape,
+        # because the fixture returned the flat shape too. The panel's inbound
+        # index nests the inbound under rawInbound, and the fixture has to keep
+        # doing the same or it stops being able to catch that class again.
+        mock = self.read("tests/mock_panel.py")
+        self.assertIn('"rawInbound": raw', mock)
+        self.assertIn("def inbound_index_entry", mock)
+
     def test_standalone_acceptance_resolves_the_panel_itself(self) -> None:
         # "03 - Verify Node" is its own Ansible run: the facts the reconciler
         # set with set_fact are gone. Acceptance must resolve every Panel

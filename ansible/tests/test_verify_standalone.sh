@@ -69,9 +69,26 @@ normalized() {
 }
 before="$(normalized "$state")"
 
+# What the reconciler actually published for this node's inbound. Acceptance
+# has to resolve exactly this, not merely something non-empty.
+expected_key="$(python3 -c "
+import json,sys
+state=json.load(open(sys.argv[1]))
+inbound=[i for p in state['profiles'] for i in p['config']['inbounds'] if i['tag']=='MOCK_01_REALITY'][0]
+print(inbound['streamSettings']['realitySettings']['privateKey'])
+" "$state")"
+expected_short_ids="$(python3 -c "
+import json,sys
+state=json.load(open(sys.argv[1]))
+inbound=[i for p in state['profiles'] for i in p['config']['inbounds'] if i['tag']=='MOCK_01_REALITY'][0]
+print(json.dumps(inbound['streamSettings']['realitySettings']['shortIds']))
+" "$state")"
+
 # Run 2: standalone acceptance - a fresh process, no inherited facts.
 ANSIBLE_CONFIG="$repo/ansible.cfg" ansible-playbook \
-  -i localhost, -c local "$root/tests/verify_standalone.yml" | tee "$out"
+  -i localhost, -c local "$root/tests/verify_standalone.yml" \
+  -e test_expected_reality_key="$expected_key" \
+  -e "{\"test_expected_short_ids\": $expected_short_ids}" | tee "$out"
 grep -qE 'failed=0' "$out" || { echo "standalone verify failed" >&2; exit 1; }
 
 after="$(normalized "$state")"
@@ -92,7 +109,9 @@ GONE
 stop_server
 start_server
 if ANSIBLE_CONFIG="$repo/ansible.cfg" ansible-playbook \
-    -i localhost, -c local "$root/tests/verify_standalone.yml" > "$out" 2>&1; then
+    -i localhost, -c local "$root/tests/verify_standalone.yml" \
+    -e test_expected_reality_key="$expected_key" \
+    -e "{\"test_expected_short_ids\": $expected_short_ids}" > "$out" 2>&1; then
   echo "verify passed against a Panel with no Node" >&2
   exit 1
 fi

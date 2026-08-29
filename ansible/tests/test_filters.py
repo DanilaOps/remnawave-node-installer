@@ -301,3 +301,53 @@ class FirewallCoversTests(unittest.TestCase):
     def test_garbage_is_rejected_loudly(self) -> None:
         with self.assertRaises(Exception):
             MODULE.remnawave_firewall_covers(self.RULESET, "not-an-address")
+
+
+class RealitySettingsShapeTests(unittest.TestCase):
+    """A Config Profile describes an inbound twice: "config.inbounds" is the Xray
+    JSON with streamSettings at the top level, and the panel's own inbound index
+    nests the same payload under rawInbound. Acceptance reads whichever the
+    panel returns - a resolver that knew only the flat shape passed CI against a
+    flat fixture and then found no Reality key on a live panel."""
+
+    LIVE_INDEX = {
+        "inbounds": [
+            {
+                "uuid": "11111111-1111-1111-1111-111111111111",
+                "tag": "TR_01_REALITY",
+                "rawInbound": {
+                    "tag": "TR_01_REALITY",
+                    "streamSettings": {
+                        "realitySettings": {"privateKey": "live-key", "shortIds": ["aabb"]}
+                    },
+                },
+            }
+        ]
+    }
+    FLAT_CONFIG = {
+        "inbounds": [
+            {
+                "tag": "TR_01_REALITY",
+                "streamSettings": {
+                    "realitySettings": {"privateKey": "flat-key", "shortIds": ["ccdd"]}
+                },
+            }
+        ]
+    }
+
+    def test_the_live_index_shape_is_read(self) -> None:
+        reality = MODULE.remnawave_reality_settings(self.LIVE_INDEX, ["TR_01_REALITY"])
+        self.assertEqual("live-key", reality["privateKey"])
+        self.assertEqual(["aabb"], reality["shortIds"])
+
+    def test_the_flat_config_shape_is_still_read(self) -> None:
+        reality = MODULE.remnawave_reality_settings(self.FLAT_CONFIG, ["TR_01_REALITY"])
+        self.assertEqual("flat-key", reality["privateKey"])
+
+    def test_another_nodes_inbound_is_never_adopted(self) -> None:
+        foreign = {"inbounds": [dict(self.LIVE_INDEX["inbounds"][0], tag="EE_01_REALITY")]}
+        self.assertEqual({}, MODULE.remnawave_reality_settings(foreign, ["TR_01_REALITY"]))
+
+    def test_an_inbound_without_reality_is_skipped_not_returned(self) -> None:
+        empty = {"inbounds": [{"tag": "TR_01_REALITY", "rawInbound": {"streamSettings": {}}}]}
+        self.assertEqual({}, MODULE.remnawave_reality_settings(empty, ["TR_01_REALITY"]))

@@ -148,7 +148,13 @@ def remnawave_reality_settings(
             continue
         if wanted is not None and inbound.get("tag") not in wanted:
             continue
-        stream = inbound.get("streamSettings") or {}
+        # Two shapes carry the same inbound.  A Config Profile's "config" holds
+        # the Xray JSON itself, with streamSettings at the top level.  The
+        # panel's own inbound index - response.inbounds[] - describes the same
+        # inbound and nests the Xray payload under rawInbound.  Read either.
+        stream = inbound.get("streamSettings")
+        if not isinstance(stream, dict):
+            stream = (inbound.get("rawInbound") or {}).get("streamSettings") or {}
         reality = stream.get("realitySettings")
         if isinstance(reality, dict) and reality.get("privateKey"):
             return reality

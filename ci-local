@@ -86,6 +86,7 @@ step full:panel-errors        full
 step full:panel-entities      full
 step full:panel-concurrency   full
 step full:verify-standalone   full
+step full:verify-full-graph   full
 step full:check-mode-panel    full
 step full:tunnel-probe        full
 step full:dns                 full
@@ -119,6 +120,7 @@ run_step() {
     full:panel-entities)    bash ansible/tests/test_panel_entities.sh ;;
     full:panel-concurrency) bash ansible/tests/test_shared_profile_concurrency.sh ;;
     full:verify-standalone) bash ansible/tests/test_verify_standalone.sh ;;
+    full:verify-full-graph) bash ansible/tests/test_verify_full_graph.sh ;;
     full:check-mode-panel)  bash ansible/tests/test_check_mode_panel.sh ;;
     full:tunnel-probe)      bash ansible/tests/test_tunnel_probe.sh ;;
     full:dns)               bash ansible/tests/test_dns_idempotency.sh ;;
@@ -168,6 +170,12 @@ unmet_prerequisite() {
   case "$1" in
     fast:render-firewall)
       command -v nft >/dev/null 2>&1 || { echo "nft is not installed"; return 0; } ;;
+    full:verify-full-graph)
+      # It runs the real "03 - Verify Node" entry point against local stand-ins
+      # for the node's containers, ports and public site.
+      command -v docker >/dev/null 2>&1 || { echo "docker is not installed"; return 0; }
+      docker info >/dev/null 2>&1 || { echo "no Docker daemon"; return 0; }
+      [ "$(id -u)" -eq 0 ] || { echo "needs root for /etc/hosts, /etc/letsencrypt and port 443"; return 0; } ;;
     molecule:*)
       command -v molecule >/dev/null 2>&1 || { echo "molecule is not installed"; return 0; }
       docker info >/dev/null 2>&1 || { echo "no Docker daemon"; return 0; }

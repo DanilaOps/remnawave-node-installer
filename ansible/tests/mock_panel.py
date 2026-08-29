@@ -45,7 +45,29 @@ class Store:
             "uuid": profile["uuid"],
             "name": profile["name"],
             "config": config,
-            "inbounds": config.get("inbounds", []),
+            "inbounds": [self.inbound_index_entry(profile, inbound)
+                         for inbound in config.get("inbounds", [])],
+        }
+
+    def inbound_index_entry(self, profile: dict[str, Any], inbound: dict[str, Any]) -> dict[str, Any]:
+        """One row of the panel's own inbound index, shaped like the live API.
+
+        The live panel does not repeat the Xray JSON at the top level here: the
+        row carries the panel identity and nests the inbound itself under
+        rawInbound.  A fixture that returned the Xray shape instead let a
+        resolver that only understood the flat shape pass CI and then fail on a
+        real panel, so this fixture is deliberately the live shape.
+        """
+        raw = {key: value for key, value in inbound.items() if key != "uuid"}
+        return {
+            "uuid": inbound["uuid"],
+            "profileUuid": profile["uuid"],
+            "tag": inbound.get("tag"),
+            "type": inbound.get("protocol"),
+            "network": (inbound.get("streamSettings") or {}).get("network"),
+            "security": (inbound.get("streamSettings") or {}).get("security"),
+            "port": inbound.get("port"),
+            "rawInbound": raw,
         }
 
 
