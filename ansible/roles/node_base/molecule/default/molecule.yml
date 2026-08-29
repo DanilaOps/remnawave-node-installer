@@ -32,8 +32,15 @@ provisioner:
   name: ansible
   config_options:
     defaults:
-      # The scenario's project directory is the role directory itself, so the
-      # directory that holds every role of this project is one level up.
+      # Molecule runs every playbook against an ansible.cfg it writes itself and
+      # points ANSIBLE_CONFIG at, so the project ansible.cfg in the repository
+      # root is never read from a scenario - no matter what the current directory
+      # is. These two lines are that file's roles_path and collections_path
+      # restated for Molecule, so a scenario resolves exactly what every other
+      # entry point of this project resolves. The scenario's project directory is
+      # the role directory itself: one level up holds the roles, two levels up
+      # holds the collections CI installs with "-p ansible/collections".
       roles_path: ${MOLECULE_PROJECT_DIRECTORY}/..
+      collections_path: ${MOLECULE_PROJECT_DIRECTORY}/../../collections:~/.ansible/collections:/usr/share/ansible/collections
 verifier:
   name: ansible

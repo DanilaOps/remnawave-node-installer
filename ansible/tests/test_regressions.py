@@ -1394,3 +1394,66 @@ class IdentityDirectoryTests(unittest.TestCase):
             with self.subTest(file=str(path.relative_to(ROOT))):
                 self.assertIn("remnawave_node_identity_owner=$(id -un)", text)
                 self.assertIn("remnawave_node_identity_group=$(id -gn)", text)
+
+
+class MoleculeEnvironmentTests(unittest.TestCase):
+    """Molecule runs playbooks against an ansible.cfg it writes itself, so the
+    project ansible.cfg is never read from a scenario. Everything a scenario
+    needs from it has to be restated in config_options, and the paths there are
+    resolved from the role directory - not from the repository root."""
+
+    def scenarios(self) -> list[pathlib.Path]:
+        found = sorted(ROOT.glob("roles/*/molecule/*/molecule.yml"))
+        self.assertTrue(found, "no Molecule scenario found")
+        return found
+
+    def test_a_scenario_resolves_the_roles_and_collections_of_this_project(self) -> None:
+        project_ansible_cfg = (REPO / "ansible.cfg").read_text(encoding="utf-8")
+        self.assertIn("collections_path = ansible/collections", project_ansible_cfg)
+        for scenario in self.scenarios():
+            role_directory = scenario.parents[2]
+            defaults = yaml.safe_load(scenario.read_text(encoding="utf-8"))
+            options = defaults["provisioner"]["config_options"]["defaults"]
+            for key, expected in (
+                ("roles_path", ROOT / "roles"),
+                ("collections_path", ROOT / "collections"),
+            ):
+                first = options[key].split(":")[0]
+                resolved = pathlib.Path(
+                    first.replace("${MOLECULE_PROJECT_DIRECTORY}", str(role_directory))
+                ).resolve()
+                self.assertEqual(resolved, expected.resolve(), f"{scenario}: {key}")
+
+    def test_every_entry_point_that_runs_molecule_names_the_project_config(self) -> None:
+        # Molecule builds its own ansible.cfg for the playbooks it runs, but the
+        # collections its driver requires are resolved by a runtime that reads
+        # only the process environment. Both entry points therefore have to name
+        # the project configuration, or a scenario silently installs its own
+        # community.docker from galaxy instead of using ansible/collections.
+        workflow = yaml.safe_load((REPO / ".github" / "workflows" / "qa.yml").read_text(encoding="utf-8"))
+        molecule_job = workflow["jobs"]["molecule"]
+        self.assertIn("ansible.cfg", molecule_job["env"]["ANSIBLE_CONFIG"])
+        self.assertIn('export ANSIBLE_CONFIG="$repo/ansible.cfg"', (REPO / "ci-local").read_text(encoding="utf-8"))
+
+    def test_independent_checks_report_independently(self) -> None:
+        # One job per independent check, and a matrix leg that fails must not
+        # cancel its siblings: a red run has to show every problem it found, not
+        # just the first one.
+        workflow = yaml.safe_load((REPO / ".github" / "workflows" / "qa.yml").read_text(encoding="utf-8"))
+        for job in workflow["jobs"].values():
+            strategy = job.get("strategy")
+            if strategy and "matrix" in strategy:
+                self.assertIs(strategy.get("fail-fast"), False)
+            for step in job["steps"]:
+                self.assertNotIn("continue-on-error", step)
+            self.assertNotIn("continue-on-error", job)
+
+    def test_a_scenario_does_not_install_its_own_collections(self) -> None:
+        # One project-level requirements file, installed once before Molecule
+        # runs. A per-role requirements file would drift from it silently.
+        for scenario in self.scenarios():
+            for name in ("requirements.yml", "collections.yml"):
+                self.assertFalse(
+                    (scenario.parent / name).exists(),
+                    f"{scenario.parent / name} would shadow ansible/collections/requirements.yml",
+                )

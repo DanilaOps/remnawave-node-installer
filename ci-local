@@ -1,0 +1,279 @@
+#!/usr/bin/env bash
+# One entry point for the checks .github/workflows/qa.yml runs, in one pass.
+#
+# Why it exists: the pipeline is several independent checks, and running them
+# one at a time - push, wait, read the first failure, fix, push again - turns a
+# ten-minute answer into a day. This runs every independent check, keeps going
+# after a failure, and prints one table at the end. What is red here is red on
+# GitHub; what is red on GitHub should be reproducible here.
+#
+#   ./ci-local            # everything
+#   ./ci-local fast       # one lane: shell, fast, full or molecule
+#   ./ci-local list       # the steps and the lane each belongs to
+#   ./ci-local full:nginx # one step, by name
+#
+# Run it inside the virtualenv built from ansible/requirements.txt, with the
+# collections installed the way the workflow installs them:
+#
+#   python3.13 -m venv .venv && . .venv/bin/activate
+#   pip install -r ansible/requirements.txt
+#   ansible-galaxy collection install -r ansible/collections/requirements.yml \
+#     -p ansible/collections
+#
+# A step whose prerequisite is missing - no Docker daemon, no pinned image, no
+# nft - is reported NOT VERIFIED, never PASS: this script must not be able to
+# call something green that it did not run. NOT VERIFIED is not success either;
+# the exit code is 2.
+#
+# On a machine behind a restricted egress, name the hosts it cannot reach and a
+# scenario that downloads from one of them is reported NOT VERIFIED instead of
+# failing on something that is not a defect:
+#
+#   CI_LOCAL_EGRESS_BLOCKED="download.docker.com" ./ci-local molecule
+#
+# The list is empty by default, so nothing is ever skipped unless someone says
+# out loud what this machine cannot do.
+set -u
+
+repo="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$repo" || exit 1
+
+logs="$(mktemp -d)"
+trap 'rm -rf "$logs"' EXIT
+
+# One Ansible environment for every step, named explicitly instead of relying on
+# the current directory. Molecule needs this one: it builds its own ansible.cfg
+# for the playbooks it runs, but it resolves the collections its driver requires
+# through a runtime that reads nothing but the process environment. Without this
+# a scenario cannot see ansible/collections and reinstalls community.docker from
+# galaxy behind the project's back. The workflow's molecule job exports the same
+# variable.
+export ANSIBLE_CONFIG="$repo/ansible.cfg"
+
+if [ "$(id -u)" -eq 0 ]; then
+  sudo() { "$@"; }
+fi
+
+names=()
+lanes=()
+results=()
+notes=()
+
+step() { names+=("$1"); lanes+=("$2"); }
+
+# shell lane - the shell-checks job
+step shell:node-installer   shell
+step shell:mirror-installer shell
+step shell:shellcheck       shell
+step shell:line-endings     shell
+# fast lane - the fast job
+step fast:yamllint            fast
+step fast:structure           fast
+step fast:unit                fast
+step fast:syntax              fast
+step fast:external-inventory  fast
+step fast:node-naming         fast
+step fast:management-cidrs    fast
+step fast:check-mode-controller fast
+step fast:preflight-guards    fast
+step fast:render-firewall     fast
+step fast:ansible-lint        fast
+# full lane - the panel and nginx jobs
+step full:panel-idempotency   full
+step full:panel-bridge        full
+step full:panel-errors        full
+step full:panel-entities      full
+step full:panel-concurrency   full
+step full:check-mode-panel    full
+step full:tunnel-probe        full
+step full:dns                 full
+step full:nginx               full
+# molecule lane - the molecule job, one entry per matrix leg
+step molecule:node_base      molecule
+step molecule:remnawave_node molecule
+
+run_step() {
+  case "$1" in
+    shell:node-installer)   bash check.sh ./remnawave-node.sh ;;
+    shell:mirror-installer) bash check-mirror.sh ./install-mirror.sh ;;
+    shell:shellcheck)       shellcheck -S warning provision-node setup-controller ci-local ansible/tests/*.sh ;;
+    shell:line-endings)     check_line_endings ;;
+    fast:yamllint)          yamllint -c .yamllint.yml ansible .github ;;
+    fast:structure)         python ansible/tests/validate_structure.py ;;
+    fast:unit)              python -m unittest discover -s ansible/tests -p 'test_*.py' ;;
+    fast:syntax)            check_syntax ;;
+    fast:external-inventory) bash ansible/tests/test_external_inventory.sh ;;
+    fast:node-naming)       bash ansible/tests/test_node_naming.sh ;;
+    fast:management-cidrs)  ansible-playbook -i localhost, -c local ansible/tests/management_cidrs.yml ;;
+    fast:check-mode-controller) bash ansible/tests/test_check_mode_controller.sh ;;
+    fast:preflight-guards)  ansible-playbook -i ansible/inventories/staging/hosts.yml -c local \
+                              ansible/tests/preflight_guards.yml --limit ee01 ;;
+    fast:render-firewall)   render_and_validate_firewall ;;
+    fast:ansible-lint)      ansible-lint ;;
+    full:panel-idempotency) bash ansible/tests/test_panel_idempotency.sh ;;
+    full:panel-bridge)      bash ansible/tests/test_panel_bridge_idempotency.sh ;;
+    full:panel-errors)      bash ansible/tests/test_panel_errors.sh ;;
+    full:panel-entities)    bash ansible/tests/test_panel_entities.sh ;;
+    full:panel-concurrency) bash ansible/tests/test_shared_profile_concurrency.sh ;;
+    full:check-mode-panel)  bash ansible/tests/test_check_mode_panel.sh ;;
+    full:tunnel-probe)      bash ansible/tests/test_tunnel_probe.sh ;;
+    full:dns)               bash ansible/tests/test_dns_idempotency.sh ;;
+    full:nginx)             bash ansible/tests/validate_nginx.sh ;;
+    molecule:*)             (cd "ansible/roles/${1#molecule:}" && molecule test) ;;
+    *) echo "unknown step: $1" >&2; return 1 ;;
+  esac
+}
+
+check_line_endings() {
+  local file bad=0
+  while IFS= read -r file; do
+    case "$file" in
+      *.png|*.jpg|*.ico|*.zip) continue ;;
+      LICENSE) continue ;;
+    esac
+    if grep -qlU $'\r' "$file" 2>/dev/null; then
+      echo "CRLF in $file"; bad=1
+    fi
+    if grep -qE ' +$' "$file" 2>/dev/null; then
+      echo "trailing whitespace in $file"; bad=1
+    fi
+  done < <(git ls-files)
+  return "$bad"
+}
+
+check_syntax() {
+  local playbook
+  for playbook in provision_node install_node bootstrap show_node_identity controller; do
+    ansible-playbook "ansible/playbooks/${playbook}.yml" --syntax-check || return 1
+  done
+}
+
+render_and_validate_firewall() {
+  local render_dir
+  render_dir="$(mktemp -d)/remnawave-render"
+  mkdir -p "$render_dir"
+  ansible-playbook -i localhost, -c local ansible/tests/render_templates.yml \
+    -e render_output_dir="$render_dir" || return 1
+  sudo nft -c -f "$render_dir/remnawave-filter-test.nft" || return 1
+  sudo nft -c -f "$render_dir/remnawave-controller-test.nft" || return 1
+}
+
+# Returns a reason when a step cannot run here at all, so it is reported
+# NOT VERIFIED instead of being silently skipped or wrongly called green.
+unmet_prerequisite() {
+  case "$1" in
+    fast:render-firewall)
+      command -v nft >/dev/null 2>&1 || { echo "nft is not installed"; return 0; } ;;
+    molecule:*)
+      command -v molecule >/dev/null 2>&1 || { echo "molecule is not installed"; return 0; }
+      docker info >/dev/null 2>&1 || { echo "no Docker daemon"; return 0; }
+      blocked_download "${1#molecule:}" && return 0
+      missing_images "ansible/roles/${1#molecule:}/molecule/default/molecule.yml" ;;
+    full:nginx)
+      # The rendered configuration listens on [::], so a host whose kernel has
+      # no IPv6 cannot validate it at all - that is not a passing test.
+      python -c 'import socket; socket.socket(socket.AF_INET6).close()' >/dev/null 2>&1 \
+        || { echo "this kernel has no IPv6 and the configuration listens on [::]"; return 0; }
+      if docker info >/dev/null 2>&1; then
+        missing_images <(printf '  image: %s\n' "${REMNAWAVE_NGINX_IMAGE:-$(nginx_image)}")
+        return
+      fi
+      command -v nginx >/dev/null 2>&1 && return 1
+      python -c 'import crossplane' >/dev/null 2>&1 && return 1
+      echo "no Docker daemon, nginx or crossplane to validate with" ;;
+  esac
+  return 1
+}
+
+# True when the role under test downloads from a host this machine was told it
+# cannot reach. Nothing is inferred: CI_LOCAL_EGRESS_BLOCKED is empty unless the
+# operator sets it.
+blocked_download() {
+  local host tasks="ansible/roles/$1/tasks"
+  for host in ${CI_LOCAL_EGRESS_BLOCKED:-}; do
+    if grep -rqF "https://$host" "$tasks" 2>/dev/null; then
+      echo "no egress to $host, which $1 downloads from"
+      return 0
+    fi
+  done
+  return 1
+}
+
+# The one place the pinned image is named is the test itself.
+nginx_image() {
+  sed -n 's/^image=.*:-\([^}]*\)}.*/\1/p' ansible/tests/validate_nginx.sh
+}
+
+missing_images() {
+  local image
+  while read -r image; do
+    [ -n "$image" ] || continue
+    docker image inspect "$image" >/dev/null 2>&1 && continue
+    docker pull --quiet "$image" >/dev/null 2>&1 && continue
+    echo "cannot obtain $image"
+    return 0
+  done < <(sed -n 's/^ *image: *//p' "$1")
+  return 1
+}
+
+usage() {
+  echo "usage: ci-local [all|shell|fast|full|molecule|list|<step>...]" >&2
+  exit 64
+}
+
+selected=()
+case "${1:-all}" in
+  list)
+    for i in "${!names[@]}"; do printf '%-12s %s\n' "${lanes[$i]}" "${names[$i]}"; done
+    exit 0 ;;
+  all) selected=("${names[@]}") ;;
+  shell|fast|full|molecule)
+    for i in "${!names[@]}"; do
+      [ "${lanes[$i]}" = "$1" ] && selected+=("${names[$i]}")
+    done ;;
+  -h|--help) usage ;;
+  *)
+    for want in "$@"; do
+      found=""
+      for name in "${names[@]}"; do
+        [ "$name" = "$want" ] && { selected+=("$name"); found=yes; }
+      done
+      [ -n "$found" ] || { echo "unknown step: $want" >&2; usage; }
+    done ;;
+esac
+
+[ "${#selected[@]}" -gt 0 ] || usage
+
+failed=0
+unverified=0
+for name in "${selected[@]}"; do
+  if reason="$(unmet_prerequisite "$name")" && [ -n "$reason" ]; then
+    printf '~~~ NOT VERIFIED %s (%s)\n' "$name" "$reason"
+    results+=("NOT VERIFIED"); notes+=("$reason")
+    unverified=1
+    continue
+  fi
+  printf '>>> %s\n' "$name"
+  if run_step "$name" >"$logs/${name//[:\/]/_}.log" 2>&1; then
+    printf '<<< PASS %s\n' "$name"
+    results+=(PASS); notes+=("")
+  else
+    printf '<<< FAIL %s\n' "$name"
+    tail -40 "$logs/${name//[:\/]/_}.log"
+    results+=(FAIL); notes+=("see the output above")
+    failed=1
+  fi
+done
+
+echo
+echo "================ ci-local summary ================"
+for i in "${!selected[@]}"; do
+  printf '%-14s %-32s %s\n' "${results[$i]}" "${selected[$i]}" "${notes[$i]}"
+done
+echo "=================================================="
+# 0 everything ran and passed, 1 something failed, 2 nothing failed but
+# something could not run here. A step that did not run is never a pass, so 2
+# is not success either - it just says where to look.
+if [ "$failed" -ne 0 ]; then exit 1; fi
+if [ "$unverified" -ne 0 ]; then exit 2; fi
+exit 0

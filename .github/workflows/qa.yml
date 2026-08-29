@@ -24,7 +24,7 @@ jobs:
         run: bash check-mirror.sh ./install-mirror.sh
 
       - name: Validate the entry-point wrappers and test scripts
-        run: shellcheck -S warning provision-node setup-controller ansible/tests/*.sh
+        run: shellcheck -S warning provision-node setup-controller ci-local ansible/tests/*.sh
 
       - name: Reject CRLF and trailing whitespace in tracked text files
         # Guards the files this project writes. LICENSE came from upstream with
@@ -117,7 +117,14 @@ jobs:
 
   # Full lane: containers, stateful mocks and Molecule. Required for a pull
   # request, skipped on intermediate pushes so the fast lane stays readable.
-  full:
+  #
+  # It is three jobs and not one on purpose. These checks do not depend on each
+  # other, and as a single job the first failure hid every problem below it, so
+  # each red run revealed exactly one defect and cost a full round trip. Split,
+  # one run shows all of them at once. Nothing here is allowed to fail softly:
+  # there is no continue-on-error, and fail-fast is off only so that the other
+  # matrix legs still report.
+  panel:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
@@ -153,10 +160,58 @@ jobs:
       - name: Verify DNS reconciliation against the stateful mock registrar
         run: bash ansible/tests/test_dns_idempotency.sh
 
+  nginx:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install Ansible test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r ansible/requirements.txt
+          ansible-galaxy collection install -r ansible/collections/requirements.yml \
+            -p ansible/collections
+
       - name: Validate the rendered nginx configuration in the pinned image
         run: bash ansible/tests/validate_nginx.sh
 
-      - name: Test system roles on Debian 12, Debian 13 and Ubuntu 24.04
+  molecule:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    strategy:
+      # One role failing must not cancel the other: both answers in one run.
+      fail-fast: false
+      matrix:
+        role: [node_base, remnawave_node]
+    name: molecule (${{ matrix.role }})
+    # Molecule writes its own ansible.cfg for the playbooks it runs, but the
+    # collections its driver requires are resolved by a runtime that reads only
+    # the process environment. Without this the scenario cannot see the
+    # collections installed above and pulls its own from galaxy.
+    env:
+      ANSIBLE_CONFIG: ${{ github.workspace }}/ansible.cfg
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install Ansible test dependencies
         run: |
-          (cd ansible/roles/node_base && molecule test)
-          (cd ansible/roles/remnawave_node && molecule test)
+          python -m pip install --upgrade pip
+          pip install -r ansible/requirements.txt
+          ansible-galaxy collection install -r ansible/collections/requirements.yml \
+            -p ansible/collections
+
+      - name: Test ${{ matrix.role }} on Debian 12, Debian 13 and Ubuntu 24.04
+        run: cd ansible/roles/${{ matrix.role }} && molecule test
