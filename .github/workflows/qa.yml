@@ -154,6 +154,9 @@ jobs:
           bash ansible/tests/test_panel_entities.sh
           bash ansible/tests/test_shared_profile_concurrency.sh
 
+      - name: Verify standalone acceptance resolves the Panel itself, read-only
+        run: bash ansible/tests/test_verify_standalone.sh
+
       - name: Verify --check --diff is honest before, during and after reconciliation
         run: bash ansible/tests/test_check_mode_panel.sh
 

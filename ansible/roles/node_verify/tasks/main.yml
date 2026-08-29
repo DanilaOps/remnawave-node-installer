@@ -1,4 +1,13 @@
 ---
+- name: Resolve Panel references for a standalone acceptance run
+  # "03 - Verify Node" is its own Ansible run: the facts the reconciler set in
+  # "02 - Install / Reconcile Node" do not survive into it. When they are
+  # absent - the reconciler did not run in this play - every reference is
+  # resolved again, read-only, from the same stable identities. When 02 ran in
+  # this same play, acceptance keeps verifying exactly what it published.
+  ansible.builtin.include_tasks: panel_resolve.yml
+  when: remnawave_node_uuid is not defined
+
 - name: Verify Remnawave Panel state and wait for Xray startup
   ansible.builtin.import_tasks: panel.yml
 

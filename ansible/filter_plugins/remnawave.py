@@ -348,6 +348,40 @@ def remnawave_next_node_name(names: Any, country_code: str, width: int = 2) -> s
     return f"{str(country_code).strip().upper()}-{highest + 1:0{int(width)}d}"
 
 
+def node_verify_host_matches(hosts: Any, spec: Any, inbound_uuid_map: Any) -> list[Any]:
+    """The Host identity chain, exactly as the reconciler matches it.
+
+    A Host is found by its explicit uuid when the declaration pins one, else by
+    remark+address, else - renamed - by inbound+address, else - re-addressed -
+    by inbound+remark.  Acceptance resolves the same Host the reconciler would
+    have updated, without ever creating one.
+    """
+    if not isinstance(hosts, list) or not isinstance(spec, dict):
+        raise AnsibleFilterError("node_verify_host_matches needs the Host list and one host_spec")
+    inbound_uuid = (inbound_uuid_map or {}).get(spec.get("inbound_tag"))
+
+    def by(predicate: Any) -> list[Any]:
+        return [host for host in hosts if isinstance(host, dict) and predicate(host)]
+
+    if spec.get("uuid"):
+        return by(lambda host: host.get("uuid") == spec["uuid"])
+    matches = by(
+        lambda host: host.get("remark") == spec.get("remark")
+        and host.get("address") == spec.get("address")
+    )
+    if not matches and inbound_uuid:
+        matches = by(
+            lambda host: (host.get("inbound") or {}).get("configProfileInboundUuid") == inbound_uuid
+            and host.get("address") == spec.get("address")
+        )
+    if not matches and inbound_uuid:
+        matches = by(
+            lambda host: (host.get("inbound") or {}).get("configProfileInboundUuid") == inbound_uuid
+            and host.get("remark") == spec.get("remark")
+        )
+    return matches
+
+
 def remnawave_firewall_covers(ruleset: Any, cidr: Any) -> bool:
     """True when an nftables ruleset carries the given source restriction.
 
@@ -373,6 +407,7 @@ class FilterModule:
 
     def filters(self) -> dict[str, Any]:
         return {
+            "node_verify_host_matches": node_verify_host_matches,
             "remnawave_firewall_covers": remnawave_firewall_covers,
             "remnawave_is_subset": remnawave_is_subset,
             "remnawave_response_items": remnawave_response_items,

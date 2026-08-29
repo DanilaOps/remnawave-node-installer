@@ -85,6 +85,7 @@ step full:panel-bridge        full
 step full:panel-errors        full
 step full:panel-entities      full
 step full:panel-concurrency   full
+step full:verify-standalone   full
 step full:check-mode-panel    full
 step full:tunnel-probe        full
 step full:dns                 full
@@ -117,6 +118,7 @@ run_step() {
     full:panel-errors)      bash ansible/tests/test_panel_errors.sh ;;
     full:panel-entities)    bash ansible/tests/test_panel_entities.sh ;;
     full:panel-concurrency) bash ansible/tests/test_shared_profile_concurrency.sh ;;
+    full:verify-standalone) bash ansible/tests/test_verify_standalone.sh ;;
     full:check-mode-panel)  bash ansible/tests/test_check_mode_panel.sh ;;
     full:tunnel-probe)      bash ansible/tests/test_tunnel_probe.sh ;;
     full:dns)               bash ansible/tests/test_dns_idempotency.sh ;;

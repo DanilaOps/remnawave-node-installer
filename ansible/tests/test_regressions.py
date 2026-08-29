@@ -294,6 +294,21 @@ class OperatorWorkflowTests(unittest.TestCase):
             yaml.safe_load(identity)["node_public_ip"], "{{ ansible_host }}"
         )
 
+    def test_standalone_acceptance_resolves_the_panel_itself(self) -> None:
+        # "03 - Verify Node" is its own Ansible run: the facts the reconciler
+        # set with set_fact are gone. Acceptance must resolve every Panel
+        # reference again - read-only - before the first check touches one.
+        main = self.read("roles/node_verify/tasks/main.yml")
+        self.assertLess(
+            main.index("panel_resolve.yml"), main.index("panel.yml"),
+            "the resolver has to run before the Panel checks",
+        )
+        self.assertIn("when: remnawave_node_uuid is not defined", main)
+        resolver = self.read("roles/node_verify/tasks/panel_resolve.yml")
+        for verb in ("POST", "PATCH", "DELETE", "method: PUT"):
+            self.assertNotIn(verb, resolver, f"the resolver must never {verb}")
+        self.assertIn('run "02 - Install / Reconcile Node"', resolver.replace("\n      ", " "))
+
     def test_bridge_verification_is_gated_dynamically(self) -> None:
         # import_tasks inlines the bridge tasks, and delegate_to is templated
         # before the inherited condition is evaluated - a direct node whose
