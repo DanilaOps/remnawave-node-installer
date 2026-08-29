@@ -25,6 +25,18 @@ class ProductionRegressionTests(unittest.TestCase):
         self.assertIn("Persist RemnaNode identity before further Panel mutations", tasks)
         self.assertIn("dest: \"{{ remnawave_node_env_path }}\"", tasks)
 
+    def test_the_probe_user_is_matched_on_the_field_the_panel_returns(self) -> None:
+        # A Remnawave user has no "uuid" at all: GetUserByUsernameCommand returns
+        # its VLESS identity as vlessUuid, in the pinned contract and in 3.4.x
+        # alike. Reading response.uuid failed every live Verify Node while the
+        # mock passed, because the mock had invented the field.
+        probe = self.read("roles/node_verify/tasks/tunnel_probe.yml")
+        self.assertIn("node_verify_probe_user.json.response.vlessUuid", probe)
+        self.assertNotIn("node_verify_probe_user.json.response.uuid", probe)
+        fixture = (ROOT / "tests" / "test_tunnel_probe.sh").read_text(encoding="utf-8")
+        self.assertIn('"vlessUuid": user_uuid', fixture)
+        self.assertNotIn('"uuid": user_uuid', fixture)
+
     def test_xray_log_mount_and_healthcheck_match_remnanode_332(self) -> None:
         compose = self.read("roles/remnawave_node/templates/compose.yml.j2")
         logrotate = self.read("roles/remnawave_node/templates/remnawave.logrotate.j2")

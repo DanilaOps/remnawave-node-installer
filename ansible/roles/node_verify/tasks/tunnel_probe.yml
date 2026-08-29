@@ -47,7 +47,7 @@
         remnawave_internal_squad_uuid in
         (node_verify_probe_user.json.response.activeInternalSquads | default([]) | remnawave_uuid_list)
       - >-
-        node_verify_probe_user.json.response.uuid | default('') == verify_probe_vless_uuid
+        node_verify_probe_user.json.response.vlessUuid | default('') == verify_probe_vless_uuid
         or verify_probe_accept_uuid_mismatch | default(false) | bool
     fail_msg: >-
       The probe user '{{ verify_probe_username }}' cannot prove this node.
@@ -55,9 +55,11 @@
       status={{ node_verify_probe_user.json.response.status | default('unknown') }};
       squads={{ node_verify_probe_user.json.response.activeInternalSquads | default([]) | remnawave_uuid_list }},
       and this node publishes to {{ remnawave_internal_squad_uuid }}. The user has to exist, be ACTIVE
-      and be a member of that Internal Squad - which is what gives it access to this node's inbound. If
-      the panel's user uuid legitimately differs from the VLESS id, set
-      verify_probe_accept_uuid_mismatch=true and keep vault_verify_probe_vless_uuid authoritative.
+      and be a member of that Internal Squad - which is what gives it access to this node's inbound.
+      Its VLESS id is response.vlessUuid ('{{ node_verify_probe_user.json.response.vlessUuid |
+      default('none') }}'), which has to equal vault_verify_probe_vless_uuid. If they legitimately
+      differ, set verify_probe_accept_uuid_mismatch=true and keep vault_verify_probe_vless_uuid
+      authoritative.
   when: node_verify_probe_user is not skipped | default(false)
 
 - name: Derive the Reality public key the probe has to present

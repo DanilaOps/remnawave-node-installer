@@ -31,9 +31,13 @@ path, status, squad, user_uuid = sys.argv[1:5]
 pathlib.Path(path).write_text(json.dumps({
     "profiles": [], "nodes": [], "hosts": [],
     "squads": [{"uuid": squad, "name": "Mock Squad", "inbounds": []}],
+    # The field names the panel really returns: a user has no "uuid", its VLESS
+    # identity is "vlessUuid" (GetUserByUsernameCommand, backend contract 3.3.x
+    # and 3.4.x alike). A mock that invented "uuid" is what hid the mismatch.
     "users": [{
-        "uuid": user_uuid, "id": 1, "username": "probe", "status": status,
-        "activeInternalSquads": [{"uuid": squad}],
+        "vlessUuid": user_uuid, "id": 1, "shortUuid": "probe-short",
+        "username": "probe", "status": status,
+        "activeInternalSquads": [{"uuid": squad, "name": "Mock Squad"}],
     }],
     "keygen_calls": 0,
 }, indent=2), encoding="utf-8")
