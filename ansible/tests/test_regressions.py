@@ -25,6 +25,45 @@ class ProductionRegressionTests(unittest.TestCase):
         self.assertIn("Persist RemnaNode identity before further Panel mutations", tasks)
         self.assertIn("dest: \"{{ remnawave_node_env_path }}\"", tasks)
 
+    def test_a_local_play_does_not_leave_the_controller_interpreter_on_a_node(self) -> None:
+        # Interpreter discovery caches its answer on the inventory host for the
+        # whole run. A play that runs against a node over connection: local
+        # therefore discovers the *controller's* Python and pins it to that host,
+        # and the next play tries to execute it on the node over SSH:
+        # "The module interpreter '/opt/.../.venv/bin/python3.13' was not found."
+        # Saying which interpreter a controller-side play uses stops the
+        # discovery, so nothing is cached and the remote play discovers its own.
+        for path in sorted((ROOT / "playbooks").glob("*.yml")):
+            document = yaml.safe_load(path.read_text(encoding="utf-8"))
+            if not isinstance(document, list):
+                continue
+            for play in document:
+                if not isinstance(play, dict) or "hosts" not in play:
+                    continue
+                if play.get("connection") != "local" or play["hosts"] == "localhost":
+                    continue
+                with self.subTest(play=f"{path.name}: {play.get('name')}"):
+                    self.assertEqual(
+                        "{{ ansible_playbook_python }}",
+                        (play.get("vars") or {}).get("ansible_python_interpreter"),
+                        "a local play over managed nodes must pin the controller interpreter",
+                    )
+
+    def test_no_node_is_pinned_to_a_controller_interpreter(self) -> None:
+        # The other half: never work around the above by writing a path into the
+        # inventory or the fleet values, per node or for the whole group.
+        for path in sorted(ROOT.rglob("*.yml")):
+            if any(part in {".venv", ".venv-audit", "collections"} for part in path.parts):
+                continue
+            text = path.read_text(encoding="utf-8")
+            if "ansible_python_interpreter" not in text:
+                continue
+            with self.subTest(file=str(path.relative_to(ROOT))):
+                self.assertNotIn(".venv/bin/python", text)
+                for line in text.splitlines():
+                    if "ansible_python_interpreter" in line and "ansible_playbook_python" not in line:
+                        self.fail(f"{path.relative_to(ROOT)}: pins an interpreter: {line.strip()}")
+
     def test_the_probe_user_is_matched_on_the_field_the_panel_returns(self) -> None:
         # A Remnawave user has no "uuid" at all: GetUserByUsernameCommand returns
         # its VLESS identity as vlessUuid, in the pinned contract and in 3.4.x

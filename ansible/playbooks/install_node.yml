@@ -21,6 +21,13 @@
   gather_facts: false
   become: false
   any_errors_fatal: true
+  vars:
+    # This play runs on the controller, so say which Python it uses instead of
+    # letting interpreter discovery work it out. Discovery caches its answer on
+    # the inventory host for the whole run, and the answer here is the
+    # controller's interpreter - which the next play would then try to execute
+    # on the node over SSH.
+    ansible_python_interpreter: "{{ ansible_playbook_python }}"
 
   tasks:
     - name: Refuse a fleet-wide run that was not asked for
@@ -47,6 +54,13 @@
   become: false
   serial: 1
   any_errors_fatal: true
+  vars:
+    # This play runs on the controller, so say which Python it uses instead of
+    # letting interpreter discovery work it out. Discovery caches its answer on
+    # the inventory host for the whole run, and the answer here is the
+    # controller's interpreter - which the next play would then try to execute
+    # on the node over SSH.
+    ansible_python_interpreter: "{{ ansible_playbook_python }}"
 
   roles:
     - role: dns
