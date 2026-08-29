@@ -45,6 +45,37 @@ grep -Eq 'changed=0([[:space:]]|$)' "$second" || {
   exit 1
 }
 
+# tr01 drift: the panel still holds the Host with the selfsteal domain as its
+# address, from before the fleet published the node's IP. The next reconcile
+# must repair that Host in place - same UUID, new address - not leave it behind
+# and create a second one.
+third="$(mktemp)"
+drift_uuid="$(python - "$state" <<'DRIFT'
+import json, pathlib, sys
+path = pathlib.Path(sys.argv[1])
+state = json.loads(path.read_text())
+assert len(state["hosts"]) == 1, state["hosts"]
+state["hosts"][0]["address"] = "node.example.test"
+path.write_text(json.dumps(state))
+print(state["hosts"][0]["uuid"])
+DRIFT
+)"
+ANSIBLE_CONFIG="$repo/ansible.cfg" ansible-playbook \
+  -i localhost, -c local "$root/tests/panel_idempotency.yml" \
+  -e test_node_env_path="$node_env" \
+  -e "remnawave_node_identity_owner=$(id -un)" \
+  -e "remnawave_node_identity_group=$(id -gn)" | tee "$third"
+python - "$state" "$drift_uuid" <<'REPAIRED'
+import json, pathlib, sys
+state = json.loads(pathlib.Path(sys.argv[1]).read_text())
+hosts = state["hosts"]
+assert len(hosts) == 1, f"the re-addressed Host was duplicated: {hosts}"
+assert hosts[0]["uuid"] == sys.argv[2], "the Host was recreated instead of repaired"
+assert hosts[0]["address"] == "203.0.113.10", hosts[0]["address"]
+assert hosts[0]["sni"] == "node.example.test", hosts[0]["sni"]
+print("A re-addressed Host is repaired in place, never duplicated.")
+REPAIRED
+
 python - "$state" "$root/tests" <<'PY'
 import json
 import pathlib

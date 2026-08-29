@@ -29,7 +29,8 @@
         network: raw
     host_specs:
       - remark: Mock Germany
-        address: node.example.test
+        # The connection address is the node's IP; the TLS name is the domain.
+        address: 203.0.113.10
         inbound_tag: MOCK_01_REALITY
         port: 443
         sni: node.example.test

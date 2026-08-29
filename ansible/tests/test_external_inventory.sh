@@ -28,6 +28,8 @@ for expected in \
   "node_id          = ee_01" \
   "node_name        = EE-01" \
   "selfsteal_domain = ee01.example.com" \
+  "host address     = 203.0.113.10" \
+  "host sni         = ee01.example.com" \
   "inbound tag      = EE_01_REALITY" \
   "ansible_user     = deployer"; do
   grep -qF "$expected" "$output" || {

@@ -56,6 +56,20 @@
          selectattr('address', 'equalto', remnawave_host_spec.address) | list }}
   when: remnawave_host_matches | length == 0
 
+- name: Fall back to remark identity for a re-addressed Host
+  ansible.builtin.set_fact:
+    # A Host whose address changed - the fleet moving from publishing the
+    # domain to publishing the node's IP - still carries its remark and its
+    # inbound. Matching on those repairs the existing Host in place; without
+    # this the reconcile would leave the stale Host behind and create a second
+    # one beside it.
+    remnawave_host_matches: >-
+      {{ remnawave_hosts_response.json.response |
+         selectattr('inbound.configProfileInboundUuid', 'defined') |
+         selectattr('inbound.configProfileInboundUuid', 'equalto', remnawave_inbound_uuid_map[remnawave_host_spec.inbound_tag]) |
+         selectattr('remark', 'equalto', remnawave_host_spec.remark) | list }}
+  when: remnawave_host_matches | length == 0
+
 - name: Reject ambiguous Hosts
   ansible.builtin.assert:
     that:

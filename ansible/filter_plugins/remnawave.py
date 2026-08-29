@@ -348,11 +348,32 @@ def remnawave_next_node_name(names: Any, country_code: str, width: int = 2) -> s
     return f"{str(country_code).strip().upper()}-{highest + 1:0{int(width)}d}"
 
 
+def remnawave_firewall_covers(ruleset: Any, cidr: Any) -> bool:
+    """True when an nftables ruleset carries the given source restriction.
+
+    nft prints a host route without its prefix: the template writes
+    94.141.123.63/32 and "nft list table" answers 94.141.123.63, so a raw
+    substring comparison calls a correct firewall wrong.  Both spellings of a
+    host route (and only of a host route - a real subnet keeps its prefix) are
+    accepted, matched on token boundaries so 10.0.0.1 does not pass because
+    10.0.0.10 is present.
+    """
+    if not isinstance(ruleset, str) or not str(cidr).strip():
+        raise AnsibleFilterError("remnawave_firewall_covers needs a ruleset string and a CIDR")
+    network = ip_network(str(cidr).strip(), strict=False)
+    spellings = {str(network), str(network.network_address) + "/" + str(network.prefixlen)}
+    if network.prefixlen == network.max_prefixlen:
+        spellings.add(str(network.network_address))
+    pattern = "(^|[\s,{])(" + "|".join(re.escape(s) for s in sorted(spellings)) + ")($|[\s,}])"
+    return re.search(pattern, ruleset) is not None
+
+
 class FilterModule:
     """Ansible filter registration."""
 
     def filters(self) -> dict[str, Any]:
         return {
+            "remnawave_firewall_covers": remnawave_firewall_covers,
             "remnawave_is_subset": remnawave_is_subset,
             "remnawave_response_items": remnawave_response_items,
             "remnawave_inbound_owners": remnawave_inbound_owners,

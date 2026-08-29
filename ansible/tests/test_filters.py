@@ -269,3 +269,35 @@ class NodeNamingTests(unittest.TestCase):
             with self.subTest(code=code):
                 with self.assertRaises(Exception):
                     MODULE.remnawave_next_node_name([], code)
+
+
+class FirewallCoversTests(unittest.TestCase):
+    """nft prints a host route without its prefix: the template writes
+    94.141.123.63/32, "nft list table" answers 94.141.123.63. The verifier must
+    treat those as the same restriction without accepting anything else."""
+
+    RULESET = (
+        "table inet remnawave {\n"
+        "  chain input {\n"
+        "    ip saddr { 94.141.123.63, 10.8.0.0/24 } tcp dport 22 accept\n"
+        "    ip6 saddr 2001:db8::1 tcp dport 22 accept\n"
+        "  }\n"
+        "}\n"
+    )
+
+    def test_a_host_route_matches_with_and_without_its_prefix(self) -> None:
+        self.assertTrue(MODULE.remnawave_firewall_covers(self.RULESET, "94.141.123.63/32"))
+        self.assertTrue(MODULE.remnawave_firewall_covers(self.RULESET, "94.141.123.63"))
+        self.assertTrue(MODULE.remnawave_firewall_covers(self.RULESET, "2001:db8::1/128"))
+
+    def test_a_subnet_still_needs_its_exact_prefix(self) -> None:
+        self.assertTrue(MODULE.remnawave_firewall_covers(self.RULESET, "10.8.0.0/24"))
+        self.assertFalse(MODULE.remnawave_firewall_covers(self.RULESET, "10.8.0.0/25"))
+
+    def test_a_shorter_address_does_not_ride_on_a_longer_one(self) -> None:
+        self.assertFalse(MODULE.remnawave_firewall_covers("ip saddr 10.0.0.10 accept", "10.0.0.1/32"))
+        self.assertFalse(MODULE.remnawave_firewall_covers(self.RULESET, "94.141.123.6/32"))
+
+    def test_garbage_is_rejected_loudly(self) -> None:
+        with self.assertRaises(Exception):
+            MODULE.remnawave_firewall_covers(self.RULESET, "not-an-address")

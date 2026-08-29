@@ -281,6 +281,30 @@ class OperatorWorkflowTests(unittest.TestCase):
         # Nothing identity-shaped may be required per host any more.
         self.assertNotIn("\nnode_id: ee_01", identity)
 
+    def test_host_address_and_sni_are_different_things(self) -> None:
+        # The published Host tells a client two separate facts: where to connect
+        # (the node's IP, from the inventory's ansible_host) and which TLS name
+        # to present (the selfsteal domain). tr01 shipped with the domain in
+        # both fields, so every client resolved DNS just to reach the node.
+        identity = self.read("playbooks/group_vars/remnawave_nodes/identity.yml")
+        host_specs = yaml.safe_load(identity)["host_specs"]
+        self.assertEqual(host_specs[0]["address"], "{{ node_public_ip }}")
+        self.assertEqual(host_specs[0]["sni"], "{{ selfsteal_domain }}")
+        self.assertEqual(
+            yaml.safe_load(identity)["node_public_ip"], "{{ ansible_host }}"
+        )
+
+    def test_a_re_addressed_host_is_matched_for_repair(self) -> None:
+        # Changing the published address must repair the existing Host, not
+        # create a second one: the reconciler needs a match path that survives
+        # an address change (inbound + remark), beside the rename path
+        # (inbound + address).
+        tasks = self.read("roles/remnawave_panel/tasks/host_item.yml")
+        self.assertIn("Fall back to remark identity for a re-addressed Host", tasks)
+        self.assertIn(
+            "selectattr('remark', 'equalto', remnawave_host_spec.remark)", tasks
+        )
+
     def test_fleet_configuration_is_declared_exactly_once(self) -> None:
         # Two copies of the same fleet file under two inventories used to be kept
         # in step by a test. The structure now makes the drift impossible: the

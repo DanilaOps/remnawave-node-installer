@@ -60,7 +60,7 @@
                 network: raw
             host_specs:
               - remark: Estonia
-                address: ee01.real-zone.tld
+                address: 203.0.113.10
                 inbound_tag: EE_01_REALITY
                 port: 443
             bridge_spec:

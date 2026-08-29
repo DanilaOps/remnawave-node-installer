@@ -32,6 +32,8 @@
           - "selfsteal_domain = {{ selfsteal_domain }}"
           - "inbound tag      = {{ inbound_specs[0].tag }}"
           - "host remark      = {{ host_specs[0].remark }}"
+          - "host address     = {{ host_specs[0].address }}"
+          - "host sni         = {{ host_specs[0].sni }}"
           - "host tags        = {{ host_specs[0].tags }}"
           - "ansible_user     = {{ ansible_user }}"
           - "panel            = {{ remnawave_panel_url }}"
@@ -55,7 +57,9 @@
           - inbound_specs[0].tag == (node_name | upper | regex_replace('[^A-Z0-9_]', '_')) ~ '_REALITY'
           - inbound_specs[0].port == 443
           - host_specs[0].remark == node_host_remark
-          - host_specs[0].address == selfsteal_domain
+          # The client connects to the node's IP and presents the selfsteal
+          # domain in TLS. The two must never collapse into one value again.
+          - host_specs[0].address == node_public_ip
           - host_specs[0].sni == selfsteal_domain
           - host_specs[0].inbound_tag == inbound_specs[0].tag
           - host_specs[0].tags == [node_country | upper, 'DIRECT']

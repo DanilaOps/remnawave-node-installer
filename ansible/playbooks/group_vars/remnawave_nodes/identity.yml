@@ -60,7 +60,11 @@ node_host_tags:
 
 host_specs:
   - remark: "{{ node_host_remark }}"
-    address: "{{ selfsteal_domain }}"
+    # Two different things: address is where the client CONNECTS (the node's
+    # IP), sni is the TLS name it PRESENTS (the selfsteal domain). Publishing
+    # the domain as the address made every client resolve it first and tied
+    # reachability to DNS; the panel's own Node entry already uses the IP.
+    address: "{{ node_public_ip }}"
     inbound_tag: "{{ inbound_specs[0].tag }}"
     port: 443
     sni: "{{ selfsteal_domain }}"

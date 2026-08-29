@@ -117,7 +117,11 @@
 - name: Verify Panel and management allowlists exist in firewall
   ansible.builtin.assert:
     that:
-      - item in remnawave_verify_firewall.stdout
+      # Normalized comparison, not a raw substring: nft prints a host route
+      # without its prefix, so the 94.141.123.63/32 the template wrote comes
+      # back as 94.141.123.63. Both spellings of the same restriction pass;
+      # a missing or different restriction still fails.
+      - remnawave_verify_firewall.stdout | remnawave_firewall_covers(item)
     fail_msg: "Firewall does not contain required source restriction {{ item }}."
   loop: "{{ management_cidrs + remnawave_panel_cidrs }}"
   when:
@@ -127,7 +131,9 @@
 - name: Verify bridge source restriction exists in firewall
   ansible.builtin.assert:
     that:
-      - bridge_spec.entry_address in remnawave_verify_firewall.stdout
+      # Same normalization as above: an entry address declared as a /32 host
+      # route comes back from nft without the prefix.
+      - remnawave_verify_firewall.stdout | remnawave_firewall_covers(bridge_spec.entry_address)
       - bridge_spec.port | string in remnawave_verify_firewall.stdout
     fail_msg: Bridge port is not restricted to the declared entry address.
   when:
