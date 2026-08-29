@@ -143,7 +143,7 @@ all:
           region: de-fra
           zone: fra-1
           selfsteal_domain: node-test-01.example.com
-          profile_name: DE-TEST-01
+          # profile_name не задаётся: он выводится из node_name (DE-TEST-01).
           internal_squad_name: Ansible Test
 ```
 

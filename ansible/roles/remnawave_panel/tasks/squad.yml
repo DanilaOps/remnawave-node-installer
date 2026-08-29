@@ -32,7 +32,14 @@
     that:
       - remnawave_squad_matches | length <= 1
       - remnawave_squad_matches | length == 1 or internal_squad_create | bool
-    fail_msg: Internal Squad is ambiguous or absent while internal_squad_create is false.
+    fail_msg: >-
+      Internal Squad
+      '{{ internal_squad_uuid if internal_squad_uuid | length > 0 else internal_squad_name }}' is
+      {{ 'ambiguous' if remnawave_squad_matches | length > 1 else 'absent' }} and
+      internal_squad_create is false. This is an Internal Squad (/api/internal-squads), not a
+      Config Profile and not an Xray JSON template. The Squads this panel holds are:
+      {{ remnawave_all_squads | map(attribute='name') | list | join(', ') | default('(none)', true) }}.
+      Names are matched exactly, as the API returns them.
 
 - name: Build additive Internal Squad inbound set
   ansible.builtin.set_fact:

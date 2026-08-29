@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The shared "Default August" profile is reconciled with a read-modify-write, so
+# A Config Profile is reconciled with a read-modify-write, so
 # the dangerous failure is a write that succeeds and silently drops another
 # node's inbound. Three scenarios, all against the stateful mock panel:
 #

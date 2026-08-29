@@ -21,7 +21,15 @@ argument_specs:
       profile_name:
         type: str
         required: true
-        description: Name of the Config Profile whose Xray JSON published Hosts must use.
+        description: >-
+          Name of the Config Profile - the Xray JSON the node itself runs, and the profile whose
+          inbound each published Host is bound to. Not the client-side Xray JSON template.
+      xray_json_template_name:
+        type: str
+        description: >-
+          Name of the Subscription Template of type XRAY_JSON that published Hosts must carry
+          (xrayJsonTemplateUuid). A different entity from profile_name, which is the Config
+          Profile the node runs. Empty leaves the link as the panel has it.
       config_profile_mode:
         type: str
         choices: [shared, per_node]

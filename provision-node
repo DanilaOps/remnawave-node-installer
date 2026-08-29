@@ -38,6 +38,10 @@ Usage: ./provision-node <host> [options] [ansible-playbook options...]
                         override with REMNAWAVE_INVENTORY)
       --values <p>      deployment values file (default: $fleet_vars,
                         override with REMNAWAVE_FLEET_VARS)
+      --next <CC>       do not install anything: read the panel and print the
+                        name the next node of that country should get, plus the
+                        inventory line to add. The number is allocated once,
+                        here, and lives in the inventory hostname afterwards.
       --first-run       accept the SSH host key this brand new VPS presents.
                         Only for a server created minutes ago: a key that is
                         already known and has changed always fails instead.
@@ -52,6 +56,7 @@ HELP
 }
 
 host=""
+next_country=""
 declare -a passthrough=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -59,13 +64,14 @@ while [[ $# -gt 0 ]]; do
     -i|--inventory) [[ $# -ge 2 ]] || die "--inventory needs a path"; inventory="$2"; shift 2 ;;
     --values) [[ $# -ge 2 ]] || die "--values needs a path"; fleet_vars="$2"; shift 2 ;;
     --first-run) passthrough+=(-e bootstrap_trust_new_host_keys=true); shift ;;
+    --next) [[ $# -ge 2 ]] || die "--next needs a two-letter country code"; next_country="$2"; shift 2 ;;
     --) shift; passthrough+=("$@"); break ;;
     -*) passthrough+=("$1"); shift ;;
     *) if [[ -z "$host" ]]; then host="$1"; else passthrough+=("$1"); fi; shift ;;
   esac
 done
 
-[[ -n "$host" ]] || { usage; exit 2; }
+[[ -n "$host" || -n "$next_country" ]] || { usage; exit 2; }
 [[ -f "$inventory" ]] || die "inventory not found: $inventory"
 
 if [[ -d ansible/.venv ]]; then
@@ -90,6 +96,14 @@ if [[ ! -f "$fleet_vars" ]]; then
   printf 'warning   : %s is missing, so this run has no real panel URL, zone or\n' "$fleet_vars"
   printf '            squad. Copy ansible/examples/fleet.yml.example there and fill it in;\n'
   printf '            preflight will refuse the documentation values.\n'
+fi
+
+# --next allocates a name and stops. It reads the panel and installs nothing, so
+# it needs none of the SSH machinery below.
+if [[ -n "$next_country" ]]; then
+  exec ansible-playbook ansible/playbooks/next_node_name.yml \
+    -i localhost, -c local "${vault_args[@]}" "${value_args[@]}" \
+    -e "country_code=$next_country" "${passthrough[@]}"
 fi
 
 # Resolve the host from the inventory. This both validates the name and tells us

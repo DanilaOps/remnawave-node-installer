@@ -8,6 +8,7 @@ other operators.
 from __future__ import annotations
 
 import base64
+import re
 from copy import deepcopy
 from ipaddress import ip_address, ip_network
 from typing import Any, Iterable
@@ -307,6 +308,46 @@ def remnawave_ip_in_cidrs(address: str, cidrs: Iterable[str]) -> bool:
         raise AnsibleFilterError(f"Invalid address or CIDR: {error}") from error
 
 
+NODE_NAME_PATTERN = re.compile(r"^([A-Z]{2})-([0-9]{2,})$")
+
+
+def remnawave_country_ordinals(names: Any, country_code: str) -> list[int]:
+    """Ordinals of every managed name of one country, from any list of names.
+
+    Only the exact ``CC-NN`` form counts. A name that merely starts with the
+    country code - ``TREX``, ``TR-EDGE``, ``tr-01`` - is not this fleet's naming
+    and must not influence the next number.
+    """
+
+    code = str(country_code).strip().upper()
+    if not re.fullmatch(r"[A-Z]{2}", code):
+        raise AnsibleFilterError(
+            f"Country code must be two letters, got {country_code!r}"
+        )
+    ordinals = []
+    for name in names or []:
+        if isinstance(name, dict):
+            name = name.get("name", "")
+        match = NODE_NAME_PATTERN.match(str(name).strip())
+        if match and match.group(1) == code:
+            ordinals.append(int(match.group(2)))
+    return sorted(set(ordinals))
+
+
+def remnawave_next_node_name(names: Any, country_code: str, width: int = 2) -> str:
+    """The next node name for a country: one above the highest one in use.
+
+    Deliberately not the first gap. A number that was used once keeps living in
+    DNS records, certificates, logs and other people's notes long after the node
+    is gone, so handing it to a different machine is how two unrelated things end
+    up with one identity.
+    """
+
+    ordinals = remnawave_country_ordinals(names, country_code)
+    highest = ordinals[-1] if ordinals else 0
+    return f"{str(country_code).strip().upper()}-{highest + 1:0{int(width)}d}"
+
+
 class FilterModule:
     """Ansible filter registration."""
 
@@ -323,4 +364,6 @@ class FilterModule:
             "remnawave_normalize_host_links": remnawave_normalize_host_links,
             "remnawave_reality_public_key": remnawave_reality_public_key,
             "remnawave_ip_in_cidrs": remnawave_ip_in_cidrs,
+            "remnawave_country_ordinals": remnawave_country_ordinals,
+            "remnawave_next_node_name": remnawave_next_node_name,
         }

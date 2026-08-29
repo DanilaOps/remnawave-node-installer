@@ -23,6 +23,42 @@
       node_name and node_country explicitly for this host. A panel CIDR and an Internal Squad identity
       are mandatory.
 
+- name: Require the node name to follow the fleet's naming
+  # <CC>-NN, so the next node of a country can be allocated by looking at the
+  # ones that exist. A name outside the pattern is not a style problem: nothing
+  # can compute what comes after it.
+  ansible.builtin.assert:
+    that:
+      - node_name is match(node_name_pattern | default('^[A-Z]{2}-[0-9]{2,}$'))
+    fail_msg: >-
+      Node name '{{ node_name }}' does not match {{ node_name_pattern | default('^[A-Z]{2}-[0-9]{2,}$') }}.
+      It is derived from the inventory hostname, which is expected to read like 'tr01' - two-letter
+      country code plus a zero-padded ordinal. Rename the inventory host, or set node_name_pattern
+      for a fleet that names its nodes differently.
+
+- name: Report the identity this run reconciles
+  # Printed before the first change, so the operator sees what the inventory
+  # hostname expanded into and can stop the run if it is not what was meant.
+  # Every value is read with a default: this is a report, and a missing variable
+  # is the business of the assertions above, not of the line that prints it.
+  ansible.builtin.debug:
+    msg:
+      - "inventory host      = {{ inventory_hostname }}   (the only place this number is written)"
+      - "country             = {{ node_country | default('?') }}"
+      - "node identity       = {{ node_name | default('?') }}   (derived, not allocated at run time)"
+      - >-
+        config profile      = {{ profile_name | default('') | default('(not set)', true) }}
+        (Xray JSON this node runs)
+      - >-
+        xray json template  =
+        {{ xray_json_template_name | default('') | default('(not managed)', true) }}
+        (Xray JSON a client receives)
+      - >-
+        internal squad      =
+        {{ internal_squad_name | default('') | default('(by uuid)', true) }}
+      - "dns hostname        = {{ selfsteal_domain | default('?') }}"
+      - "address             = {{ node_public_ip | default('?') }}"
+
 - name: Require a panel token before anything asks the panel for something
   # Without this the first API call fails with an opaque 401 inside a no_log
   # task, which is the least helpful way to learn that the secrets file was not
@@ -176,15 +212,15 @@
 
 - name: Treat an empty Config Profile list as a panel problem, not as a fresh panel
   # A 200 with nothing in it is what a degraded panel or a token without the right
-  # scope looks like. Continuing from here is how a second "Default August" gets
+  # scope looks like. Continuing from here is how a second Config Profile gets
   # created next to the real one.
   ansible.builtin.assert:
     that:
       - node_base_preflight_profiles.json | remnawave_response_items('configProfiles') | length > 0
     fail_msg: >-
-      The panel returned an empty Config Profile list. This deployment always has at least the shared
-      profile '{{ profile_name }}', so an empty answer means a degraded panel or a token without the
-      Config Profile scope. Refusing to continue rather than treating it as an empty panel.
+      The panel returned an empty Config Profile list. This deployment always holds at least one
+      Config Profile, so an empty answer means a degraded panel or a token without the Config
+      Profile scope. Refusing to continue rather than treating it as an empty panel.
   when: preflight_check_panel | bool
 
 - name: Select the Config Profile this node will publish against
@@ -205,13 +241,89 @@
     that:
       - node_base_preflight_profile | length == 1 or config_profile_create | default(false) | bool
     fail_msg: >-
-      Config Profile '{{ profile_name }}' was not found in the panel
-      ({{ node_base_preflight_profile | length }} matches). It is the Xray JSON that carries the routing
-      every published Host depends on, so it is never created silently. Create it in the panel, fix
-      profile_name, or set config_profile_create=true to bootstrap it from the role template.
+      Config Profile '{{ profile_name }}' is absent from the panel
+      ({{ node_base_preflight_profile | length }} matches). A Config Profile is the Xray JSON the
+      node itself runs (/api/config-profiles); it is not the client-side Xray JSON template
+      (xray_json_template_name, /api/subscription-templates) and not an Internal Squad. It carries
+      the routing every published Host depends on, so it is never created silently. Create it in the
+      panel, fix profile_name, or set config_profile_create=true to bootstrap it from the role
+      template. The Config Profiles this panel holds are:
+      {{ node_base_preflight_profiles.json | remnawave_response_items('configProfiles') |
+         map(attribute='name') | list | join(', ') | default('(none)', true) }}.
   when:
     - preflight_check_panel | bool
     - config_profile_mode | default('shared') == 'shared'
+
+# The Xray JSON template is a third, separate entity: a Subscription Template of
+# type XRAY_JSON that a Host carries through xrayJsonTemplateUuid. Checked here so
+# a wrong name stops the run before the registrar and the server are touched, and
+# so the message says "Xray JSON template", never "Config Profile".
+- name: List the subscription templates the panel holds
+  ansible.builtin.uri:
+    url: "{{ remnawave_panel_url | regex_replace('/+$', '') }}/api/subscription-templates"
+    method: GET
+    headers:
+      Authorization: "Bearer {{ remnawave_panel_token }}"
+    return_content: true
+    status_code: 200
+    timeout: "{{ remnawave_api_timeout }}"
+    validate_certs: "{{ remnawave_panel_validate_certs }}"
+  register: node_base_preflight_templates
+  delegate_to: localhost
+  become: false
+  no_log: true
+  changed_when: false
+  check_mode: false
+  when:
+    - preflight_check_panel | bool
+    - xray_json_template_name | default('') | length > 0
+
+- name: Require the Xray JSON template to exist before the node is touched
+  ansible.builtin.assert:
+    that:
+      - >-
+        node_base_preflight_templates.json | remnawave_response_items('templates') |
+        selectattr('templateType', 'equalto', 'XRAY_JSON') |
+        selectattr('name', 'equalto', xray_json_template_name) | list | length == 1
+    fail_msg: >-
+      Xray JSON template '{{ xray_json_template_name }}' is absent or ambiguous. It is a
+      Subscription Template of type XRAY_JSON (/api/subscription-templates) - the JSON a client
+      receives - and it is a different object from the Config Profile '{{ profile_name }}' the node
+      runs. The XRAY_JSON templates this panel holds are:
+      {{ node_base_preflight_templates.json | remnawave_response_items('templates') |
+         selectattr('templateType', 'equalto', 'XRAY_JSON') | map(attribute='name') | list |
+         join(', ') | default('(none)', true) }}.
+  when:
+    - preflight_check_panel | bool
+    - xray_json_template_name | default('') | length > 0
+
+- name: Reject a Config Profile that carries this node's name but another node's traffic
+  # The dangerous half of a name collision. A Config Profile named TR-01 with no
+  # Node TR-01 is normally this project's own object from an interrupted run, and
+  # reconciling it is right. A profile of that name holding inbounds that belong
+  # to somebody else is not ours, and adopting it would publish this node against
+  # a stranger's Xray JSON.
+  ansible.builtin.assert:
+    that:
+      - >-
+        node_base_preflight_profile_inbound_tags |
+        reject('in', inbound_specs | map(attribute='tag') | list) | list | length == 0
+    fail_msg: >-
+      Config Profile '{{ profile_name }}' already exists and carries inbound(s)
+      {{ node_base_preflight_profile_inbound_tags |
+         reject('in', inbound_specs | map(attribute='tag') | list) | list | join(', ') }},
+      which are not this node's ({{ inbound_specs | map(attribute='tag') | list | join(', ') }}).
+      A per-node profile is named after its node, so this one belongs to something else. Reconciling
+      it would publish {{ node_name }} against another node's Xray JSON. Rename this node, or set
+      profile_name explicitly if the profile really is shared on purpose.
+  vars:
+    node_base_preflight_profile_inbound_tags: >-
+      {{ (node_base_preflight_profile[0].inbounds | default([]) | selectattr('tag', 'defined') |
+          map(attribute='tag') | list) if node_base_preflight_profile | length == 1 else [] }}
+  when:
+    - preflight_check_panel | bool
+    - profile_name == node_name
+    - node_base_preflight_profile | length == 1
 
 - name: Reject an inbound tag that another Config Profile already owns
   ansible.builtin.assert:

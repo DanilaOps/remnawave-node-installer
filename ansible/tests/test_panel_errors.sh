@@ -42,6 +42,6 @@ expect_failure timeout -e remnawave_panel_token=mock-timeout -e remnawave_api_ti
 # config_profile_create lets this case reach POST /config-profiles, where the mock
 # injects the conflict; without it the run stops earlier on the missing shared profile.
 expect_failure HTTP-409 -e profile_name=CONFLICT -e config_profile_create=true
-expect_failure missing-shared-profile -e profile_name=DOES-NOT-EXIST
+expect_failure missing-config-profile -e profile_name=DOES-NOT-EXIST
 
-echo "Panel role rejects HTTP 401/403/409/500, timeouts and a missing shared profile."
+echo "Panel role rejects HTTP 401/403/409/500, timeouts and a missing Config Profile."

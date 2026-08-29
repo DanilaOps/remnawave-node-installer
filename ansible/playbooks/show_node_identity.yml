@@ -28,7 +28,12 @@
           - "host tags        = {{ host_specs[0].tags }}"
           - "ansible_user     = {{ ansible_user }}"
           - "panel            = {{ remnawave_panel_url }}"
-          - "profile          = {{ profile_name }}"
+          - "config profile   = {{ profile_name }}   (Xray JSON the node runs)"
+          - >-
+            xray json template =
+            {{ xray_json_template_name | default('') | default('(not managed)', true) }}
+            (Xray JSON a client receives)
+          - "internal squad   = {{ internal_squad_name | default('(by uuid)', true) }}"
           - "decoy seed       = {{ selfsteal_decoy_seed | default(node_id) }}"
 
     - name: Require the identity derivation to hold

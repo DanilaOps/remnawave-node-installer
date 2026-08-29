@@ -25,6 +25,7 @@ class Store:
                 "keygen_calls": 0,
             }
         self.data.setdefault("users", [])
+        self.data.setdefault("templates", [])
         self.data.setdefault("keygen_calls", 0)
 
     def save(self) -> None:
@@ -129,6 +130,13 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path == "/api/hosts":
             self.send_json(200, {"response": self.store.data["hosts"]})
+            return
+        if path == "/api/subscription-templates":
+            # A Subscription Template is not a Config Profile: separate endpoint,
+            # separate envelope, and the XRAY_JSON rows are what the panel calls
+            # an "Xray JSON template".
+            templates = self.store.data.get("templates", [])
+            self.send_json(200, {"response": {"total": len(templates), "templates": templates}})
             return
         if path == "/api/internal-squads":
             self.send_json(200, {"response": {"internalSquads": self.store.data["squads"]}})

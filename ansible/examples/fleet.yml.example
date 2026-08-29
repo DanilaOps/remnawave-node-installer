@@ -22,11 +22,51 @@ remnawave_panel_url: https://panel.your-domain.tld
 remnawave_panel_cidrs:
   - 198.51.100.20/32
 
-profile_name: Default August
-internal_squad_name: Default
+# Three different panel objects. They are matched by their exact API name, which
+# is not always what the UI shows, so read them back from the panel rather than
+# from the screen:
+#
+#   curl -sH "Authorization: Bearer $TOKEN" $PANEL/api/config-profiles       | jq -r '.response.configProfiles[].name'
+#   curl -sH "Authorization: Bearer $TOKEN" $PANEL/api/subscription-templates | jq -r '.response.templates[] | select(.templateType=="XRAY_JSON") | .name'
+#   curl -sH "Authorization: Bearer $TOKEN" $PANEL/api/internal-squads       | jq -r '.response.internalSquads[].name'
+#
+# profile_name            the Config Profile: the Xray JSON the NODE runs, and the
+#                         profile whose inbound each Host is bound to. NOT SET HERE:
+#                         it is derived per node as the node's own name, so node
+#                         TR-01 uses Config Profile TR-01 and the two can never
+#                         drift apart. Set it here only for a fleet that shares one
+#                         profile across every node, together with
+#                         config_profile_create: false.
+# xray_json_template_name the Subscription Template of type XRAY_JSON: the JSON a
+#                         CLIENT receives. A Host carries it in xrayJsonTemplateUuid.
+#                         Empty leaves the link as the panel has it.
+# internal_squad_name     the Internal Squad: which inbounds a user may use.
+xray_json_template_name: August Default
+internal_squad_name: Default-Squad
 
 node_domain_zone: your-domain.tld
 acme_email: ops@your-domain.tld
+
+# --- Adding a node -----------------------------------------------------------
+# A node is one line of inventory, and its name is the only thing that has to be
+# decided. Ask for it instead of counting by hand:
+#
+#     ./provision-node --next TR
+#         country            = TR (Turkey)
+#         TR numbers in use  = 1, 2
+#         next node name     = TR-03
+#         inventory hostname = tr03
+#
+# Then add that hostname to the inventory with the VPS address and install it:
+#
+#     tr03:
+#       ansible_host: 203.0.113.10
+#     ./provision-node tr03 --first-run
+#
+# From then on the number lives in the inventory hostname. tr03 always means
+# TR-03: node name, Config Profile name, inbound tag TR_03_REALITY and the domain
+# tr03.{{ node_domain_zone }} all follow from it, and re-running the node
+# reconciles TR-03 rather than allocating a new number.
 
 # Addresses that must keep SSH access to every node even when nobody runs from
 # them: a workstation, a jump or rescue host. The controller's own address is

@@ -30,3 +30,18 @@
         == remnawave_verify_host_spec.node_uuids | default([remnawave_node_uuid]) | sort
     fail_msg: >-
       Host {{ remnawave_verify_host_spec.remark }} does not match its declared profile inbound, address, SNI, port or Nodes.
+
+- name: Verify the Host carries the declared Xray JSON template
+  # A separate assert with its own message: a Host bound to the right Config
+  # Profile but to the wrong client template serves a working tunnel with the
+  # wrong client configuration, which is not something the check above would say.
+  ansible.builtin.assert:
+    that:
+      - >-
+        remnawave_verify_host_matches[0].xrayJsonTemplateUuid | default('')
+        == remnawave_xray_json_template_uuid
+    fail_msg: >-
+      Host {{ remnawave_verify_host_spec.remark }} carries Xray JSON template
+      '{{ remnawave_verify_host_matches[0].xrayJsonTemplateUuid | default('(none)') }}' and not
+      '{{ xray_json_template_name }}' ({{ remnawave_xray_json_template_uuid }}).
+  when: xray_json_template_name | default('') | length > 0

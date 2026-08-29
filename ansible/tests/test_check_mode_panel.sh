@@ -68,9 +68,9 @@ grep -Eq 'changed=0([[:space:]]|$)' "$again" || {
   echo "A dry-run of a reconciled deployment reported changes" >&2
   exit 1
 }
-grep -Fq "Would create" "$again" && {
+if grep -Fq "Would create" "$again"; then
   echo "A dry-run of a reconciled deployment proposed creating something" >&2
   exit 1
-}
+fi
 
 echo "Dry-runs are honest before, during and after reconciliation."

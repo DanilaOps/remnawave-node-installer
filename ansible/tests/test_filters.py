@@ -226,3 +226,46 @@ class RealityPublicKeyTests(unittest.TestCase):
         for value in ("", "   ", "not-base64!!", "c2hvcnQ="):
             with self.assertRaises(Exception):
                 MODULE.remnawave_reality_public_key(value)
+
+
+class NodeNamingTests(unittest.TestCase):
+    """<COUNTRY>-NN, one above the highest number that country ever used."""
+
+    def test_the_first_node_of_a_country_is_01(self) -> None:
+        self.assertEqual("TR-01", MODULE.remnawave_next_node_name([], "TR"))
+        self.assertEqual("TR-01", MODULE.remnawave_next_node_name(["DE-01", "NL-07"], "tr"))
+
+    def test_the_next_node_follows_the_highest_one(self) -> None:
+        self.assertEqual("TR-02", MODULE.remnawave_next_node_name(["TR-01"], "TR"))
+        self.assertEqual("TR-03", MODULE.remnawave_next_node_name(["TR-01", "TR-02"], "TR"))
+
+    def test_a_freed_number_is_not_handed_out_again(self) -> None:
+        # TR-03 existed once. Its DNS record, its certificates and somebody's
+        # notes still say TR-03, so a different machine must not become it.
+        self.assertEqual("TR-04", MODULE.remnawave_next_node_name(["TR-01", "TR-03"], "TR"))
+        self.assertEqual([1, 3], MODULE.remnawave_country_ordinals(["TR-01", "TR-03"], "TR"))
+
+    def test_other_countries_do_not_shift_the_count(self) -> None:
+        names = ["DE-01", "DE-02", "TR-01", "NL-09"]
+        self.assertEqual("TR-02", MODULE.remnawave_next_node_name(names, "TR"))
+        self.assertEqual("DE-03", MODULE.remnawave_next_node_name(names, "DE"))
+
+    def test_only_the_exact_form_counts(self) -> None:
+        # A name that merely starts with the country code is not this naming.
+        for name in ["TREX", "TR-EDGE", "tr-01", "TR01", "TR-1", "XTR-01"]:
+            with self.subTest(name=name):
+                self.assertEqual([], MODULE.remnawave_country_ordinals([name], "TR"))
+        self.assertEqual("TR-01", MODULE.remnawave_next_node_name(["TREX", "TR-EDGE"], "TR"))
+
+    def test_names_may_arrive_as_objects(self) -> None:
+        # Panel collections are lists of objects, not of strings.
+        self.assertEqual("TR-10", MODULE.remnawave_next_node_name([{"name": "TR-09"}], "TR"))
+
+    def test_the_ordinal_grows_past_two_digits(self) -> None:
+        self.assertEqual("TR-100", MODULE.remnawave_next_node_name(["TR-99"], "TR"))
+
+    def test_a_country_code_has_to_be_two_letters(self) -> None:
+        for code in ["", "T", "TUR", "T1", "-"]:
+            with self.subTest(code=code):
+                with self.assertRaises(Exception):
+                    MODULE.remnawave_next_node_name([], code)

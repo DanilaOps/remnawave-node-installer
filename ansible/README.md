@@ -103,9 +103,9 @@ and harmless.
 node at all, so it works even before the VPS exists: the inventory hostname
 parses into a usable identity and the country has a display name; every
 configured CIDR is valid; the panel answers and the token has scope; the profile
-list is not suspiciously empty; the shared Config Profile exists and carries
+list is not suspiciously empty; the node's Config Profile exists and carries
 routing rules; no other profile already owns this node's inbound tag; every
-inbound in the shared profile is one the panel strips per node; the panel holds
+inbound in that profile is one the panel strips per node; the panel holds
 no conflicting Node for this name or address and no ambiguous Host. The DNS state
 is **reported** here, never changed — and if `dns_provider` is `none`, a record
 that does not already point at the node fails the run, because nothing later will
@@ -151,7 +151,7 @@ That gives three honest outcomes rather than one:
   play with one message naming what is missing (the Node, the Internal Squad,
   the inbound, the Hosts) instead of rendering the node's configuration against
   identifiers the panel has not issued. Everything before that point — the
-  token, the shared profile and its routing, the ownership of every inbound tag,
+  token, the Config Profile and its routing, the ownership of every inbound tag,
   DNS, the platform, the SSH policy, the firewall inputs — was checked for real.
 
 The end-to-end tunnel probe is never simulated: it is announced as not executed,
@@ -200,7 +200,7 @@ even then both plays run `serial: 1`.
 `dns` reconciles the node's A record at the registrar from the controller, then waits
 until public resolvers agree. `node_base` validates the host,
 installs base packages and Docker, then applies a rollback-protected nftables policy.
-`remnawave_panel` reconciles the shared Config Profile, this node's inbound, the Node, its
+`remnawave_panel` reconciles the node's Config Profile, this node's inbound, the Node, its
 Hosts, the Internal Squad and the optional bridge identity through the Remnawave 3.x API.
 `remnawave_node` installs the pinned Xray binary, the certificate, the generated masking
 site, RemnaNode, optional geodata/plugins and the maintenance units. `node_verify` changes
@@ -277,11 +277,91 @@ Provider logic lives in `roles/dns/tasks/providers/`; the decision (create, reta
 leave alone) is provider-independent and unit-tested. Adding Cloudflare later means one
 more file there, not a change to the node installation.
 
-## One shared Config Profile
+## Node names are allocated once
 
-All nodes share a single Config Profile — `Default August` by default — because that
-profile is the Xray JSON that carries the routing every published Host depends on. A node
-never owns a private copy of it.
+A node is `<COUNTRY>-NN`: `TR-01`, `TR-02`, `NL-01`. The number is decided **once**,
+by asking the panel what that country already uses:
+
+```
+$ ./provision-node --next TR
+country            = TR (Turkey)
+TR numbers in use  = 1, 2
+next node name     = TR-03
+inventory hostname = tr03
+config profile     = TR-03   (created by the install, same name)
+dns hostname       = tr03.august-vpn.com
+```
+
+That command reads the panel and changes nothing. What it prints goes into the
+inventory as one line — `tr03: {ansible_host: …}` — and from then on the hostname
+*is* the identity: node name `TR-03`, Config Profile `TR-03`, inbound tag
+`TR_03_REALITY`, domain `tr03.<zone>`. Nothing else has to be typed, and
+`profile_name` is not something an operator maintains.
+
+Allocation is deliberately a separate step rather than something the install does
+on the fly. A run that worked out "the next free number" every time would move the
+identity of a node that already exists — install `tr01` twice and the second run
+would see `TR-01`, decide `TR-02` was next and publish the same machine again
+under a second identity. Because the number comes from the inventory hostname, a
+re-run of `tr01` can only ever reconcile `TR-01`; no reconcile path is allowed to
+call the allocator, and a test enforces that.
+
+Two more consequences worth knowing:
+
+* **A freed number is never handed out again.** With `TR-01` and `TR-03` in use,
+  the next is `TR-04`, not the gap at `TR-02`: a number that was live once still
+  appears in DNS records, certificates, logs and other people's notes.
+* **A number is taken if any object still holds it** — Node, Config Profile or
+  Host. A profile left behind by a deleted node keeps its number reserved.
+
+Two installs of the same country started at the same instant could still read the
+same "next" value; provisioning is serialised (`serial: 1`, one node per run) and
+preflight refuses a Node whose name and address disagree, so the second one stops
+instead of attaching to the wrong machine.
+
+## Three panel objects that are easy to confuse
+
+Remnawave has three separate things, two of which the UI describes with the words "Xray
+JSON". Feeding the name of one to the lookup of another produces a run that fails
+complaining about the wrong object entirely, so each has its own variable, endpoint, UUID,
+assertion and error message:
+
+| Variable | Panel object | Endpoint | What it is | Where it is attached |
+|---|---|---|---|---|
+| `profile_name` | Config Profile | `GET /api/config-profiles` | the Xray JSON **the node runs** | Node → `configProfile.activeConfigProfileUuid`; Host → `inbound.configProfileUuid` |
+| `xray_json_template_name` | Subscription Template, type `XRAY_JSON` | `GET /api/subscription-templates` | the Xray JSON **a client receives** | Host → `xrayJsonTemplateUuid` |
+| `internal_squad_name` | Internal Squad | `GET /api/internal-squads` | which inbounds a user may use | user membership |
+
+A Node has no template field at all: the template is carried by the **Host**. Leaving
+`xray_json_template_name` empty means the role does not manage that link and leaves
+whatever the panel holds; setting it makes the link declarative, and `node_verify` proves
+the published Host really carries it.
+
+Names are matched exactly, as the **API** returns them, not as the UI abbreviates them —
+a squad shown as `Default` can be `Default-Squad` in the API. Read them back rather than
+copying from the screen:
+
+```bash
+curl -sH "Authorization: Bearer $TOKEN" $PANEL/api/config-profiles        | jq -r '.response.configProfiles[].name'
+curl -sH "Authorization: Bearer $TOKEN" $PANEL/api/subscription-templates | jq -r '.response.templates[] | select(.templateType=="XRAY_JSON") | .name'
+curl -sH "Authorization: Bearer $TOKEN" $PANEL/api/internal-squads        | jq -r '.response.internalSquads[].name'
+```
+
+A wrong name fails in controller-side preflight, before the registrar or the server is
+touched, and the message names the object it could not find and lists the ones that exist.
+
+## How a Config Profile is written
+
+A Config Profile is the Xray JSON a node runs, and it is named after that node: `TR-01`
+runs Config Profile `TR-01`. `profile_name` is therefore derived, not declared — nothing
+in this repository carries a profile name as a value, and no default invents one. A
+deployment where the whole fleet shares one profile sets `profile_name` (and
+`config_profile_create: false`) in `/etc/remnawave/fleet.yml`.
+
+`config_profile_mode` describes how the profile is **written**, not how many nodes use it.
+`shared`, the default, is the read-modify-write path below; `per_node` renders the whole
+profile from the role's template and replaces anything else it held, which is why it is not
+the default even for a profile only one node uses.
 
 Each run reads the profile, merges this node's inbound into it by tag and writes the
 result back. Because that is a read-modify-write, the profile is read **again**
@@ -298,14 +378,14 @@ Reality keypair is looked up by its own inbound tag, so a node cannot adopt a ne
 key. Before the config is pushed to a node the panel removes inbounds of managed
 protocols the node does not activate, so a neighbour's Reality key never reaches
 it — an inbound of any *other* protocol would go to every node in full, which is
-why the shared profile refuses to carry one unless its tag is listed in
+why the profile refuses to carry one unless its tag is listed in
 `shared_profile_allowed_unmanaged_inbound_tags`. `inbound_prune_tags` can only
 name inbounds inside this node's own tag namespace. The Node object activates only this node's inbound, and every Host is published
-against the shared profile UUID and this node's inbound UUID — the run re-reads the Hosts
+against the profile UUID and this node's inbound UUID — the run re-reads the Hosts
 afterwards and fails if that binding is not what was declared.
 
-The shared profile is never invented silently: if it does not exist the run stops and says
-so. `config_profile_create=true` overrides that for a first-ever bootstrap of the profile
+A profile whose name was declared by hand is never invented silently: if it does not exist
+the run stops and says so. `config_profile_create=true` overrides that for a first-ever bootstrap of the profile
 (and a panel that answers with an empty profile list is treated as a fault, not as
 an empty panel),
 and `config_profile_require_routing` (on by default) refuses to publish Hosts against a
@@ -821,10 +901,10 @@ bash tests/validate_nginx.sh
 (cd roles/remnawave_node && molecule test)
 ```
 
-`test_panel_idempotency.sh` starts from a seeded shared profile that already holds another
+`test_panel_idempotency.sh` starts from a seeded Config Profile that already holds another
 node's inbound and the routing rules, then proves the second run changes nothing, the
 foreign inbound keeps its UUID and Reality key, the routing survives, and the Host and Node
-are bound to the shared profile. `test_dns_idempotency.sh` runs the DNS role against a
+are bound to that profile. `test_dns_idempotency.sh` runs the DNS role against a
 stateful mock registrar and covers create, retarget, no-op, an ambiguous name and an
 unknown zone, asserting that foreign records survive. The decoy tests assert that one seed
 gives a byte-identical site, that 64 different nodes produce 64 different pages, class name

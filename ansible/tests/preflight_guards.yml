@@ -51,7 +51,7 @@
             config_profile_mode: shared
             config_profile_create: false
             config_profile_require_routing: true
-            profile_name: Default August
+            profile_name: EE-01
             profile_uuid: ""
             shared_profile_allowed_unmanaged_inbound_tags: []
             inbound_specs:
@@ -140,3 +140,32 @@
         - name: Scenario 4 passed
           ansible.builtin.debug:
             msg: acknowledged per-host override -> accepted
+
+    - name: A node name outside the fleet's naming
+      # <CC>-NN is what makes the next number of a country computable. A name
+      # outside it is refused here rather than discovered when somebody tries to
+      # add the node after it.
+      block:
+        - name: Declare scenario 5
+          ansible.builtin.set_fact:
+            remnawave_panel_url: https://panel.real-zone.tld
+            node_domain_zone: real-zone.tld
+            node_id: ee_01
+            node_name: EE-EDGE
+            node_public_ip: "{{ ansible_host }}"
+            selfsteal_domain: "{{ inventory_hostname }}.real-zone.tld"
+            node_identity_override_ack: true
+        - name: Run preflight for scenario 5
+          ansible.builtin.import_role:
+            name: node_base
+            tasks_from: preflight_controller.yml
+          vars: *guard_baseline
+        - name: Scenario 5 must not be reached
+          ansible.builtin.fail:
+            msg: >-
+              A node name outside <COUNTRY>-NN was accepted. Nothing can then work out which number
+              the next node of that country should get.
+      rescue:
+        - name: Scenario 5 refused
+          ansible.builtin.debug:
+            msg: node name outside the fleet's naming -> refused

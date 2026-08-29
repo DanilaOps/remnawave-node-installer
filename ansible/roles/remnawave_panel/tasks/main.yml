@@ -23,6 +23,12 @@
 - name: Reconcile Node
   ansible.builtin.import_tasks: node.yml
 
+- name: Resolve the Xray JSON template published Hosts must carry
+  # A Host, not a Node, carries the template, so this runs before Hosts and after
+  # the Node. Empty name: the field is left alone, whatever the panel already has.
+  ansible.builtin.include_tasks: xray_template.yml
+  when: xray_json_template_name | default('') | length > 0
+
 - name: Reconcile Hosts
   ansible.builtin.import_tasks: hosts.yml
 

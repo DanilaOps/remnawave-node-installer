@@ -33,7 +33,10 @@
            'isDisabled': remnawave_host_spec.is_disabled | default(false) | bool,
            'tags': remnawave_host_spec.tags | default([]),
            'nodes': remnawave_host_spec.node_uuids | default([remnawave_node_uuid])
-         } | combine(remnawave_host_spec.extra | default({}), recursive=True) }}
+         }
+         | combine({'xrayJsonTemplateUuid': remnawave_xray_json_template_uuid}
+                   if xray_json_template_name | default('') | length > 0 else {})
+         | combine(remnawave_host_spec.extra | default({}), recursive=True) }}
 
 - name: Match Host by UUID or stable identity
   ansible.builtin.set_fact:

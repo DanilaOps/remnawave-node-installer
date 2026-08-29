@@ -84,6 +84,9 @@ jobs:
       - name: Verify an external inventory still resolves the whole node
         run: bash ansible/tests/test_external_inventory.sh
 
+      - name: Verify how node names are allocated
+        run: bash ansible/tests/test_node_naming.sh
+
       - name: Verify how the management allow list is resolved
         run: ansible-playbook -i localhost, -c local ansible/tests/management_cidrs.yml
 
@@ -135,6 +138,7 @@ jobs:
           bash ansible/tests/test_panel_idempotency.sh
           bash ansible/tests/test_panel_bridge_idempotency.sh
           bash ansible/tests/test_panel_errors.sh
+          bash ansible/tests/test_panel_entities.sh
           bash ansible/tests/test_shared_profile_concurrency.sh
 
       - name: Verify --check --diff is honest before, during and after reconciliation

@@ -115,10 +115,15 @@
     that:
       - remnawave_config_profile_uuid is defined or config_profile_create | bool
     fail_msg: >-
-      Config Profile '{{ profile_name }}' does not exist in the panel. In shared mode this profile
-      is the Xray JSON that carries the routing every published Host depends on, so it is never
-      invented silently. Create it in the panel first, or set config_profile_create=true to let
-      this run create it from the role template (routing from the template, not from the panel).
+      Config Profile '{{ profile_name }}' is absent from the panel. A Config Profile is the Xray
+      JSON the node itself runs (/api/config-profiles) - it is not the client-side Xray JSON
+      template (xray_json_template_name) and not an Internal Squad. In shared mode it carries the
+      routing every published Host depends on, so it is never invented silently. Create it in the
+      panel first, or set config_profile_create=true to let this run create it from the role
+      template (routing from the template, not from the panel). The Config Profiles this panel
+      holds are:
+      {{ remnawave_all_profiles |
+         map(attribute='name') | list | join(', ') | default('(none)', true) }}.
   when: config_profile_mode == 'shared'
 
 - name: Read existing or adopted Config Profile
@@ -401,6 +406,9 @@
   no_log: true
   changed_when: false
   when:
+    # A dry-run did not create the profile, so there is no UUID to re-read and
+    # nothing to compare against. On a real run the create above filled it in.
+    - remnawave_config_profile_uuid is defined
     - remnawave_profile_create is skipped | default(true)
     - remnawave_profile_needs_update | bool
 
@@ -442,6 +450,9 @@
   no_log: true
   changed_when: true
   when:
+    # Same reason as the re-read above: with no UUID there is nothing to patch,
+    # and in a dry-run the profile this would patch was never created.
+    - remnawave_config_profile_uuid is defined
     - remnawave_profile_create is skipped | default(true)
     - remnawave_profile_needs_update | bool
 
@@ -532,6 +543,19 @@
   # absent; that case is reported below instead of failing.
   when: not ansible_check_mode
 
+- name: Report the Config Profile a dry-run would create
+  ansible.builtin.debug:
+    msg: >-
+      Would create Config Profile '{{ profile_name }}' - the Xray JSON node {{ node_name }} runs,
+      named after the node. The panel carries no profile of that name, so this run has no profile
+      UUID, and the Node, the Hosts and the Squad below would all be compared against an identifier
+      the panel has not issued. The dry-run therefore stops after this play. Everything up to here
+      was checked for real: the panel token, the profile list, the ownership of every inbound tag,
+      DNS, the platform, the SSH policy and the firewall inputs.
+  when:
+    - ansible_check_mode
+    - remnawave_config_profile_uuid is not defined
+
 - name: Report what a dry-run could not verify about the shared Config Profile
   ansible.builtin.debug:
     msg: >-
@@ -550,3 +574,11 @@
     remnawave_panel_profile_changed: >-
       {{ remnawave_profile_create is not skipped | default(false) or
          remnawave_profile_update is not skipped | default(false) }}
+
+- name: End the dry-run for a node whose Config Profile does not exist yet
+  # Announced by the report above. Without a profile UUID every check below would
+  # be measured against nothing.
+  ansible.builtin.meta: end_host
+  when:
+    - ansible_check_mode
+    - remnawave_config_profile_uuid is not defined

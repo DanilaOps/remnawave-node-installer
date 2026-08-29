@@ -82,7 +82,9 @@ class ProductionRegressionTests(unittest.TestCase):
         hosts = self.read("roles/remnawave_panel/tasks/hosts.yml")
         host_item = self.read("roles/remnawave_panel/tasks/host_item.yml")
         self.assertEqual(defaults["config_profile_mode"], "shared")
-        self.assertEqual(defaults["profile_name"], "Default August")
+        # No default name: a Config Profile is named after the node that runs it,
+        # which only the caller knows.
+        self.assertEqual(defaults["profile_name"], "")
         self.assertFalse(defaults["config_profile_create"])
         self.assertTrue(defaults["config_profile_require_routing"])
         # The shared profile is merged, never overwritten, and is never invented.
@@ -950,3 +952,271 @@ class DryRunTests(unittest.TestCase):
                         f"{path.relative_to(ROOT)}: '{task.get('name')}' both hides its result and "
                         "skips itself in check mode, which is how a check that proves nothing looks"
                     )
+
+
+class PanelEntityTests(unittest.TestCase):
+    """Config Profile, Xray JSON template and Internal Squad are three objects.
+
+    They live in three endpoints, and the panel UI calls two of them something
+    with "Xray" in it. A name that belongs to one was fed to the lookup of
+    another, and the run then complained about the wrong entity entirely - so
+    each one keeps its own endpoint, its own lookup, its own UUID and its own
+    error message, and this test refuses to let them merge again.
+    """
+
+    def read(self, relative: str) -> str:
+        return (ROOT / relative).read_text(encoding="utf-8")
+
+    def urls(self, relative: str) -> list[str]:
+        """Every endpoint the tasks in this file actually call."""
+        found = []
+        for task in yaml.safe_load(self.read(relative)):
+            if not isinstance(task, dict):
+                continue
+            args = task.get("ansible.builtin.uri")
+            if isinstance(args, dict) and args.get("url"):
+                found.append(str(args["url"]))
+        return found
+
+    def test_each_entity_has_its_own_endpoint(self) -> None:
+        # Only the URLs the tasks call - the files explain the distinction in
+        # prose, so the other endpoints are named in comments on purpose.
+        template = self.urls("roles/remnawave_panel/tasks/xray_template.yml")
+        self.assertTrue(any("subscription-templates" in url for url in template), template)
+        self.assertFalse(any("config-profiles" in url for url in template), template)
+        self.assertFalse(any("internal-squads" in url for url in template), template)
+
+        body = self.read("roles/remnawave_panel/tasks/xray_template.yml")
+        self.assertIn("'templateType', 'equalto', 'XRAY_JSON'", body)
+        self.assertIn("'name', 'equalto', xray_json_template_name", body)
+
+        for relative, wanted in [
+            ("roles/remnawave_panel/tasks/profile.yml", "config-profiles"),
+            ("roles/remnawave_panel/tasks/squad.yml", "internal-squads"),
+        ]:
+            with self.subTest(file=relative):
+                urls = self.urls(relative)
+                self.assertTrue(any(wanted in url for url in urls), urls)
+                self.assertFalse(any("subscription-templates" in url for url in urls), urls)
+
+    def test_the_template_is_carried_by_the_host_not_the_node(self) -> None:
+        # The API puts xrayJsonTemplateUuid on a Host. A Node has no template
+        # field at all, so writing one there would be silently dropped.
+        host = self.read("roles/remnawave_panel/tasks/host_item.yml")
+        node = self.read("roles/remnawave_panel/tasks/node.yml")
+        self.assertIn("'xrayJsonTemplateUuid': remnawave_xray_json_template_uuid", host)
+        self.assertNotIn("xrayJsonTemplateUuid", node)
+        self.assertNotIn("xray_json_template", node)
+
+    def test_an_unset_template_leaves_the_link_alone(self) -> None:
+        # Sending null would clear an assignment somebody made in the panel.
+        defaults = yaml.safe_load(self.read("roles/remnawave_panel/defaults/main.yml"))
+        self.assertEqual("", defaults["xray_json_template_name"])
+        host = self.read("roles/remnawave_panel/tasks/host_item.yml")
+        self.assertIn("if xray_json_template_name | default('') | length > 0 else {}", host)
+        main = self.read("roles/remnawave_panel/tasks/main.yml")
+        self.assertIn("when: xray_json_template_name | default('') | length > 0", main)
+
+    def test_each_absent_entity_is_named_in_its_own_failure(self) -> None:
+        for relative, phrase in [
+            ("roles/remnawave_panel/tasks/profile.yml", "Config Profile '{{ profile_name }}' is absent"),
+            (
+                "roles/remnawave_panel/tasks/xray_template.yml",
+                "Xray JSON template '{{ xray_json_template_name }}' is",
+            ),
+            ("roles/remnawave_panel/tasks/squad.yml", "Internal Squad"),
+            (
+                "roles/node_base/tasks/preflight_controller.yml",
+                "Xray JSON template '{{ xray_json_template_name }}' is absent",
+            ),
+        ]:
+            with self.subTest(file=relative):
+                self.assertIn(phrase, " ".join(self.read(relative).split()))
+
+    def test_a_wrong_name_is_answered_with_the_names_that_exist(self) -> None:
+        # The mix-up that started this is only obvious when the message lists
+        # what the panel actually holds for that one entity.
+        for relative, listing in [
+            ("roles/remnawave_panel/tasks/profile.yml", "The Config Profiles this panel holds are"),
+            (
+                "roles/remnawave_panel/tasks/xray_template.yml",
+                "The XRAY_JSON templates this panel holds are",
+            ),
+            ("roles/remnawave_panel/tasks/squad.yml", "The Squads this panel holds are"),
+        ]:
+            with self.subTest(file=relative):
+                # Folded YAML scalars wrap, so compare on collapsed whitespace.
+                self.assertIn(listing, " ".join(self.read(relative).split()))
+
+    def test_the_published_host_is_verified_against_the_template(self) -> None:
+        verify = self.read("roles/node_verify/tasks/panel_host.yml")
+        self.assertIn("Verify the Host carries the declared Xray JSON template", verify)
+        self.assertIn("remnawave_xray_json_template_uuid", verify)
+
+    def test_the_three_names_are_documented_side_by_side(self) -> None:
+        example = (ROOT / "examples" / "fleet.yml.example").read_text(encoding="utf-8")
+        for line in ("profile_name", "xray_json_template_name:", "internal_squad_name:"):
+            with self.subTest(line=line):
+                self.assertIn(line, example)
+        self.assertIn("/api/subscription-templates", example)
+        # profile_name is explained but deliberately not set: it is derived per
+        # node, so an operator who copies this file does not pin the whole fleet
+        # to one profile by accident.
+        self.assertNotIn("\nprofile_name:", example)
+
+
+class NodeIdentityTests(unittest.TestCase):
+    """A node's number is allocated once and then lives in the inventory.
+
+    The failure this prevents: a reconcile that works out "the next free number"
+    every time. Run it twice on tr01 and the second run decides TR-02 is next,
+    creates a second Node and a second Config Profile, and the machine ends up
+    published twice under two identities.
+    """
+
+    def read(self, relative: str) -> str:
+        return (ROOT / relative).read_text(encoding="utf-8")
+
+    def test_identity_comes_from_the_inventory_hostname(self) -> None:
+        identity = yaml.safe_load(self.read("playbooks/group_vars/remnawave_nodes/identity.yml"))
+
+        def rooted_in_hostname(expression: str, seen: set) -> bool:
+            """Every identity value resolves to the inventory hostname, directly
+            or through another derived value - and to nothing else."""
+            if "inventory_hostname" in expression:
+                return True
+            return any(
+                key in expression and key not in seen
+                and rooted_in_hostname(identity[key], seen | {key})
+                for key in identity
+                if isinstance(identity.get(key), str)
+            )
+
+        for key in ("node_country_code", "node_sequence", "node_id", "node_name",
+                    "selfsteal_domain", "profile_name"):
+            with self.subTest(key=key):
+                self.assertTrue(rooted_in_hostname(identity[key], {key}), identity[key])
+
+    def test_the_config_profile_is_named_after_the_node(self) -> None:
+        identity = yaml.safe_load(self.read("playbooks/group_vars/remnawave_nodes/identity.yml"))
+        self.assertEqual("{{ node_name }}", identity["profile_name"])
+        # ...and creating it is allowed, because the name cannot be mistyped.
+        self.assertTrue(identity["config_profile_create"])
+
+    def test_no_role_ever_allocates_a_number(self) -> None:
+        # The whole guarantee in one assertion: nothing on the reconcile path may
+        # call the allocator, so no run can renumber a node that already exists.
+        for path in sorted((ROOT / "roles").rglob("*.yml")):
+            with self.subTest(file=str(path.relative_to(ROOT))):
+                text = path.read_text(encoding="utf-8")
+                self.assertNotIn("remnawave_next_node_name", text)
+                self.assertNotIn("remnawave_country_ordinals", text)
+
+    def test_the_allocator_is_a_playbook_of_its_own_and_writes_nothing(self) -> None:
+        allocation = self.read("playbooks/next_node_name.yml")
+        self.assertIn("remnawave_next_node_name", allocation)
+        document = yaml.safe_load(allocation)
+        for task in document[0]["tasks"]:
+            with self.subTest(task=task.get("name")):
+                args = task.get("ansible.builtin.uri")
+                if args:
+                    self.assertEqual("GET", args["method"])
+                # Nothing else may touch the panel or the disk.
+                for module in task:
+                    self.assertNotIn(module, {"ansible.builtin.file", "ansible.builtin.copy",
+                                              "ansible.builtin.template", "ansible.builtin.command"})
+
+    def test_the_allocator_counts_every_object_that_holds_a_name(self) -> None:
+        # A Config Profile left behind by a deleted Node still owns its number.
+        allocation = self.read("playbooks/next_node_name.yml")
+        for collection in ("nodes", "config-profiles", "hosts"):
+            with self.subTest(collection=collection):
+                self.assertIn(collection, allocation)
+
+    def test_preflight_refuses_a_name_nothing_can_follow(self) -> None:
+        preflight = self.read("roles/node_base/tasks/preflight_controller.yml")
+        self.assertIn("node_name_pattern", preflight)
+        identity = yaml.safe_load(self.read("playbooks/group_vars/remnawave_nodes/identity.yml"))
+        self.assertEqual("^[A-Z]{2}-[0-9]{2,}$", identity["node_name_pattern"])
+
+    def test_preflight_shows_the_identity_before_anything_changes(self) -> None:
+        preflight = " ".join(self.read("roles/node_base/tasks/preflight_controller.yml").split())
+        self.assertIn("Report the identity this run reconciles", preflight)
+        for line in ("node identity", "config profile", "xray json template",
+                     "internal squad", "dns hostname"):
+            with self.subTest(line=line):
+                self.assertIn(line, preflight)
+
+    def test_preflight_refuses_a_profile_of_this_name_holding_someone_elses_inbounds(self) -> None:
+        preflight = " ".join(self.read("roles/node_base/tasks/preflight_controller.yml").split())
+        self.assertIn("carries this node's name but another node's traffic", preflight)
+
+
+class NoProfileTemplateConfusionTests(unittest.TestCase):
+    """The two names must never be able to change places again.
+
+    'August Default' is a client-side Xray JSON template. It was fed to the
+    Config Profile lookup once, and the run then failed complaining that a Config
+    Profile of that name was missing - true, and completely misleading. The
+    strings themselves are now policed, because a profile *name* sitting in a
+    default or an example is what invites the swap.
+    """
+
+    def tracked_files(self) -> list[pathlib.Path]:
+        skip = {".git", "__pycache__", ".venv", ".venv-audit", "collections"}
+        return [
+            path
+            for path in sorted(REPO.rglob("*"))
+            if path.is_file()
+            and not any(part in skip for part in path.parts)
+            and path.suffix in {".yml", ".yaml", ".py", ".sh", ".md", ".j2", ".cfg", ""}
+        ]
+
+    # Assembled rather than written out, so this file does not trip its own rule.
+    RETIRED_PROFILE_NAME = "Default" + " August"
+    TEMPLATE_NAME = "August" + " Default"
+
+    def test_the_template_name_is_never_used_as_a_profile_name(self) -> None:
+        offenders = []
+        for path in self.tracked_files():
+            try:
+                text = path.read_text(encoding="utf-8")
+            except (UnicodeDecodeError, OSError):
+                continue
+            for number, line in enumerate(text.splitlines(), start=1):
+                if self.RETIRED_PROFILE_NAME in line:
+                    offenders.append(
+                        f"{path.relative_to(REPO)}:{number}: a retired Config Profile name: "
+                        f"{line.strip()}"
+                    )
+                if self.TEMPLATE_NAME in line and "template" not in line.lower():
+                    offenders.append(
+                        f"{path.relative_to(REPO)}:{number}: the Xray JSON template name used "
+                        f"without saying it is a template: {line.strip()}"
+                    )
+        self.assertEqual([], offenders, "\n" + "\n".join(offenders))
+
+    def test_no_config_profile_name_is_hard_coded_anywhere(self) -> None:
+        # A Config Profile is named after the node that runs it. Any literal
+        # profile_name outside a test fixture is a name somebody has to maintain,
+        # and the one nobody updates when the fleet changes.
+        defaults = yaml.safe_load(
+            (ROOT / "roles" / "remnawave_panel" / "defaults" / "main.yml").read_text(encoding="utf-8")
+        )
+        self.assertEqual("", defaults["profile_name"])
+
+        panel_wide = yaml.safe_load(
+            (GROUP_VARS / "all" / "panel.yml").read_text(encoding="utf-8")
+        )
+        self.assertNotIn("profile_name", panel_wide)
+
+        identity = yaml.safe_load(
+            (GROUP_VARS / "remnawave_nodes" / "identity.yml").read_text(encoding="utf-8")
+        )
+        self.assertEqual("{{ node_name }}", identity["profile_name"])
+
+    def test_the_example_pins_the_template_and_not_the_profile(self) -> None:
+        example = (ROOT / "examples" / "fleet.yml.example").read_text(encoding="utf-8")
+        settings = yaml.safe_load(example)
+        self.assertEqual("August Default", settings["xray_json_template_name"])
+        self.assertNotIn("profile_name", settings)

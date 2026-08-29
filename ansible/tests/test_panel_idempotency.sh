@@ -15,8 +15,8 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# The shared "Default August" profile already exists in production and carries
-# the routing, so the test starts from that state instead of an empty panel.
+# The Config Profile already exists and carries the routing, which is the state
+# production is in, so the test starts from there instead of an empty panel.
 python "$root/tests/seed_shared_profile.py" "$state"
 
 python "$root/tests/mock_panel.py" --state "$state" &
@@ -60,7 +60,7 @@ profiles = state["profiles"]
 assert len(profiles) == 1, "the shared profile must not be duplicated"
 profile = profiles[0]
 assert profile["uuid"] == PROFILE_UUID, profile["uuid"]
-assert profile["name"] == "Default August", profile["name"]
+assert profile["name"] == "Mock-Profile", profile["name"]
 
 config = profile["config"]
 rules = config["routing"]["rules"]

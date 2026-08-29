@@ -23,13 +23,23 @@ inbound_prune_tags: []
 shared_profile_managed_protocols: [vless, trojan, shadowsocks, hysteria]
 shared_profile_allowed_unmanaged_inbound_tags: []
 profile_uuid: ""
-profile_name: Default August
+# No default name on purpose. A Config Profile is named after the node that runs
+# it, and only the caller knows that; the role asserts that one of profile_name
+# and profile_uuid is set rather than inventing a name that would create a second
+# profile beside the real one.
+profile_name: ""
 inbound_specs:
   - tag: "{{ node_name | upper | regex_replace('[^A-Z0-9_]', '_') }}_REALITY"
     port: 443
     network: raw
 
 host_specs: []
+# The Xray JSON template a published Host carries: a Subscription Template of
+# type XRAY_JSON (/api/subscription-templates), which is what a client receives -
+# not the Config Profile above, which is what the node runs. Empty means the role
+# does not manage the link and leaves whatever the panel holds.
+xray_json_template_name: ""
+
 internal_squad_uuid: ""
 internal_squad_name: ""
 internal_squad_create: true
