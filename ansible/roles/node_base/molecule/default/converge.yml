@@ -18,8 +18,10 @@
     preflight_check_dns: false
     preflight_check_panel: false
     preflight_check_ports: false
+    preflight_check_disk: false
     preflight_require_ntp_sync: false
     node_base_upgrade_packages: false
+    node_base_manage_hostname: false
     node_base_reboot_if_required: false
     node_firewall_enabled: false
     node_hardening_enabled: false

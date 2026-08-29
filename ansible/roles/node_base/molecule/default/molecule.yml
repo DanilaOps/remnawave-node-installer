@@ -32,6 +32,8 @@ provisioner:
   name: ansible
   config_options:
     defaults:
-      roles_path: ${MOLECULE_PROJECT_DIRECTORY}/../../..
+      # The scenario's project directory is the role directory itself, so the
+      # directory that holds every role of this project is one level up.
+      roles_path: ${MOLECULE_PROJECT_DIRECTORY}/..
 verifier:
   name: ansible

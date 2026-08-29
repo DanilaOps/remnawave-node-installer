@@ -1,0 +1,26 @@
+---
+# The role is written for a VPS, not for a container image. This step gives the
+# instance the two things every provider image already has and a test image does
+# not: current package metadata and an SSH daemon whose configuration the role
+# hardens. Nothing here belongs to the role - it only makes the starting point
+# look like a fresh node.
+- name: Prepare the instance
+  hosts: all
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Refresh the package metadata the image was built with
+      ansible.builtin.apt:
+        update_cache: true
+      changed_when: false
+
+    - name: Install the SSH daemon a provider image ships with
+      ansible.builtin.apt:
+        name: openssh-server
+        state: present
+
+    - name: Start the SSH daemon so its runtime directory exists
+      ansible.builtin.systemd_service:
+        name: ssh
+        state: started
+        enabled: true

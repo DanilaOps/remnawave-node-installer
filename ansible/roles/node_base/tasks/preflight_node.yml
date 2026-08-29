@@ -34,10 +34,15 @@
 - name: Check root filesystem capacity
   ansible.builtin.assert:
     that:
+      # "| list | first | default(0)" and not a bare "first": a host that does not
+      # report "/" among its mounts used to crash the guard with "No first item,
+      # sequence was empty" instead of failing with the message below.
       - >-
-        (ansible_facts.mounts | selectattr('mount', 'equalto', '/') | map(attribute='size_available') | first | int)
+        (ansible_facts.mounts | selectattr('mount', 'equalto', '/')
+         | map(attribute='size_available') | list | first | default(0) | int)
         >= (node_base_minimum_free_mb | int * 1024 * 1024)
     fail_msg: "At least {{ node_base_minimum_free_mb }} MiB must be free on /."
+  when: preflight_check_disk | bool
 
 - name: Resolve the selfsteal domain from the node
   ansible.builtin.command:

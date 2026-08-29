@@ -25,6 +25,12 @@
     argv: [lsblk, -n, -o, PKNAME, "{{ node_base_root_source.stdout | trim }}"]
   register: node_base_root_parent_disk
   changed_when: false
+  # lsblk exits 32 when the root filesystem is not a block device at all - a
+  # container's overlay, for one. This task only detects a candidate BIOS boot
+  # disk; "Validate the detected BIOS boot disk" below is what decides whether
+  # the answer is usable, and it only runs where grub-pc is actually installed.
+  # Aborting the whole run here would fail a host the GRUB tasks never touch.
+  failed_when: node_base_root_parent_disk.rc not in [0, 32]
   # Read-only: it runs in check mode too, so a dry-run sees real state.
   check_mode: false
 
@@ -113,6 +119,7 @@
 - name: Configure the system hostname
   ansible.builtin.hostname:
     name: "{{ node_base_hostname }}"
+  when: node_base_manage_hostname | bool
 
 - name: Configure UTC timezone
   community.general.timezone:
