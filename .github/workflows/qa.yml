@@ -87,6 +87,9 @@ jobs:
       - name: Verify how node names are allocated
         run: bash ansible/tests/test_node_naming.sh
 
+      - name: Verify bridge acceptance handles direct, entry and probe-only nodes
+        run: bash ansible/tests/test_bridge_verify.sh
+
       - name: Verify how the management allow list is resolved
         run: ansible-playbook -i localhost, -c local ansible/tests/management_cidrs.yml
 

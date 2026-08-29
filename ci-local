@@ -73,6 +73,7 @@ step fast:unit                fast
 step fast:syntax              fast
 step fast:external-inventory  fast
 step fast:node-naming         fast
+step fast:bridge-verify       fast
 step fast:management-cidrs    fast
 step fast:check-mode-controller fast
 step fast:preflight-guards    fast
@@ -104,6 +105,7 @@ run_step() {
     fast:syntax)            check_syntax ;;
     fast:external-inventory) bash ansible/tests/test_external_inventory.sh ;;
     fast:node-naming)       bash ansible/tests/test_node_naming.sh ;;
+    fast:bridge-verify)     bash ansible/tests/test_bridge_verify.sh ;;
     fast:management-cidrs)  ansible-playbook -i localhost, -c local ansible/tests/management_cidrs.yml ;;
     fast:check-mode-controller) bash ansible/tests/test_check_mode_controller.sh ;;
     fast:preflight-guards)  ansible-playbook -i ansible/inventories/staging/hosts.yml -c local \

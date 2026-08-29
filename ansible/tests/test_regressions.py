@@ -294,6 +294,18 @@ class OperatorWorkflowTests(unittest.TestCase):
             yaml.safe_load(identity)["node_public_ip"], "{{ ansible_host }}"
         )
 
+    def test_bridge_verification_is_gated_dynamically(self) -> None:
+        # import_tasks inlines the bridge tasks, and delegate_to is templated
+        # before the inherited condition is evaluated - a direct node whose
+        # bridge_spec is only {enabled: false} then crashes on the bridge-only
+        # entry_inventory_host. The gate must stay a dynamic include, which
+        # skips the whole file as one unit.
+        main = self.read("roles/node_verify/tasks/main.yml")
+        self.assertIn("ansible.builtin.include_tasks: bridge.yml", main)
+        self.assertNotIn("import_tasks: bridge.yml", main)
+        bridge = self.read("roles/node_verify/tasks/bridge.yml")
+        self.assertNotIn('delegate_to: "{{ bridge_spec.entry_inventory_host }}"', bridge)
+
     def test_a_re_addressed_host_is_matched_for_repair(self) -> None:
         # Changing the published address must repair the existing Host, not
         # create a second one: the reconciler needs a match path that survives

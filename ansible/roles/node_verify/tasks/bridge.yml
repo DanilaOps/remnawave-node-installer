@@ -12,7 +12,11 @@
     state: started
     connect_timeout: 5
     timeout: "{{ verify_external_timeout }}"
-  delegate_to: "{{ bridge_spec.entry_inventory_host }}"
+  # The default never delegates anywhere: the condition below skips this task
+  # whenever entry_inventory_host is absent. It exists because delegate_to is
+  # templated before the condition is evaluated, so the expression itself must
+  # survive a bridge_spec that carries no entry host (external-probe bridges).
+  delegate_to: "{{ bridge_spec.entry_inventory_host | default(omit) }}"
   become: false
   when: bridge_spec.entry_inventory_host | default('') | length > 0
 

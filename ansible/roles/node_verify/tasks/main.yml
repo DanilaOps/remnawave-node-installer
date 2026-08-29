@@ -9,7 +9,13 @@
   ansible.builtin.import_tasks: external.yml
 
 - name: Verify bridge end to end
-  ansible.builtin.import_tasks: bridge.yml
+  # include_tasks, not import_tasks, and the difference is the whole point: a
+  # static import inlines the file's tasks, and Ansible templates a task's
+  # delegate_to before it evaluates the inherited condition - so a direct node,
+  # whose bridge_spec is only {enabled: false}, crashed on the bridge-only
+  # entry_inventory_host it never had. A dynamic include is skipped as one unit
+  # and nothing inside the file is ever templated.
+  ansible.builtin.include_tasks: bridge.yml
   when: bridge_spec.enabled | default(false) | bool
 
 - name: Publish final deployment result
