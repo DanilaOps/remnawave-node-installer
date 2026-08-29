@@ -1396,6 +1396,51 @@ class IdentityDirectoryTests(unittest.TestCase):
                 self.assertIn("remnawave_node_identity_group=$(id -gn)", text)
 
 
+class TemplateBackslashTests(unittest.TestCase):
+    """A regex backreference written as \\1 inside a block scalar reaches Jinja
+    as a double backslash, and the certbot argv it built on tr01 was a literal
+    "-d=\\1" - which the ACME server rejected. Inside a double-quoted scalar
+    YAML unescapes it first, so the same spelling works. That difference is too
+    subtle to police in review; this walks every templated string the way YAML
+    delivers it to Jinja and rejects the broken spelling anywhere."""
+
+    def test_no_expression_carries_a_double_backslash_backreference(self) -> None:
+        offenders: list[str] = []
+
+        def walk(value: object, where: str) -> None:
+            if isinstance(value, str):
+                if "{{" in value and re.search(r"\\\\[0-9g]", value):
+                    offenders.append(f"{where}: {value[:100]}")
+            elif isinstance(value, dict):
+                for child in value.values():
+                    walk(child, where)
+            elif isinstance(value, list):
+                for child in value:
+                    walk(child, where)
+
+        for path in ROOT.rglob("*.yml"):
+            if "collections/ansible_collections" in str(path):
+                continue
+            try:
+                documents = list(yaml.safe_load_all(path.read_text(encoding="utf-8")))
+            except yaml.YAMLError:
+                continue
+            for document in documents:
+                walk(document, str(path.relative_to(REPO)))
+        self.assertEqual(offenders, [])
+
+    def test_certbot_domains_are_built_without_a_backreference(self) -> None:
+        # The certbot argv names every domain as -d=<name>. It is built by
+        # pairing the literal "-d" with each domain and joining on "=", which
+        # cannot degrade into a literal escape the way regex replacement did.
+        tasks = (ROOT / "roles/remnawave_node/tasks/certificate_issue.yml").read_text(encoding="utf-8")
+        self.assertIn(
+            "(['-d'] | product(remnawave_certificate_domains) | map('join', '=') | list)",
+            tasks,
+        )
+        self.assertNotIn("-d=\\", tasks)
+
+
 class MoleculeEnvironmentTests(unittest.TestCase):
     """Molecule runs playbooks against an ansible.cfg it writes itself, so the
     project ansible.cfg is never read from a scenario. Everything a scenario

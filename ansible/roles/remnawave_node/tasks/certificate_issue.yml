@@ -39,7 +39,7 @@
              '--dns-cloudflare-propagation-seconds', certificate_dns_propagation_seconds | string])
          + (['--force-renewal']
             if remnawave_certificate_before_phase.stat.exists else ['--keep-until-expiring'])
-         + (remnawave_certificate_domains | map('regex_replace', '^(.*)$', '-d=\\1') | list) }}
+         + (['-d'] | product(remnawave_certificate_domains) | map('join', '=') | list) }}
 
 - name: Issue the certificate, without stopping nginx, for {{ remnawave_certificate_phase }}
   ansible.builtin.command:
