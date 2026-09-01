@@ -47,17 +47,32 @@ logs without being able to rewrite them.
 
 ## Secrets
 
-- **Panel API token, vault password** — long-lived, so they belong in a Variable
-  Group, which keeps its secrets encrypted at rest.
-- **Root password of a brand new VPS** — one-off, so it belongs in a **secret
-  survey field** named `bootstrap_ssh_password`. In 2.18.29 `Task.Secret` is
-  declared `db:"-"` and is replaced before the task record is written, so a
-  survey secret is never stored; it exists only for the duration of the run.
-- Either kind reaches Ansible as `--extra-vars` **on the command line**, so it is
-  visible in `/proc` while the run lasts. That is why the controller stays
-  single-purpose, and why the bootstrap play refuses to run with a password at
-  `-vv` or higher.
+One rule, and it decides every case below: **no secret reaches Ansible as
+`--extra-vars name=value`.** Semaphore puts both Variable Group values and survey
+answers on the `ansible-playbook` command line, and argv is world-readable
+through `/proc/<pid>/cmdline` — for the length of the run, and for as long
+afterwards as an orphaned process survives. Not being stored in the database is
+no help while the value is readable by every local account.
+
+- **Panel API token** — `vault_remnawave_panel_token` in the ansible-vault
+  encrypted `/etc/remnawave/secrets.yml`, loaded by every template as
+  `-e @/etc/remnawave/secrets.yml`. Ansible decrypts an extra-vars *file*
+  in-process, so only the path is ever on the command line.
+- **Vault password** — not a value at all: the Variable Group sets the
+  *environment variable* `ANSIBLE_VAULT_PASSWORD_FILE=/etc/remnawave/vault-pass`.
+  Semaphore's environment variables go into the process environment, not argv.
+- **Root password of a brand new VPS** — `vault_node_root_password` in the same
+  encrypted file, or `NODE_ROOT_PASSWORD` in the environment, which
+  `./provision-node` prompts for. There is deliberately **no secret survey
+  field**: a survey answer is an extra var, and an extra var is argv.
+- **The Variable Group holds no extra-vars values at all.** Its only content is
+  the one environment variable above. Anything added to it as a value becomes
+  argv on the next run.
 - The deployer SSH private key belongs in the Key Store, not in the repository.
+
+The bootstrap play still refuses to run with a password at `-vv` or higher, and
+the controller still stays single-purpose. Those are defences in depth now rather
+than the only thing standing between a secret and `ps`.
 
 ## Templates
 

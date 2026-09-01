@@ -65,13 +65,19 @@ TEMPLATES = [
         ),
         "arguments": [],
         "allow_parallel_tasks": False,
+        # No survey field of type "secret", deliberately. Semaphore hands every
+        # survey answer to ansible-playbook as --extra-vars, which puts it in
+        # argv, and argv is world-readable through /proc/<pid>/cmdline for the
+        # whole run - and for as long afterwards as an orphaned process lives.
+        # Not being written to Semaphore's database is not enough when the value
+        # is readable by every local account while it matters.
+        #
+        # The root password of a brand new VPS therefore travels the same way
+        # every other secret in this project does: NODE_ROOT_PASSWORD in the
+        # environment, which ./provision-node prompts for, or
+        # vault_node_root_password in the encrypted /etc/remnawave/secrets.yml,
+        # which Ansible decrypts in-process. See node_bootstrap/defaults/main.yml.
         "survey_vars": [
-            {
-                "name": "bootstrap_ssh_password",
-                "title": "Fresh VPS root password",
-                "type": "secret",
-                "description": "Leave empty after the deployer account has been created.",
-            },
             {
                 "name": "bootstrap_trust_new_host_keys",
                 "title": "Trust a new SSH host key",

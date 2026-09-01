@@ -1,0 +1,51 @@
+[Unit]
+Description=Prometheus node exporter (August VPN, pinned {{ node_exporter_version }})
+Documentation=https://github.com/{{ node_exporter_release_repository }}
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User={{ node_exporter_user }}
+Group={{ node_exporter_group }}
+ExecStart={{ node_exporter_binary_path }} \
+  --web.listen-address={{ node_monitoring_bind_address }}:{{ node_monitoring_exporter_port }} \
+  --collector.textfile.directory={{ node_monitoring_textfile_dir }} \
+  --collector.disable-defaults \
+{% for collector in node_monitoring_enabled_collectors | unique %}
+  --collector.{{ collector }} \
+{% endfor %}
+{% for collector in node_monitoring_disabled_collectors | unique %}
+  --no-collector.{{ collector }} \
+{% endfor %}
+  --web.max-requests=8
+Restart=on-failure
+RestartSec=5s
+
+# The exporter reads /proc and one directory. Everything below is what it does
+# not need, removed: no writable filesystem, no new privileges, no other user's
+# processes, no kernel tunables.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+CapabilityBoundingSet=
+AmbientCapabilities=
+ReadOnlyPaths={{ node_monitoring_textfile_dir }}
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+
+[Install]
+WantedBy=multi-user.target

@@ -169,3 +169,224 @@
         - name: Scenario 5 refused
           ansible.builtin.debug:
             msg: node name outside the fleet's naming -> refused
+
+    - name: The operator's own address, left as the documentation value
+      # The trap this guard exists for: fleet.yml.example ships an RFC 5737
+      # address in management_cidrs_extra. Copied without editing it, the run
+      # writes a firewall rule for an address that is never routed - the node
+      # looks configured and the operator has no direct access.
+      block:
+        - name: Declare scenario 6
+          ansible.builtin.set_fact:
+            remnawave_panel_url: https://panel.real-zone.tld
+            node_domain_zone: real-zone.tld
+            node_id: ee_01
+            node_name: EE-01
+            node_public_ip: "{{ ansible_host }}"
+            selfsteal_domain: "{{ inventory_hostname }}.real-zone.tld"
+            node_identity_override_ack: false
+            management_cidrs_extra: ["203.0.113.9/32"]
+        - name: Run preflight for scenario 6
+          ansible.builtin.import_role:
+            name: node_base
+            tasks_from: preflight_controller.yml
+          vars: *guard_baseline
+        - name: Scenario 6 must not be reached
+          ansible.builtin.fail:
+            msg: >-
+              A documentation address was accepted as the operator's permanent SSH access. The
+              firewall would be written with a rule for an address that cannot connect.
+      rescue:
+        - name: Scenario 6 refused
+          ansible.builtin.debug:
+            msg: documentation address in management_cidrs_extra -> refused, as it must be
+
+    - name: A real operator address, IPv4 and IPv6
+      # Deliberately not documentation addresses - the guard above refuses those.
+      # RFC 6598 shared space and a ULA stand in for an operator's own public v4
+      # and v6 without putting a production address in the repository.
+      block:
+        - name: Declare scenario 7
+          ansible.builtin.set_fact:
+            remnawave_panel_url: https://panel.real-zone.tld
+            node_domain_zone: real-zone.tld
+            node_id: ee_01
+            node_name: EE-01
+            node_public_ip: "{{ ansible_host }}"
+            selfsteal_domain: "{{ inventory_hostname }}.real-zone.tld"
+            node_identity_override_ack: false
+            management_cidrs_extra: ["100.64.0.7/32", "fd00:2026::7/128"]
+        - name: Run preflight for scenario 7
+          ansible.builtin.import_role:
+            name: node_base
+            tasks_from: preflight_controller.yml
+          vars: *guard_baseline
+        - name: Scenario 7 passed
+          ansible.builtin.debug:
+            msg: operator IPv4 /32 and IPv6 /128 -> accepted
+
+    - name: No operator address at all
+      # A fleet administered only through Semaphore is a legitimate choice, so
+      # this must pass - and say out loud what it means.
+      block:
+        - name: Declare scenario 8
+          ansible.builtin.set_fact:
+            remnawave_panel_url: https://panel.real-zone.tld
+            node_domain_zone: real-zone.tld
+            node_id: ee_01
+            node_name: EE-01
+            node_public_ip: "{{ ansible_host }}"
+            selfsteal_domain: "{{ inventory_hostname }}.real-zone.tld"
+            node_identity_override_ack: false
+            management_cidrs_extra: []
+        - name: Run preflight for scenario 8
+          ansible.builtin.import_role:
+            name: node_base
+            tasks_from: preflight_controller.yml
+          vars: *guard_baseline
+        - name: Scenario 8 passed
+          ansible.builtin.debug:
+            msg: no operator address -> accepted, controller-only access reported
+
+    - name: Monitoring on with the exporter open to the whole internet, IPv4
+      # node_exporter authenticates nobody and /metrics is a map of the node:
+      # interfaces, addresses, mount points, uptime. A 0.0.0.0/0 in the scrape
+      # list is the one mistake that turns an additive extra into a leak, so it
+      # is refused on the controller before the VPS is touched.
+      block:
+        - name: Declare scenario 9
+          ansible.builtin.set_fact:
+            remnawave_panel_url: https://panel.real-zone.tld
+            node_domain_zone: real-zone.tld
+            node_id: ee_01
+            node_name: EE-01
+            node_public_ip: "{{ ansible_host }}"
+            selfsteal_domain: "{{ inventory_hostname }}.real-zone.tld"
+            node_identity_override_ack: false
+            node_monitoring_enabled: true
+            monitoring_scrape_cidrs: ["0.0.0.0/0"]
+            # Restated: set_fact persists, and scenario 12 leaves 9100 in this list.
+            node_public_tcp_ports: [80, 443]
+        - name: Run preflight for scenario 9
+          ansible.builtin.import_role:
+            name: node_base
+            tasks_from: preflight_controller.yml
+          vars: *guard_baseline
+        - name: Scenario 9 must not be reached
+          ansible.builtin.fail:
+            msg: >-
+              monitoring_scrape_cidrs accepted 0.0.0.0/0. The exporter would have been reachable
+              from anywhere, with no authentication in front of it.
+      rescue:
+        - name: Scenario 9 refused
+          ansible.builtin.debug:
+            msg: 0.0.0.0/0 in monitoring_scrape_cidrs -> refused
+
+    - name: Monitoring on with the exporter open to the whole internet, IPv6
+      block:
+        - name: Declare scenario 10
+          ansible.builtin.set_fact:
+            remnawave_panel_url: https://panel.real-zone.tld
+            node_domain_zone: real-zone.tld
+            node_id: ee_01
+            node_name: EE-01
+            node_public_ip: "{{ ansible_host }}"
+            selfsteal_domain: "{{ inventory_hostname }}.real-zone.tld"
+            node_identity_override_ack: false
+            node_monitoring_enabled: true
+            monitoring_scrape_cidrs: ["::/0"]
+            # Restated: set_fact persists, and scenario 12 leaves 9100 in this list.
+            node_public_tcp_ports: [80, 443]
+        - name: Run preflight for scenario 10
+          ansible.builtin.import_role:
+            name: node_base
+            tasks_from: preflight_controller.yml
+          vars: *guard_baseline
+        - name: Scenario 10 must not be reached
+          ansible.builtin.fail:
+            msg: monitoring_scrape_cidrs accepted ::/0.
+      rescue:
+        - name: Scenario 10 refused
+          ansible.builtin.debug:
+            msg: "::/0 in monitoring_scrape_cidrs -> refused"
+
+    - name: Monitoring on with no scrape address at all
+      block:
+        - name: Declare scenario 11
+          ansible.builtin.set_fact:
+            remnawave_panel_url: https://panel.real-zone.tld
+            node_domain_zone: real-zone.tld
+            node_id: ee_01
+            node_name: EE-01
+            node_public_ip: "{{ ansible_host }}"
+            selfsteal_domain: "{{ inventory_hostname }}.real-zone.tld"
+            node_identity_override_ack: false
+            node_monitoring_enabled: true
+            monitoring_scrape_cidrs: []
+            # Restated: set_fact persists, and scenario 12 leaves 9100 in this list.
+            node_public_tcp_ports: [80, 443]
+        - name: Run preflight for scenario 11
+          ansible.builtin.import_role:
+            name: node_base
+            tasks_from: preflight_controller.yml
+          vars: *guard_baseline
+        - name: Scenario 11 must not be reached
+          ansible.builtin.fail:
+            msg: >-
+              Monitoring was enabled with an empty monitoring_scrape_cidrs. An empty allow list
+              must be an error, never "allow everybody".
+      rescue:
+        - name: Scenario 11 refused
+          ansible.builtin.debug:
+            msg: empty monitoring_scrape_cidrs with monitoring on -> refused
+
+    - name: The exporter port declared as a public port
+      block:
+        - name: Declare scenario 12
+          ansible.builtin.set_fact:
+            remnawave_panel_url: https://panel.real-zone.tld
+            node_domain_zone: real-zone.tld
+            node_id: ee_01
+            node_name: EE-01
+            node_public_ip: "{{ ansible_host }}"
+            selfsteal_domain: "{{ inventory_hostname }}.real-zone.tld"
+            node_identity_override_ack: false
+            node_monitoring_enabled: true
+            monitoring_scrape_cidrs: ["198.51.100.20/32"]
+            node_public_tcp_ports: [80, 443, 9100]
+        - name: Run preflight for scenario 12
+          ansible.builtin.import_role:
+            name: node_base
+            tasks_from: preflight_controller.yml
+          vars: *guard_baseline
+        - name: Scenario 12 must not be reached
+          ansible.builtin.fail:
+            msg: The exporter port was accepted in node_public_tcp_ports.
+      rescue:
+        - name: Scenario 12 refused
+          ansible.builtin.debug:
+            msg: exporter port in node_public_tcp_ports -> refused
+
+    - name: Monitoring on, restricted to one monitoring server
+      block:
+        - name: Declare scenario 13
+          ansible.builtin.set_fact:
+            remnawave_panel_url: https://panel.real-zone.tld
+            node_domain_zone: real-zone.tld
+            node_id: ee_01
+            node_name: EE-01
+            node_public_ip: "{{ ansible_host }}"
+            selfsteal_domain: "{{ inventory_hostname }}.real-zone.tld"
+            node_identity_override_ack: false
+            node_monitoring_enabled: true
+            monitoring_scrape_cidrs: ["198.51.100.20/32", "fd00:2026::20/128"]
+            # Restated: set_fact persists, and scenario 12 leaves 9100 in this list.
+            node_public_tcp_ports: [80, 443]
+        - name: Run preflight for scenario 13
+          ansible.builtin.import_role:
+            name: node_base
+            tasks_from: preflight_controller.yml
+          vars: *guard_baseline
+        - name: Scenario 13 passed
+          ansible.builtin.debug:
+            msg: a named monitoring server, IPv4 and IPv6 -> accepted

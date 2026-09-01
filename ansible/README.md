@@ -127,6 +127,59 @@ is still validated against what sshd reports. Every branch of that resolution is
 covered by `ansible/tests/management_cidrs.yml`, including the one that matters:
 an explicit list that would lock the controller out is refused, not applied.
 
+## Keeping your own SSH access
+
+**Do this before the first install, not after.** A node's firewall input chain
+drops by default. TCP/22 is opened for exactly two kinds of source: the
+controller, whose address is discovered from the live SSH connection, and every
+address in `management_cidrs_extra`. Nothing else. Install a node without that
+list filled in and Semaphore becomes the only way in — and because the ruleset
+is rendered from scratch on every run (the template starts with
+`destroy table`), a rule added by hand on the node is gone at the next
+reconcile.
+
+One line, in `/etc/remnawave/fleet.yml` on the controller:
+
+```yaml
+management_cidrs_extra:
+  - 203.0.113.9/32          # replace with your own public address
+```
+
+Why that file and not a Semaphore survey: a survey value exists for the length
+of one job. The next `02 - Install / Reconcile Node` would render the ruleset
+without it and close the door again. `fleet.yml` is loaded by every template and
+by `./provision-node`, so the permission is part of the declared state and
+survives every re-run — which is the whole point.
+
+Three details worth knowing:
+
+- **The example value is refused on purpose.** `management_cidrs_extra` in
+  `ansible/examples/fleet.yml.example` holds an RFC 5737 documentation address.
+  Controller-side preflight — Semaphore template `01` — rejects any address out
+  of the documentation ranges here, so copying the example without editing this
+  field fails loudly instead of leaving you with a firewall rule for an address
+  that can never connect.
+- **IPv6 works the same way.** A `/128` renders as an `ip6 saddr` rule; the
+  matcher is chosen per entry, so a mixed list is fine.
+- **Leaving it empty is allowed**, and preflight says out loud what it means:
+  after that run the node is reachable on TCP/22 from the controller only.
+
+Root and password login are a separate switch: this fleet sets
+`node_ssh_allow_root_password: true` so that a wiped `authorized_keys` is
+recoverable, and nothing in the firewall path changes it. What the firewall
+decides is *from where*; what sshd decides is *as whom*.
+
+`fail2ban` watches the same port, and its jail exempts `management_cidrs`. That
+is not a weakening: everything outside that list is dropped before sshd, so the
+only addresses the jail can ever see are the controller's and yours — meaning
+without the exemption it could only ever ban the two parties that are supposed
+to have access, for an hour, and no re-run would clear it.
+
+All of this is covered by `ansible/tests/test_ssh_access_policy.sh`, which
+renders the real ruleset from the real resolution path, loads it into nftables
+twice and checks that both addresses survive; the guards are in
+`ansible/tests/preflight_guards.yml`.
+
 ## What a dry-run really tells you
 
 `--check --diff` is meant to be pressed before a real run, so it is built to be
@@ -611,6 +664,19 @@ Three templates, and deliberately no others:
 | **Install / Reconcile Node** | `ansible/playbooks/provision_node.yml` | yes |
 | **Verify Node** | `ansible/playbooks/provision_node.yml`, `--tags node_verify` | no |
 
+Monitoring is not a fourth template. Ansible manages the node-side agent only -
+`node_exporter`, the socket collector and one source-restricted firewall rule -
+and it does that inside the ordinary install above, switched on by
+`node_monitoring_enabled` in `fleet.yml`. There is no monitoring playbook and no
+monitoring inventory group. `ansible/MONITORING.ru.md` covers that agent.
+
+The central monitoring server - Prometheus, Grafana, Alertmanager,
+blackbox_exporter and the two exporters that read the panel - is installed by
+hand and is deliberately outside Ansible's reach. Its configuration still lives
+in this repository, under `monitoring/`, and `monitoring/README.ru.md` is the
+installation instruction for it; `monitoring/capacity/README.md` covers the
+versioned capacity inventory the alerts are computed from.
+
 **Preflight opens no connection to the node at all.** It is the template pressed
 for a VPS that was created a minute ago and does not carry the managed account
 yet, so every check it runs is controller-side: the inventory, the derived
@@ -647,14 +713,16 @@ only, with the variable spelled out by hand.
   variable. Its values arrive as extra vars, which outrank every file and every
   host: a secret there is visible in `/proc` for the length of the run, and a
   `node_id` there gives the whole fleet one identity.
-- **The root password of a brand new VPS** is a *secret survey field* named
-  `bootstrap_ssh_password`. Survey secrets are not stored in Semaphore's database
-  (`Task.Secret` is `db:"-"`), which is exactly what a one-off credential wants;
-  a Variable Group keeps its secrets at rest and is for the long-lived ones — the
-  panel token, the vault password. Either way the value reaches Ansible as
-  `--extra-vars` on the command line, so the controller must stay
-  single-purpose and the template must not raise verbosity: the bootstrap play
-  refuses to run with a password at `-vv` or higher.
+- **The root password of a brand new VPS** is `vault_node_root_password` in the
+  encrypted `/etc/remnawave/secrets.yml`, or `NODE_ROOT_PASSWORD` in the
+  environment, which `./provision-node` prompts for and never writes to disk.
+  There is deliberately **no secret survey field** for it: Semaphore hands every
+  survey answer to `ansible-playbook` as `--extra-vars`, which puts the value in
+  argv, and argv is readable by any local account through `/proc/<pid>/cmdline`
+  for the length of the run — and for as long afterwards as an orphaned process
+  lives. An extra-vars *file* is different: Ansible decrypts it in-process, so
+  only the path is ever on the command line. The bootstrap play still refuses to
+  run with a password at `-vv` or higher, as a second line of defence.
 - **`--first-run`** has no wrapper in the UI: pass
   `bootstrap_trust_new_host_keys=true` as a survey checkbox used only for a
   server created minutes ago.

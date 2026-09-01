@@ -1,0 +1,101 @@
+# Prometheus configuration for the August VPN monitoring server.
+#
+# NOT installed by Ansible. Copy it to /etc/prometheus/prometheus.yml on the
+# monitoring server and replace every <PLACEHOLDER>. The values that are not
+# placeholders are the ones the recording rules and alerts were written
+# against: changing scrape_interval or evaluation_interval changes what
+# rate() windows and "for:" delays mean, so change them deliberately.
+#
+# Every job here is a read. Every credential is a path to a 0600 file rather
+# than a value, so this file stays safe to read: /api/v1/status/config hands
+# out its contents to anyone who can reach Prometheus.
+global:
+  scrape_interval: 30s
+  scrape_timeout: 10s
+  evaluation_interval: 30s
+  external_labels:
+    fleet: august
+
+rule_files:
+  - /etc/prometheus/rules/recording-rules.yml
+  - /etc/prometheus/rules/alert-rules.yml
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: ["127.0.0.1:9093"]
+
+scrape_configs:
+  # Prometheus itself, so a stack that has stopped evaluating rules is visible
+  # in the same place as everything else.
+  - job_name: prometheus
+    static_configs:
+      - targets: ["127.0.0.1:9090"]
+
+  # Remnawave's own Prometheus endpoint, behind Basic Auth on METRICS_PORT.
+  # The password is a file: it is never written into this configuration and
+  # therefore never returned by /api/v1/status/config.
+  #
+  # node_name is copied to node so that everything downstream - the capacity
+  # exporter, the node_exporter targets, the recording rules - joins on one
+  # label. If the live endpoint labels its series differently, change the
+  # source_labels here rather than the rules.
+  - job_name: remnawave
+    scheme: http
+    metrics_path: /metrics
+    scrape_interval: 30s
+    basic_auth:
+      username: "<METRICS_USER>"
+      password_file: /etc/prometheus/remnawave-metrics.password
+    tls_config:
+      insecure_skip_verify: false
+    static_configs:
+      - targets: ["<PANEL_HOST>:3001"]
+    metric_relabel_configs:
+      - source_labels: ["node_name"]
+        target_label: node
+        action: replace
+
+  # The nodes. node_exporter is installed and kept running by Ansible as part
+  # of the ordinary node install; this file is the list of where it answers.
+  # See targets/nodes.json.example, and keep the "node" label equal to the
+  # fleet name (TR-01), because every join downstream goes through it.
+  - job_name: august_node_exporter
+    file_sd_configs:
+      - files: ["/etc/prometheus/targets/nodes.json"]
+        refresh_interval: 60s
+
+  # Capacity, pool membership and provisioning timestamps.
+  # monitoring/capacity_exporter.py, started by hand - see README.ru.md.
+  - job_name: august_capacity
+    static_configs:
+      - targets: ["127.0.0.1:9301"]
+
+  # How long Semaphore jobs take. Task durations only - this exporter has no
+  # code path that can read task output. Drop this job if you do not run it.
+  - job_name: august_semaphore
+    static_configs:
+      - targets: ["127.0.0.1:9302"]
+
+  # Reachability of the ports users actually connect to. The control port is
+  # deliberately not probed: the node's firewall drops anything that is not the
+  # panel, so a probe of it would alert on the firewall working.
+  - job_name: august_blackbox
+    metrics_path: /probe
+    params:
+      module: [tcp_connect]
+    file_sd_configs:
+      - files: ["/etc/prometheus/targets/blackbox.json"]
+        refresh_interval: 60s
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: __param_target
+      - source_labels: [__param_target]
+        target_label: instance
+      - target_label: __address__
+        replacement: "127.0.0.1:9115"
+
+  # The prober itself.
+  - job_name: august_blackbox_exporter
+    static_configs:
+      - targets: ["127.0.0.1:9115"]

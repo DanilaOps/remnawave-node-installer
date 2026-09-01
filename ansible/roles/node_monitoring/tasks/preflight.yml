@@ -1,0 +1,109 @@
+---
+- name: Require an allow list before an unauthenticated exporter is installed
+  # node_exporter has no login and no TLS. On a public VPS the nftables source
+  # restriction is the entire access control, so an empty list is refused rather
+  # than published: /metrics carries interface names, addresses, mount points
+  # and uptime, which is a map of the node.
+  ansible.builtin.assert:
+    that:
+      - monitoring_scrape_cidrs | length > 0
+    fail_msg: >-
+      monitoring_scrape_cidrs is empty. node_exporter authenticates nobody, so the only thing that
+      keeps :{{ node_monitoring_exporter_port }} off the public internet is the source restriction
+      node_base writes into the nftables ruleset. Put the monitoring host's address in
+      /etc/remnawave/fleet.yml as monitoring_scrape_cidrs and run 02 so the rule exists.
+
+- name: Validate every monitoring scrape CIDR
+  ansible.builtin.assert:
+    that:
+      - (item | ansible.utils.ipaddr) != false
+    fail_msg: "Invalid CIDR in monitoring_scrape_cidrs: {{ item }}"
+  loop: "{{ monitoring_scrape_cidrs }}"
+  loop_control:
+    label: "{{ item }}"
+
+- name: Refuse a scrape allow list that is the whole internet
+  # A /0 here would be the same as no firewall at all, written in a way that
+  # looks deliberate.
+  ansible.builtin.assert:
+    that:
+      - (item | ansible.utils.ipaddr('prefix') | int) > 0
+    fail_msg: >-
+      monitoring_scrape_cidrs contains {{ item }}, which allows everyone. Name the monitoring
+      host's address instead.
+  loop: "{{ monitoring_scrape_cidrs }}"
+  loop_control:
+    label: "{{ item }}"
+
+- name: Refuse to count a control port as a VPN socket
+  # The requirement this encodes: a VPN socket is one a client opened to an
+  # inbound. The panel's connection to NODE_PORT, the operator's SSH, Prometheus
+  # on the exporter port and an ACME challenge on 80 are none of them, and a
+  # figure that includes them is wrong in the direction that hides free capacity.
+  ansible.builtin.assert:
+    that:
+      - >-
+        (node_monitoring_session_ports | map('int') | list
+         | intersect(node_monitoring_session_excluded_ports | map('int') | list) | length) == 0
+    fail_msg: >-
+      node_monitoring_session_ports resolved to {{ node_monitoring_session_ports }}, which still
+      overlaps the control ports {{ node_monitoring_session_excluded_ports }}.
+
+- name: Require the node's VPN inbound ports to be known
+  # The collector counts sockets on the VPN inbounds and nowhere else. If those
+  # ports cannot be derived, counting the public ports instead would put HTTP
+  # requests and ACME challenges into a VPN figure - so the run stops, unless the
+  # operator states that the ports are genuinely unknown, in which case the
+  # collector publishes an explicit unknown state rather than a zero.
+  ansible.builtin.assert:
+    that:
+      - (node_monitoring_session_ports | length > 0) or (node_monitoring_vpn_ports_unknown_ack | bool)
+    fail_msg: >-
+      node_vpn_tcp_ports resolved to {{ node_vpn_tcp_ports | default([]) }} and nothing is left to
+      count after the control ports are removed. It is derived from inbound_specs, so a node with a
+      TCP inbound needs no configuration; set node_vpn_tcp_ports for a node whose inbounds this
+      project does not describe, or node_monitoring_vpn_ports_unknown_ack=true to publish an
+      explicit unknown state instead of a socket count.
+  when: node_monitoring_sessions_enabled | bool
+
+- name: Report that the VPN ports are not known for this node
+  ansible.builtin.debug:
+    msg: >-
+      No VPN inbound port could be derived for {{ inventory_hostname }}, and this was acknowledged.
+      The collector will publish august_node_vpn_ports_declared=0 and no socket count, so the
+      dashboard shows unknown rather than zero.
+  when:
+    - node_monitoring_sessions_enabled | bool
+    - node_monitoring_session_ports | length == 0
+
+- name: Read the managed nftables table
+  ansible.builtin.command:
+    argv: [nft, list, table, inet, "{{ node_firewall_table }}"]
+  register: node_monitoring_ruleset
+  changed_when: false
+  failed_when: false
+  # Read-only: a dry-run has to see the real ruleset, because the whole point of
+  # this check is whether the live firewall already allows the scrape.
+  check_mode: false
+  when: node_firewall_enabled | default(true) | bool
+
+- name: Require the firewall to already allow the monitoring host
+  # node_base renders the rule; this role only installs the listener. Installing
+  # a listener the firewall does not cover would leave a window between the two
+  # runs where the exporter is reachable from anywhere, so the order is enforced
+  # rather than documented.
+  ansible.builtin.assert:
+    that:
+      - node_monitoring_ruleset.stdout | remnawave_firewall_covers(item)
+      - node_monitoring_exporter_port | string in node_monitoring_ruleset.stdout
+    fail_msg: >-
+      The nftables ruleset on this node does not yet allow {{ item }} to reach
+      :{{ node_monitoring_exporter_port }}. node_base writes that rule from monitoring_scrape_cidrs
+      and node_monitoring_enabled - run playbooks/install_node.yml (Semaphore template 02) once with
+      both set, then install the exporter.
+  loop: "{{ monitoring_scrape_cidrs }}"
+  loop_control:
+    label: "{{ item }}"
+  when:
+    - node_firewall_enabled | default(true) | bool
+    - not ansible_check_mode

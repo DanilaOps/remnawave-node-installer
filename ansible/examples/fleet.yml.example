@@ -68,9 +68,25 @@ acme_email: ops@your-domain.tld
 # tr03.{{ node_domain_zone }} all follow from it, and re-running the node
 # reconciles TR-03 rather than allocating a new number.
 
-# Addresses that must keep SSH access to every node even when nobody runs from
-# them: a workstation, a jump or rescue host. The controller's own address is
-# discovered from the live SSH connection and does not belong here.
+# --- Your own SSH access -----------------------------------------------------
+# THIS IS THE ONE FIELD THAT DECIDES WHETHER YOU CAN STILL LOG IN DIRECTLY.
+#
+# The node's firewall input chain drops by default. TCP/22 is opened for the
+# controller - whose address is discovered from the live SSH connection, so it
+# is never maintained by hand - and for every address listed here, and for
+# nothing else. Leave this empty and the only way into a node is through
+# Semaphore.
+#
+# Put your own public address here, as a /32 (or /128 for IPv6), together with
+# any jump or rescue host. It has to be here rather than in a Semaphore survey:
+# a survey value lives for one job, and the next "02 - Install / Reconcile Node"
+# would render the ruleset without it. This file is loaded by every template, so
+# the permission survives every re-run.
+#
+# The address below is a documentation address (RFC 5737) and is never routed.
+# Controller-side preflight refuses it on purpose: copying this file without
+# editing this field should fail loudly at template 01, not quietly leave you
+# locked out of your own node.
 management_cidrs_extra:
   - 203.0.113.9/32
 
@@ -81,3 +97,21 @@ dns_provider: regru
 # secrets.yml as vault_verify_probe_vless_uuid.
 verify_probe_username: probe
 verify_probe_xray_binary: /usr/local/bin/xray
+
+# --- Monitoring (node side only) ----------------------------------------------
+# Ansible manages the agent that runs ON EACH NODE and nothing else. Prometheus,
+# Grafana, Alertmanager and the exporters that read the panel live on a separate
+# monitoring server that you install by hand - monitoring/README.ru.md is the
+# instruction for that, and none of its settings belong in this file.
+#
+# Off until the monitoring server exists. Turning it on does two things on the
+# next ordinary install run of each node: node_base appends one
+# source-restricted nftables rule for the exporter port, and node_monitoring
+# installs node_exporter and the session collector. Nothing else on the node
+# changes.
+node_monitoring_enabled: false
+# The monitoring server, and only it, may reach :9100 on every node.
+# node_exporter has no authentication of its own, so this list is the access
+# control: an empty list with monitoring on is refused, and so is a /0.
+monitoring_scrape_cidrs:
+  - 198.51.100.20/32

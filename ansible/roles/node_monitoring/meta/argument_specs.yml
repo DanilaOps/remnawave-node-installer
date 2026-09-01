@@ -1,0 +1,63 @@
+---
+argument_specs:
+  main:
+    short_description: Node-side monitoring agent for a Remnawave node
+    description:
+      - Installs a pinned node_exporter and an established-session collector on a
+        node, reachable only from the monitoring host.
+      - Changes nothing about Xray, the panel, routing or user traffic.
+    options:
+      node_exporter_version:
+        type: str
+        required: true
+        description: Pinned node_exporter release, without the leading v.
+      node_exporter_sha256:
+        type: str
+        required: false
+        description: >-
+          Checksum of the release archive. Empty verifies against the release's
+          own sha256sums.txt instead.
+      node_monitoring_exporter_port:
+        type: int
+        required: true
+        description: TCP port the exporter listens on.
+      node_monitoring_bind_address:
+        type: str
+        required: true
+        description: Address the exporter binds to.
+      monitoring_scrape_cidrs:
+        type: list
+        elements: str
+        required: true
+        description: >-
+          Sources allowed to reach the exporter port. Must not be empty - the
+          exporter has no authentication of its own.
+      node_monitoring_textfile_dir:
+        type: str
+        required: true
+        description: Directory node_exporter reads textfile collector output from.
+      node_monitoring_sessions_enabled:
+        type: bool
+        required: true
+        description: Whether to install the established-session collector.
+      node_vpn_tcp_ports:
+        type: list
+        required: true
+        description: >-
+          The node's VPN inbound TCP ports, derived from inbound_specs. Not
+          node_public_tcp_ports: that also holds 80, and an HTTP request is not
+          a VPN socket.
+      node_monitoring_vpn_ports_unknown_ack:
+        type: bool
+        required: false
+        description: >-
+          Publish an explicit unknown state when the VPN ports cannot be
+          derived, instead of counting the wrong ports.
+      node_monitoring_session_ports:
+        type: list
+        required: true
+        description: VPN inbound TCP ports established sockets are counted on.
+      node_monitoring_session_excluded_ports:
+        type: list
+        required: true
+        description: Ports that are never counted as user sessions.

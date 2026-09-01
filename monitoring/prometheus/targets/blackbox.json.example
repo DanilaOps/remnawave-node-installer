@@ -1,0 +1,9 @@
+[
+  {
+    "targets": ["<NODE_IP>:443"],
+    "labels": {
+      "node": "TR-01",
+      "port": "443"
+    }
+  }
+]

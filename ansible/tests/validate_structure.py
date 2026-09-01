@@ -20,6 +20,9 @@ EXPECTED_ROLES = {
     # The controller is the one thing here that is not a node, so it is the one
     # role that does not belong to the node pipeline.
     "semaphore_controller",
+    # Monitoring is two roles because it is two machines: an agent on every node
+    # and a stack on exactly one host, and neither belongs inside the other.
+    "node_monitoring",
 }
 
 

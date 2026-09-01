@@ -153,6 +153,13 @@
         argv: [id, -un]
       register: bootstrap_escalation_check
       changed_when: false
+      # Read-only, and it has to run in a dry-run too. Without this, check mode
+      # skips the command, the assert below reads an empty stdout and a --check
+      # of provision_node.yml fails on an already-provisioned node with
+      # "Could not escalate to root" - which says nothing about the node and
+      # everything about the dry-run. The same rule is applied to every
+      # read-only probe in node_monitoring and node_verify.
+      check_mode: false
 
     - name: Require root privileges through the managed account
       ansible.builtin.assert:

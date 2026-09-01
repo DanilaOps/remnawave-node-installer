@@ -19,6 +19,13 @@ table inet {{ node_firewall_table }} {
     {{ 'ip6' if ':' in bridge_spec.entry_address else 'ip' }} saddr {{ bridge_spec.entry_address }} tcp dport {{ bridge_spec.port }} accept
     {{ 'ip6' if ':' in bridge_spec.entry_address else 'ip' }} saddr {{ bridge_spec.entry_address }} udp dport {{ bridge_spec.port }} accept
 {% endif %}
+{% if node_monitoring_enabled | default(false) %}
+{# Monitoring is a source-restricted rule like the panel's and the operator's,
+   never a member of the public port set below: node_exporter has no login. #}
+{% for cidr in monitoring_scrape_cidrs %}
+    {{ 'ip6' if ':' in cidr else 'ip' }} saddr {{ cidr }} tcp dport {{ node_monitoring_exporter_port }} accept
+{% endfor %}
+{% endif %}
 {% if node_public_tcp_ports | length > 0 %}
     tcp dport { {{ node_public_tcp_ports | unique | join(', ') }} } accept
 {% endif %}

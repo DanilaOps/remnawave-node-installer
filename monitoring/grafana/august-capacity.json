@@ -1,0 +1,4638 @@
+{
+  "uid": "august-capacity",
+  "title": "August VPN — capacity and health",
+  "description": "Service capacity and usage count each user gigabit once; the physical figures count every leg and are diagnostic. Bridges are measured by the source node's outbound tag and never added to a pool or to the service figure. A pool rated as a location shows 'aggregate' and its free percentage is an upper bound.",
+  "tags": [
+    "august",
+    "capacity"
+  ],
+  "timezone": "utc",
+  "schemaVersion": 39,
+  "version": 2,
+  "editable": false,
+  "refresh": "1m",
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
+  "panels": [
+    {
+      "type": "row",
+      "title": "1. Global capacity — service, not infrastructure",
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 24,
+        "h": 1
+      },
+      "collapsed": false,
+      "panels": [],
+      "description": "Service capacity and usage count each user gigabit once: a flow through a bridge is not counted at both of its ends. The physical figures next to them count every leg and exist for planning the plumbing, never as the fleet KPI."
+    },
+    {
+      "type": "stat",
+      "title": "Service capacity ↓",
+      "description": "Summed over the pools users connect to.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "august-prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 1,
+        "w": 4,
+        "h": 4
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "august-prometheus"
+          },
+          "expr": "sum(august_service_capacity_mbps{direction=\"download\"}) * 1e6",
+          "legendFormat": "",
+          "refId": "A",
+          "instant": true,
+          "format": "time_series",
+          "range": false
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bps",
+          "decimals": null,
+          "mappings": [],
+          "noValue": "no data"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "auto"
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Service usage ↓",
+      "description": "Physical usage minus the duplication the bridge counters measure.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "august-prometheus"
+      },
+      "gridPos": {
+        "x": 4,
+        "y": 1,
+        "w": 4,
+        "h": 4
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "august-prometheus"
+          },
+          "expr": "august:service_usage_bps{direction=\"download\"}",
+          "legendFormat": "",
+          "refId": "A",
+          "instant": true,
+          "format": "time_series",
+          "range": false
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bps",
+          "decimals": null,
+          "mappings": [],
+          "noValue": "no data"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "auto"
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Service free ↓",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "august-prometheus"
+      },
+      "gridPos": {
+        "x": 8,
+        "y": 1,
+        "w": 4,
+        "h": 4
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "august-prometheus"
+          },
+          "expr": "august:service_free_ratio{direction=\"download\"}",
+          "legendFormat": "",
+          "refId": "A",
+          "instant": true,
+          "format": "time_series",
+          "range": false
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "decimals": 1,
+          "mappings": [],
+          "noValue": "no data"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "auto"
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Service capacity ↑",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "august-prometheus"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 1,
+        "w": 4,
+        "h": 4
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "august-prometheus"
+          },
+          "expr": "sum(august_service_capacity_mbps{direction=\"upload\"}) * 1e6",
+          "legendFormat": "",
+          "refId": "A",
+          "instant": true,
+          "format": "time_series",
+          "range": false
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bps",
+          "decimals": null,
+          "mappings": [],
+          "noValue": "no data"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "auto"
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Service usage ↑",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "august-prometheus"
+      },
+      "gridPos": {
+        "x": 16,
+        "y": 1,
+        "w": 4,
+        "h": 4
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "august-prometheus"
+          },
+          "expr": "august:service_usage_bps{direction=\"upload\"}",
+          "legendFormat": "",
+          "refId": "A",
+          "instant": true,
+          "format": "time_series",
+          "range": false
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bps",
+          "decimals": null,
+          "mappings": [],
+          "noValue": "no data"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "auto"
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Service free ↑",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "august-prometheus"
+      },
+      "gridPos": {
+        "x": 20,
+        "y": 1,
+        "w": 4,
+        "h": 4
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "august-prometheus"
+          },
+          "expr": "august:service_free_ratio{direction=\"upload\"}",
+          "legendFormat": "",
+          "refId": "A",
+          "instant": true,
+          "format": "time_series",
+          "range": false
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "decimals": 1,
+          "mappings": [],
+          "noValue": "no data"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "auto"
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Attribution",
+      "description": "Aggregate means at least one pool is rated as a location and a member is missing, so the figure above is an upper bound.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "august-prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 5,
+        "w": 4,
+        "h": 4
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "august-prometheus"
+          },
+          "expr": "min(august_service_capacity_certain)",
+          "legendFormat": "",
+          "refId": "A",
+          "instant": true,
+          "format": "time_series",
+          "range": false
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "decimals": null,
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "0": {
+                  "text": "aggregate / uncertain",
+                  "color": "orange",
+                  "index": 0
+                },
+                "1": {
+                  "text": "attributed",
+                  "color": "green",
+                  "index": 1
+                }
+              }
+            }
+          ],
+          "noValue": "no data"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "auto"
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Physical capacity ↓ (diagnostic)",
+      "description": "Every leg of the infrastructure added up, bridges included. A diagnostic for the plumbing, not the capacity of the service: a bridged flow occupies two legs.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "august-prometheus"
+      },
+      "gridPos": {
+        "x": 4,
+        "y": 5,
+        "w": 4,
+        "h": 4
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "august-prometheus"
+          },
+          "expr": "sum(august_physical_capacity_mbps{direction=\"download\"}) * 1e6",
+          "legendFormat": "",
+          "refId": "A",
+          "instant": true,
+          "format": "time_series",
+          "range": false
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bps",
+          "decimals": null,
+          "mappings": [],
+          "noValue": "no data"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "auto"
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Physical usage ↓ (diagnostic)",
+      "description": "The sum of node counters, in which one bridged user flow appears twice. A diagnostic. The service figure to the left is the one the fleet is judged by.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "august-prometheus"
+      },
+      "gridPos": {
+        "x": 8,
+        "y": 5,
+        "w": 4,
+        "h": 4
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "august-prometheus"
+          },
+          "expr": "august:physical_usage_bps{direction=\"download\"}",
+          "legendFormat": "",
+          "refId": "A",
+          "instant": true,
+          "format": "time_series",
+          "range": false
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bps",
+          "decimals": null,
+          "mappings": [],
+          "noValue": "no data"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "auto"
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Bridged share ↓",
+      "description": "The part of physical usage that is one user flow counted twice.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "august-prometheus"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 5,
+        "w": 4,
+        "h": 4
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "august-prometheus"
+          },
+          "expr": "august:bridge_usage_total_bps{direction=\"download\"}",
+          "legendFormat": "",
+          "refId": "A",
+          "instant": true,
+          "format": "time_series",
+          "range": false
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bps",
+          "decimals": null,
+          "mappings": [],
+          "noValue": "no data"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "auto"
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Nodes active",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "august-prometheus"
+      },
+      "gridPos": {
+        "x": 16,
+        "y": 5,
+        "w": 4,
+        "h": 4
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "august-prometheus"
+          },
+          "expr": "sum(august_node_active{pool=~\"$pool\"})",
+          "legendFormat": "",
+          "refId": "A",
+          "instant": true,
+          "format": "time_series",
+          "range": false
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "decimals": null,
+          "mappings": [],
+          "noValue": "no data"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "auto"
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Nodes disabled",
+      "description": "Deliberate. Out of capacity, and not an incident.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "august-prometheus"
+      },
+      "gridPos": {
+        "x": 20,
+        "y": 5,
+        "w": 4,
+        "h": 4
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "august-prometheus"
+          },
+          "expr": "sum(august_node_administratively_disabled{pool=~\"$pool\"})",
+          "legendFormat": "",
+          "refId": "A",
+          "instant": true,
+          "format": "time_series",
+          "range": false
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "decimals": null,
+          "mappings": [],
+          "noValue": "no data"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "auto"
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Service vs physical usage ↓",
+      "description": "Service is the fleet KPI: one user flow counted once. Physical is a diagnostic for the plumbing - it counts the same flow on the ingress node and again on the exit node, and the bridged series is exactly that double count.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "august-prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 9,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "august-prometheus"
+          },
+          "expr": "august:service_usage_bps{direction=\"download\"}",
+          "legendFormat": "service",
+          "refId": "A",
+          "instant": false,
+          "format": "time_series",
+          "range": true
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "august-prometheus"
+          },
+          "expr": "august:physical_usage_bps{direction=\"download\"}",
+          "legendFormat": "physical",
+          "refId": "B",
+          "instant": false,
+          "format": "time_series",
+          "range": true
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "august-prometheus"
+          },
+          "expr": "august:bridge_usage_total_bps{direction=\"download\"}",
+          "legendFormat": "bridged (double counted)",
+          "refId": "C",
+          "instant": false,
+          "format": "time_series",
+          "range": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bps",
+          "noValue": "no data",
+          "custom": {
+            "fillOpacity": 8,
+            "lineWidth": 1,
+            "spanNulls": false,
+            "insertNulls": 300000
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Service vs physical usage ↑",
+      "description": "Service is the fleet KPI: one user flow counted once. Physical is a diagnostic for the plumbing - it counts the same flow on the ingress node and again on the exit node, and the bridged series is exactly that double count.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "august-prometheus"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 9,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "august-prometheus"
+          },
+          "expr": "august:service_usage_bps{direction=\"upload\"}",
+          "legendFormat": "service",
+          "refId": "A",
+          "instant": false,
+          "format": "time_series",
+          "range": true
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "august-prometheus"
+          },
+          "expr": "august:physical_usage_bps{direction=\"upload\"}",
+          "legendFormat": "physical",
+          "refId": "B",
+          "instant": false,
+          "format": "time_series",
+          "range": true
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "august-prometheus"
+          },
+          "expr": "august:bridge_usage_total_bps{direction=\"upload\"}",
+          "legendFormat": "bridged (double counted)",
+          "refId": "C",
+          "instant": false,
+          "format": "time_series",
+          "range": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bps",
+          "noValue": "no data",
+          "custom": {
+            "fillOpacity": 8,
+            "lineWidth": 1,
+            "spanNulls": false,
+            "insertNulls": 300000
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "type": "row",
+      "title": "2. Pool status",
+      "gridPos": {
+        "x": 0,
+        "y": 17,
+        "w": 24,
+        "h": 1
+      },
+      "collapsed": false,
+      "panels": [],
+      "description": "A pool's own resource figure. Where a pool is rated as a location rather than per machine, 'attributed' reads aggregate and the free percentage is an upper bound."
+    },
+    {
+      "type": "table",
+      "title": "Pools",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "august-prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 18,
+        "w": 24,
+        "h": 10
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "august-prometheus"
+          },
+          "expr": "august_pool_capacity_mbps{pool=~\"$pool\",direction=\"download\"}",
+          "legendFormat": "",
+          "refId": "A",
+          "instant": true,
+          "format": "table",
+          "range": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "august-prometheus"
+          },
+          "expr": "august_pool_capacity_mbps{pool=~\"$pool\",direction=\"upload\"}",
+          "legendFormat": "",
+          "refId": "B",
+          "instant": true,
+          "format": "table",
+          "range": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "august-prometheus"
+          },
+          "expr": "august:pool_used_bps{pool=~\"$pool\",direction=\"download\"} / 1e6",
+          "legendFormat": "",
+          "refId": "C",
+          "instant": true,
+          "format": "table",
+          "range": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "august-prometheus"
+          },
+          "expr": "august:alert_pool_free_mbps{pool=~\"$pool\",direction=\"download\"}",
+          "legendFormat": "",
+          "refId": "D",
+          "instant": true,
+          "format": "table",
+          "range": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "august-prometheus"
+          },
+          "expr": "august:alert_pool_free_mbps{pool=~\"$pool\",direction=\"upload\"}",
+          "legendFormat": "",
+          "refId": "H",
+          "instant": true,
+          "format": "table",
+          "range": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "august-prometheus"
+          },
+          "expr": "august:pool_free_ratio{pool=~\"$pool\",direction=\"download\"}",
+          "legendFormat": "",
+          "refId": "E",
+          "instant": true,
+          "format": "table",
+          "range": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "august-prometheus"
+          },
+          "expr": "august:pool_free_ratio{pool=~\"$pool\",direction=\"upload\"}",
+          "legendFormat": "",
+          "refId": "F",
+          "instant": true,
+          "format": "table",
+          "range": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "august-prometheus"
+          },
+          "expr": "august:headroom_status_worst{pool=~\"$pool\"}",
+          "legendFormat": "",
+          "refId": "G",
+          "instant": true,
+          "format": "table",
+          "range": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "august-prometheus"
+          },
+          "expr": "august_pool_active_members{pool=~\"$pool\"}",
+          "legendFormat": "",
+          "refId": "H",
+          "instant": true,
+          "format": "table",
+          "range": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "august-prometheus"
+          },
+          "expr": "august_pool_members{pool=~\"$pool\"}",
+          "legendFormat": "",
+          "refId": "I",
+          "instant": true,
+          "format": "table",
+          "range": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "august-prometheus"
+          },
+          "expr": "august_pool_capacity_certain{pool=~\"$pool\",direction=\"download\"}",
+          "legendFormat": "",
+          "refId": "J",
+          "instant": true,
+          "format": "table",
+          "range": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "august-prometheus"
+          },
+          "expr": "august_pool_capacity_aggregate{pool=~\"$pool\",direction=\"download\"}",
+          "legendFormat": "",
+          "refId": "K",
+          "instant": true,
+          "format": "table",
+          "range": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "august-prometheus"
+          },
+          "expr": "august_pool_serves_users{pool=~\"$pool\"}",
+          "legendFormat": "",
+          "refId": "L",
+          "instant": true,
+          "format": "table",
+          "range": false
+        }
+      ],
+      "transformations": [
+        {
+          "id": "merge",
+          "options": {}
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "noValue": "no data"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".*status.*"
+            },
+            "properties": [
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "0": {
+                        "text": "RED",
+                        "color": "red",
+                        "index": 0
+                      },
+                      "1": {
+                        "text": "YELLOW",
+                        "color": "orange",
+                        "index": 1
+                      },
+                      "2": {
+                        "text": "GREEN",
+                        "color": "green",
+                        "index": 2
+                      }
+                    }
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".*free_mbps.*"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "Mbits"
+              },
+              {
+                "id": "decimals",
+                "value": 0
+              },
+              {
+                "id": "noValue",
+                "value": "N/A"
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "red",
+                      "value": null
+                    },
+                    {
+                      "color": "orange",
+                      "value": 200
+                    },
+                    {
+                      "color": "green",
+                      "value": 500
+                    }
+                  ]
+                }
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".*(ratio|free_pct).*"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "percentunit"
+              },
+              {
+                "id": "decimals",
+                "value": 1
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".*(certain|attributed).*"
+            },
+            "properties": [
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "0": {
+                        "text": "aggregate / uncertain",
+                        "color": "orange",
+                        "index": 0
+                      },
+                      "1": {
+                        "text": "attributed",
+                        "color": "green",
+                        "index": 1
+                      }
+                    }
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "^(active|enabled|connected|disabled|mapped|declared|shared).*"
+            },
+            "properties": [
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "0": {
+                        "text": "no",
+                        "color": "text",
+                        "index": 0
+                      },
+                      "1": {
+                        "text": "yes",
+                        "color": "green",
+                        "index": 1
+                      }
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "footer": {
+          "show": false
+        }
+      }
+    },
+    {
+      "type": "row",
+      "title": "3. Pool capacity charts",
+      "gridPos": {
+        "x": 0,
+        "y": 28,
+        "w": 24,
+        "h": 1
+      },
+      "collapsed": false,
+      "panels": [],
+      "description": ""
+    },
+    {
+      "type": "timeseries",
+      "title": "Pool usage ↓",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "august-prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 29,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "august-prometheus"
+          },
+          "expr": "august:pool_used_bps{pool=~\"$pool\",direction=\"download\"}",
+          "legendFormat": "{{pool}}",
+          "refId": "A",
+          "instant": false,
+          "format": "time_series",
+          "range": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bps",
+          "noValue": "no data",
+          "custom": {
+            "fillOpacity": 8,
+            "lineWidth": 1,
+            "spanNulls": false,
+            "insertNulls": 300000
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Pool usage ↑",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "august-prometheus"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 29,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "august-prometheus"
+          },
+          "expr": "august:pool_used_bps{pool=~\"$pool\",direction=\"upload\"}",
+          "legendFormat": "{{pool}}",
+          "refId": "A",
+          "instant": false,
+          "format": "time_series",
+          "range": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bps",
+          "noValue": "no data",
+          "custom": {
+            "fillOpacity": 8,
+            "lineWidth": 1,
+            "spanNulls": false,
+            "insertNulls": 300000
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Pool free capacity ↓",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "august-prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 37,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "august-prometheus"
+          },
+          "expr": "august:pool_free_ratio{pool=~\"$pool\",direction=\"download\"}",
+          "legendFormat": "{{pool}}",
+          "refId": "A",
+          "instant": false,
+          "format": "time_series",
+          "range": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "noValue": "no data",
+          "custom": {
+            "fillOpacity": 8,
+            "lineWidth": 1,
+            "spanNulls": false,
+            "insertNulls": 300000
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Stable load, p95 over 1h ↓",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "august-prometheus"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 37,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "august-prometheus"
+          },
+          "expr": "august:pool_used_bps_p95_1h{pool=~\"$pool\",direction=\"download\"}",
+          "legendFormat": "{{pool}} p95",
+          "refId": "A",
+          "instant": false,
+          "format": "time_series",
+          "range": true
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "august-prometheus"
+          },
+          "expr": "august:pool_used_bps_max_1h{pool=~\"$pool\",direction=\"download\"}",
+          "legendFormat": "{{pool}} max",
+          "refId": "B",
+          "instant": false,
+          "format": "time_series",
+          "range": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bps",
+          "noValue": "no data",
+          "custom": {
+            "fillOpacity": 8,
+            "lineWidth": 1,
+            "spanNulls": false,
+            "insertNulls": 300000
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "type": "row",
+      "title": "4. Nodes",
+      "gridPos": {
+        "x": 0,
+        "y": 45,
+        "w": 24,
+        "h": 1
+      },
+      "collapsed": false,
+      "panels": [],
+      "description": "'shared' means the node's capacity is accounted at its pool because the source data rates the location; 'unmeasured' means nothing is known. They are different states and are shown as such."
+    },
+    {
+      "type": "table",
+      "title": "Nodes",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "august-prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 46,
+        "w": 24,
+        "h": 12
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "august-prometheus"
+          },
+          "expr": "august_capacity_mbps{scope=\"node\",node=~\"$node\",direction=\"download\"}",
+          "legendFormat": "",
+          "refId": "A",
+          "instant": true,
+          "format": "table",
+          "range": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "august-prometheus"
+          },
+          "expr": "august:node_free_ratio{node=~\"$node\",direction=\"download\"}",
+          "legendFormat": "",
+          "refId": "B",
+          "instant": true,
+          "format": "table",
+          "range": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "august-prometheus"
+          },
+          "expr": "august:node_free_ratio{node=~\"$node\",direction=\"upload\"}",
+          "legendFormat": "",
+          "refId": "C",
+          "instant": true,
+          "format": "table",
+          "range": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "august-prometheus"
+          },
+          "expr": "august:alert_node_free_mbps{node=~\"$node\",direction=\"download\"}",
+          "legendFormat": "",
+          "refId": "N",
+          "instant": true,
+          "format": "table",
+          "range": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "august-prometheus"
+          },
+          "expr": "august:alert_node_free_mbps{node=~\"$node\",direction=\"upload\"}",
+          "legendFormat": "",
+          "refId": "O",
+          "instant": true,
+          "format": "table",
+          "range": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "august-prometheus"
+          },
+          "expr": "august:headroom_status_worst{node=~\"$node\"}",
+          "legendFormat": "",
+          "refId": "D",
+          "instant": true,
+          "format": "table",
+          "range": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "august-prometheus"
+          },
+          "expr": "august:node_health_status{node=~\"$node\"}",
+          "legendFormat": "",
+          "refId": "E",
+          "instant": true,
+          "format": "table",
+          "range": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "august-prometheus"
+          },
+          "expr": "august_node_enabled{node=~\"$node\",pool=~\"$pool\"}",
+          "legendFormat": "",
+          "refId": "F",
+          "instant": true,
+          "format": "table",
+          "range": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "august-prometheus"
+          },
+          "expr": "august_node_connected{node=~\"$node\",pool=~\"$pool\"}",
+          "legendFormat": "",
+          "refId": "G",
+          "instant": true,
+          "format": "table",
+          "range": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "august-prometheus"
+          },
+          "expr": "august_node_administratively_disabled{node=~\"$node\",pool=~\"$pool\"}",
+          "legendFormat": "",
+          "refId": "H",
+          "instant": true,
+          "format": "table",
+          "range": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "august-prometheus"
+          },
+          "expr": "august_node_active{node=~\"$node\",pool=~\"$pool\"}",
+          "legendFormat": "",
+          "refId": "I",
+          "instant": true,
+          "format": "table",
+          "range": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "august-prometheus"
+          },
+          "expr": "august_node_identity_mapped{node=~\"$node\"}",
+          "legendFormat": "",
+          "refId": "J",
+          "instant": true,
+          "format": "table",
+          "range": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "august-prometheus"
+          },
+          "expr": "sum by (node) (august_capacity_shared_pool{name=~\"$node\"})",
+          "legendFormat": "",
+          "refId": "K",
+          "instant": true,
+          "format": "table",
+          "range": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "august-prometheus"
+          },
+          "expr": "august:node_meta{node=~\"$node\",pool=~\"$pool\",country=~\"$country\"}",
+          "legendFormat": "",
+          "refId": "M",
+          "instant": true,
+          "format": "table",
+          "range": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "august-prometheus"
+          },
+          "expr": "sum by (node) (august_capacity_unrated{scope=\"node\",node=~\"$node\"})",
+          "legendFormat": "",
+          "refId": "L",
+          "instant": true,
+          "format": "table",
+          "range": false
+        }
+      ],
+      "transformations": [
+        {
+          "id": "merge",
+          "options": {}
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "noValue": "no data"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".*status.*"
+            },
+            "properties": [
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "0": {
+                        "text": "RED",
+                        "color": "red",
+                        "index": 0
+                      },
+                      "1": {
+                        "text": "YELLOW",
+                        "color": "orange",
+                        "index": 1
+                      },
+                      "2": {
+                        "text": "GREEN",
+                        "color": "green",
+                        "index": 2
+                      }
+                    }
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".*free_mbps.*"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "Mbits"
+              },
+              {
+                "id": "decimals",
+                "value": 0
+              },
+              {
+                "id": "noValue",
+                "value": "N/A"
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "red",
+                      "value": null
+                    },
+                    {
+                      "color": "orange",
+                      "value": 200
+                    },
+                    {
+                      "color": "green",
+                      "value": 500
+                    }
+                  ]
+                }
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".*(ratio|free_pct).*"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "percentunit"
+              },
+              {
+                "id": "decimals",
+                "value": 1
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".*(certain|attributed).*"
+            },
+            "properties": [
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "0": {
+                        "text": "aggregate / uncertain",
+                        "color": "orange",
+                        "index": 0
+                      },
+                      "1": {
+                        "text": "attributed",
+                        "color": "green",
+                        "index": 1
+                      }
+                    }
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "^(active|enabled|connected|disabled|mapped|declared|shared).*"
+            },
+            "properties": [
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "0": {
+                        "text": "no",
+                        "color": "text",
+                        "index": 0
+                      },
+                      "1": {
+                        "text": "yes",
+                        "color": "green",
+                        "index": 1
+                      }
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "footer": {
+          "show": false
+        }
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Node usage ↓",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "august-prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 58,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "august-prometheus"
+          },
+          "expr": "august:node_used_bps{node=~\"$node\",direction=\"download\"}",
+          "legendFormat": "{{node}}",
+          "refId": "A",
+          "instant": false,
+          "format": "time_series",
+          "range": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bps",
+          "noValue": "no data",
+          "custom": {
+            "fillOpacity": 8,
+            "lineWidth": 1,
+            "spanNulls": false,
+            "insertNulls": 300000
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Node usage ↑",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "august-prometheus"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 58,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "august-prometheus"
+          },
+          "expr": "august:node_used_bps{node=~\"$node\",direction=\"upload\"}",
+          "legendFormat": "{{node}}",
+          "refId": "A",
+          "instant": false,
+          "format": "time_series",
+          "range": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bps",
+          "noValue": "no data",
+          "custom": {
+            "fillOpacity": 8,
+            "lineWidth": 1,
+            "spanNulls": false,
+            "insertNulls": 300000
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "type": "row",
+      "title": "5. Bridges — counted by source outbound tag, never added to a pool or to the service figure",
+      "gridPos": {
+        "x": 0,
+        "y": 66,
+        "w": 24,
+        "h": 1
+      },
+      "collapsed": false,
+      "panels": [],
+      "description": ""
+    },
+    {
+      "type": "table",
+      "title": "Bridges",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "august-prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 67,
+        "w": 24,
+        "h": 8
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "august-prometheus"
+          },
+          "expr": "august_bridge_info{name=~\"$bridge\"}",
+          "legendFormat": "",
+          "refId": "A",
+          "instant": true,
+          "format": "table",
+          "range": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "august-prometheus"
+          },
+          "expr": "august_capacity_mbps{scope=\"bridge\",name=~\"$bridge\",direction=\"download\"}",
+          "legendFormat": "",
+          "refId": "B",
+          "instant": true,
+          "format": "table",
+          "range": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "august-prometheus"
+          },
+          "expr": "august:bridge_used_bps{name=~\"$bridge\",direction=\"download\"} / 1e6",
+          "legendFormat": "",
+          "refId": "C",
+          "instant": true,
+          "format": "table",
+          "range": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "august-prometheus"
+          },
+          "expr": "august:bridge_free_ratio{name=~\"$bridge\",direction=\"download\"}",
+          "legendFormat": "",
+          "refId": "D",
+          "instant": true,
+          "format": "table",
+          "range": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "august-prometheus"
+          },
+          "expr": "august:bridge_free_ratio{name=~\"$bridge\",direction=\"upload\"}",
+          "legendFormat": "",
+          "refId": "E",
+          "instant": true,
+          "format": "table",
+          "range": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "august-prometheus"
+          },
+          "expr": "august:alert_bridge_free_mbps{name=~\"$bridge\",direction=\"download\"}",
+          "legendFormat": "",
+          "refId": "I",
+          "instant": true,
+          "format": "table",
+          "range": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "august-prometheus"
+          },
+          "expr": "august:alert_bridge_free_mbps{name=~\"$bridge\",direction=\"upload\"}",
+          "legendFormat": "",
+          "refId": "J",
+          "instant": true,
+          "format": "table",
+          "range": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "august-prometheus"
+          },
+          "expr": "august:headroom_status_worst{name=~\"$bridge\"}",
+          "legendFormat": "",
+          "refId": "F",
+          "instant": true,
+          "format": "table",
+          "range": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "august-prometheus"
+          },
+          "expr": "august_bridge_enabled{name=~\"$bridge\"}",
+          "legendFormat": "",
+          "refId": "G",
+          "instant": true,
+          "format": "table",
+          "range": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "august-prometheus"
+          },
+          "expr": "august:bridge_metric_missing{name=~\"$bridge\"}",
+          "legendFormat": "",
+          "refId": "H",
+          "instant": true,
+          "format": "table",
+          "range": false
+        }
+      ],
+      "transformations": [
+        {
+          "id": "merge",
+          "options": {}
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "noValue": "no data"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".*status.*"
+            },
+            "properties": [
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "0": {
+                        "text": "RED",
+                        "color": "red",
+                        "index": 0
+                      },
+                      "1": {
+                        "text": "YELLOW",
+                        "color": "orange",
+                        "index": 1
+                      },
+                      "2": {
+                        "text": "GREEN",
+                        "color": "green",
+                        "index": 2
+                      }
+                    }
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".*free_mbps.*"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "Mbits"
+              },
+              {
+                "id": "decimals",
+                "value": 0
+              },
+              {
+                "id": "noValue",
+                "value": "N/A"
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "red",
+                      "value": null
+                    },
+                    {
+                      "color": "orange",
+                      "value": 200
+                    },
+                    {
+                      "color": "green",
+                      "value": 500
+                    }
+                  ]
+                }
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".*(ratio|free_pct).*"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "percentunit"
+              },
+              {
+                "id": "decimals",
+                "value": 1
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".*(certain|attributed).*"
+            },
+            "properties": [
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "0": {
+                        "text": "aggregate / uncertain",
+                        "color": "orange",
+                        "index": 0
+                      },
+                      "1": {
+                        "text": "attributed",
+                        "color": "green",
+                        "index": 1
+                      }
+                    }
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "^(active|enabled|connected|disabled|mapped|declared|shared).*"
+            },
+            "properties": [
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "0": {
+                        "text": "no",
+                        "color": "text",
+                        "index": 0
+                      },
+                      "1": {
+                        "text": "yes",
+                        "color": "green",
+                        "index": 1
+                      }
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "footer": {
+          "show": false
+        }
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Bridge usage ↓",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "august-prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 75,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "august-prometheus"
+          },
+          "expr": "august:bridge_used_bps{name=~\"$bridge\",direction=\"download\"}",
+          "legendFormat": "{{name}}",
+          "refId": "A",
+          "instant": false,
+          "format": "time_series",
+          "range": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bps",
+          "noValue": "no data",
+          "custom": {
+            "fillOpacity": 8,
+            "lineWidth": 1,
+            "spanNulls": false,
+            "insertNulls": 300000
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Bridge usage ↑",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "august-prometheus"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 75,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "august-prometheus"
+          },
+          "expr": "august:bridge_used_bps{name=~\"$bridge\",direction=\"upload\"}",
+          "legendFormat": "{{name}}",
+          "refId": "A",
+          "instant": false,
+          "format": "time_series",
+          "range": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bps",
+          "noValue": "no data",
+          "custom": {
+            "fillOpacity": 8,
+            "lineWidth": 1,
+            "spanNulls": false,
+            "insertNulls": 300000
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "type": "row",
+      "title": "6. Connections",
+      "gridPos": {
+        "x": 0,
+        "y": 83,
+        "w": 24,
+        "h": 1
+      },
+      "collapsed": false,
+      "panels": [],
+      "description": "Established VPN inbound sockets, not users: one user can hold several and a multiplexed client can hold one for many streams. The panel's own online-user count is shown beside them."
+    },
+    {
+      "type": "table",
+      "title": "Connections",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "august-prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 84,
+        "w": 24,
+        "h": 8
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "august-prometheus"
+          },
+          "expr": "august:node_sessions{node=~\"$node\"}",
+          "legendFormat": "",
+          "refId": "A",
+          "instant": true,
+          "format": "table",
+          "range": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "august-prometheus"
+          },
+          "expr": "august_node_session_limit{node=~\"$node\",pool=~\"$pool\"}",
+          "legendFormat": "",
+          "refId": "B",
+          "instant": true,
+          "format": "table",
+          "range": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "august-prometheus"
+          },
+          "expr": "august:node_session_ratio{node=~\"$node\"}",
+          "legendFormat": "",
+          "refId": "C",
+          "instant": true,
+          "format": "table",
+          "range": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "august-prometheus"
+          },
+          "expr": "august:node_online_users{node=~\"$node\"}",
+          "legendFormat": "",
+          "refId": "D",
+          "instant": true,
+          "format": "table",
+          "range": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "august-prometheus"
+          },
+          "expr": "august:node_tcp_passive_opens_per_second{node=~\"$node\"}",
+          "legendFormat": "",
+          "refId": "E",
+          "instant": true,
+          "format": "table",
+          "range": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "august-prometheus"
+          },
+          "expr": "august_node_vpn_ports_declared{node=~\"$node\"}",
+          "legendFormat": "",
+          "refId": "F",
+          "instant": true,
+          "format": "table",
+          "range": false
+        }
+      ],
+      "transformations": [
+        {
+          "id": "merge",
+          "options": {}
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "noValue": "no data"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".*status.*"
+            },
+            "properties": [
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "0": {
+                        "text": "RED",
+                        "color": "red",
+                        "index": 0
+                      },
+                      "1": {
+                        "text": "YELLOW",
+                        "color": "orange",
+                        "index": 1
+                      },
+                      "2": {
+                        "text": "GREEN",
+                        "color": "green",
+                        "index": 2
+                      }
+                    }
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".*free_mbps.*"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "Mbits"
+              },
+              {
+                "id": "decimals",
+                "value": 0
+              },
+              {
+                "id": "noValue",
+                "value": "N/A"
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "red",
+                      "value": null
+                    },
+                    {
+                      "color": "orange",
+                      "value": 200
+                    },
+                    {
+                      "color": "green",
+                      "value": 500
+                    }
+                  ]
+                }
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".*(ratio|free_pct).*"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "percentunit"
+              },
+              {
+                "id": "decimals",
+                "value": 1
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".*(certain|attributed).*"
+            },
+            "properties": [
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "0": {
+                        "text": "aggregate / uncertain",
+                        "color": "orange",
+                        "index": 0
+                      },
+                      "1": {
+                        "text": "attributed",
+                        "color": "green",
+                        "index": 1
+                      }
+                    }
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "^(active|enabled|connected|disabled|mapped|declared|shared).*"
+            },
+            "properties": [
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "0": {
+                        "text": "no",
+                        "color": "text",
+                        "index": 0
+                      },
+                      "1": {
+                        "text": "yes",
+                        "color": "green",
+                        "index": 1
+                      }
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "footer": {
+          "show": false
+        }
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "VPN inbound established sockets",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "august-prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 92,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "august-prometheus"
+          },
+          "expr": "august_node_vpn_established_sockets{node=~\"$node\"}",
+          "legendFormat": "{{node}} :{{port}} {{family}}",
+          "refId": "A",
+          "instant": false,
+          "format": "time_series",
+          "range": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "noValue": "no data",
+          "custom": {
+            "fillOpacity": 8,
+            "lineWidth": 1,
+            "spanNulls": false,
+            "insertNulls": 300000
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Host TCP passive opens per second",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "august-prometheus"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 92,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "august-prometheus"
+          },
+          "expr": "august:node_tcp_passive_opens_per_second{node=~\"$node\"}",
+          "legendFormat": "{{node}}",
+          "refId": "A",
+          "instant": false,
+          "format": "time_series",
+          "range": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "noValue": "no data",
+          "custom": {
+            "fillOpacity": 8,
+            "lineWidth": 1,
+            "spanNulls": false,
+            "insertNulls": 300000
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "type": "row",
+      "title": "7. Quotas",
+      "gridPos": {
+        "x": 0,
+        "y": 100,
+        "w": 24,
+        "h": 1
+      },
+      "collapsed": false,
+      "panels": [],
+      "description": "Nodes with no quota are shown as unlimited and raise no alert."
+    },
+    {
+      "type": "table",
+      "title": "Quotas",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "august-prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 101,
+        "w": 24,
+        "h": 8
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "august-prometheus"
+          },
+          "expr": "august_node_traffic_used_bytes{node=~\"$node\",pool=~\"$pool\"}",
+          "legendFormat": "",
+          "refId": "A",
+          "instant": true,
+          "format": "table",
+          "range": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "august-prometheus"
+          },
+          "expr": "august_node_traffic_limit_bytes{node=~\"$node\",pool=~\"$pool\"}",
+          "legendFormat": "",
+          "refId": "B",
+          "instant": true,
+          "format": "table",
+          "range": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "august-prometheus"
+          },
+          "expr": "august:node_quota_ratio{node=~\"$node\",pool=~\"$pool\"}",
+          "legendFormat": "",
+          "refId": "C",
+          "instant": true,
+          "format": "table",
+          "range": false
+        }
+      ],
+      "transformations": [
+        {
+          "id": "merge",
+          "options": {}
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "noValue": "no data"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".*status.*"
+            },
+            "properties": [
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "0": {
+                        "text": "RED",
+                        "color": "red",
+                        "index": 0
+                      },
+                      "1": {
+                        "text": "YELLOW",
+                        "color": "orange",
+                        "index": 1
+                      },
+                      "2": {
+                        "text": "GREEN",
+                        "color": "green",
+                        "index": 2
+                      }
+                    }
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".*free_mbps.*"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "Mbits"
+              },
+              {
+                "id": "decimals",
+                "value": 0
+              },
+              {
+                "id": "noValue",
+                "value": "N/A"
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "red",
+                      "value": null
+                    },
+                    {
+                      "color": "orange",
+                      "value": 200
+                    },
+                    {
+                      "color": "green",
+                      "value": 500
+                    }
+                  ]
+                }
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".*(ratio|free_pct).*"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "percentunit"
+              },
+              {
+                "id": "decimals",
+                "value": 1
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".*(certain|attributed).*"
+            },
+            "properties": [
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "0": {
+                        "text": "aggregate / uncertain",
+                        "color": "orange",
+                        "index": 0
+                      },
+                      "1": {
+                        "text": "attributed",
+                        "color": "green",
+                        "index": 1
+                      }
+                    }
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "^(active|enabled|connected|disabled|mapped|declared|shared).*"
+            },
+            "properties": [
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "0": {
+                        "text": "no",
+                        "color": "text",
+                        "index": 0
+                      },
+                      "1": {
+                        "text": "yes",
+                        "color": "green",
+                        "index": 1
+                      }
+                    }
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".*bytes.*"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "bytes"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Value #B"
+            },
+            "properties": [
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "0": {
+                        "text": "unlimited",
+                        "index": 0
+                      }
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "footer": {
+          "show": false
+        }
+      }
+    },
+    {
+      "type": "row",
+      "title": "8. Scaling and recommendation",
+      "gridPos": {
+        "x": 0,
+        "y": 109,
+        "w": 24,
+        "h": 1
+      },
+      "collapsed": false,
+      "panels": [],
+      "description": "Priority: 1 RED bridge, 2 RED pool, 3 YELLOW bridge, 4 YELLOW pool, 5 overloaded active node. Ties: lowest free %, then lowest absolute free capacity, then highest growth. Sort by rank ascending - the top row is the recommendation."
+    },
+    {
+      "type": "table",
+      "title": "Next node recommendation",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "august-prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 110,
+        "w": 24,
+        "h": 9
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "august-prometheus"
+          },
+          "expr": "sort(august:scaling_rank)",
+          "legendFormat": "",
+          "refId": "A",
+          "instant": true,
+          "format": "table",
+          "range": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "august-prometheus"
+          },
+          "expr": "august:scaling_priority > 0",
+          "legendFormat": "",
+          "refId": "B",
+          "instant": true,
+          "format": "table",
+          "range": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "august-prometheus"
+          },
+          "expr": "august:scaling_free_ratio",
+          "legendFormat": "",
+          "refId": "C",
+          "instant": true,
+          "format": "table",
+          "range": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "august-prometheus"
+          },
+          "expr": "august:scaling_free_mbps",
+          "legendFormat": "",
+          "refId": "D",
+          "instant": true,
+          "format": "table",
+          "range": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "august-prometheus"
+          },
+          "expr": "august:pool_growth_ratio",
+          "legendFormat": "",
+          "refId": "E",
+          "instant": true,
+          "format": "table",
+          "range": false
+        }
+      ],
+      "transformations": [
+        {
+          "id": "merge",
+          "options": {}
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "noValue": "no data"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".*status.*"
+            },
+            "properties": [
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "0": {
+                        "text": "RED",
+                        "color": "red",
+                        "index": 0
+                      },
+                      "1": {
+                        "text": "YELLOW",
+                        "color": "orange",
+                        "index": 1
+                      },
+                      "2": {
+                        "text": "GREEN",
+                        "color": "green",
+                        "index": 2
+                      }
+                    }
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".*free_mbps.*"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "Mbits"
+              },
+              {
+                "id": "decimals",
+                "value": 0
+              },
+              {
+                "id": "noValue",
+                "value": "N/A"
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "red",
+                      "value": null
+                    },
+                    {
+                      "color": "orange",
+                      "value": 200
+                    },
+                    {
+                      "color": "green",
+                      "value": 500
+                    }
+                  ]
+                }
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".*(ratio|free_pct).*"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "percentunit"
+              },
+              {
+                "id": "decimals",
+                "value": 1
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".*(certain|attributed).*"
+            },
+            "properties": [
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "0": {
+                        "text": "aggregate / uncertain",
+                        "color": "orange",
+                        "index": 0
+                      },
+                      "1": {
+                        "text": "attributed",
+                        "color": "green",
+                        "index": 1
+                      }
+                    }
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "^(active|enabled|connected|disabled|mapped|declared|shared).*"
+            },
+            "properties": [
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "0": {
+                        "text": "no",
+                        "color": "text",
+                        "index": 0
+                      },
+                      "1": {
+                        "text": "yes",
+                        "color": "green",
+                        "index": 1
+                      }
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "footer": {
+          "show": false
+        }
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Time to RED at the current trend",
+      "description": "Empty where the history is too short, the trend is flat or falling, or the series reset. A forecast is not published unless it means something.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "august-prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 119,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "august-prometheus"
+          },
+          "expr": "august:pool_seconds_to_red{pool=~\"$pool\",direction=\"download\"}",
+          "legendFormat": "{{pool}}",
+          "refId": "A",
+          "instant": false,
+          "format": "time_series",
+          "range": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "noValue": "no data",
+          "custom": {
+            "fillOpacity": 8,
+            "lineWidth": 1,
+            "spanNulls": false,
+            "insertNulls": 300000
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Growth: short window over long window",
+      "description": "Gated on having enough samples and a non-zero baseline.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "august-prometheus"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 119,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "august-prometheus"
+          },
+          "expr": "august:pool_growth_ratio{pool=~\"$pool\",direction=\"download\"}",
+          "legendFormat": "{{pool}}",
+          "refId": "A",
+          "instant": false,
+          "format": "time_series",
+          "range": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "noValue": "no data",
+          "custom": {
+            "fillOpacity": 8,
+            "lineWidth": 1,
+            "spanNulls": false,
+            "insertNulls": 300000
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "type": "row",
+      "title": "9. Infrastructure and data quality",
+      "gridPos": {
+        "x": 0,
+        "y": 127,
+        "w": 24,
+        "h": 1
+      },
+      "collapsed": false,
+      "panels": [],
+      "description": "Everything above is only as good as this row is quiet."
+    },
+    {
+      "type": "stat",
+      "title": "Inventory valid",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "august-prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 128,
+        "w": 4,
+        "h": 4
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "august-prometheus"
+          },
+          "expr": "august_capacity_inventory_valid",
+          "legendFormat": "",
+          "refId": "A",
+          "instant": true,
+          "format": "time_series",
+          "range": false
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "decimals": null,
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "0": {
+                  "text": "no",
+                  "color": "text",
+                  "index": 0
+                },
+                "1": {
+                  "text": "yes",
+                  "color": "green",
+                  "index": 1
+                }
+              }
+            }
+          ],
+          "noValue": "no data"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "auto"
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Serving last-good inventory",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "august-prometheus"
+      },
+      "gridPos": {
+        "x": 4,
+        "y": 128,
+        "w": 4,
+        "h": 4
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "august-prometheus"
+          },
+          "expr": "august_capacity_inventory_last_good_in_use",
+          "legendFormat": "",
+          "refId": "A",
+          "instant": true,
+          "format": "time_series",
+          "range": false
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "decimals": null,
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "0": {
+                  "text": "no",
+                  "color": "text",
+                  "index": 0
+                },
+                "1": {
+                  "text": "yes",
+                  "color": "green",
+                  "index": 1
+                }
+              }
+            }
+          ],
+          "noValue": "no data"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "auto"
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Panel reachable",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "august-prometheus"
+      },
+      "gridPos": {
+        "x": 8,
+        "y": 128,
+        "w": 4,
+        "h": 4
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "august-prometheus"
+          },
+          "expr": "august_capacity_panel_reachable",
+          "legendFormat": "",
+          "refId": "A",
+          "instant": true,
+          "format": "time_series",
+          "range": false
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "decimals": null,
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "0": {
+                  "text": "no",
+                  "color": "text",
+                  "index": 0
+                },
+                "1": {
+                  "text": "yes",
+                  "color": "green",
+                  "index": 1
+                }
+              }
+            }
+          ],
+          "noValue": "no data"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "auto"
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Panel state age",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "august-prometheus"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 128,
+        "w": 4,
+        "h": 4
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "august-prometheus"
+          },
+          "expr": "august_capacity_panel_state_age_seconds",
+          "legendFormat": "",
+          "refId": "A",
+          "instant": true,
+          "format": "time_series",
+          "range": false
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "decimals": null,
+          "mappings": [],
+          "noValue": "no data"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "auto"
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Panel state stale",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "august-prometheus"
+      },
+      "gridPos": {
+        "x": 16,
+        "y": 128,
+        "w": 4,
+        "h": 4
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "august-prometheus"
+          },
+          "expr": "august_capacity_panel_state_stale",
+          "legendFormat": "",
+          "refId": "A",
+          "instant": true,
+          "format": "time_series",
+          "range": false
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "decimals": null,
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "0": {
+                  "text": "no",
+                  "color": "text",
+                  "index": 0
+                },
+                "1": {
+                  "text": "yes",
+                  "color": "green",
+                  "index": 1
+                }
+              }
+            }
+          ],
+          "noValue": "no data"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "auto"
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Topology drift",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "august-prometheus"
+      },
+      "gridPos": {
+        "x": 20,
+        "y": 128,
+        "w": 4,
+        "h": 4
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "august-prometheus"
+          },
+          "expr": "sum(august_topology_drift)",
+          "legendFormat": "",
+          "refId": "A",
+          "instant": true,
+          "format": "time_series",
+          "range": false
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "decimals": null,
+          "mappings": [],
+          "noValue": "no data"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "auto"
+      }
+    },
+    {
+      "type": "table",
+      "title": "Data quality",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "august-prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 132,
+        "w": 24,
+        "h": 8
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "august-prometheus"
+          },
+          "expr": "august:required_series_present",
+          "legendFormat": "",
+          "refId": "A",
+          "instant": true,
+          "format": "table",
+          "range": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "august-prometheus"
+          },
+          "expr": "august_node_identity_problems",
+          "legendFormat": "",
+          "refId": "B",
+          "instant": true,
+          "format": "table",
+          "range": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "august-prometheus"
+          },
+          "expr": "august_topology_drift",
+          "legendFormat": "",
+          "refId": "C",
+          "instant": true,
+          "format": "table",
+          "range": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "august-prometheus"
+          },
+          "expr": "august_semaphore_response_contract_ok",
+          "legendFormat": "",
+          "refId": "D",
+          "instant": true,
+          "format": "table",
+          "range": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "august-prometheus"
+          },
+          "expr": "august_semaphore_history_truncated",
+          "legendFormat": "",
+          "refId": "E",
+          "instant": true,
+          "format": "table",
+          "range": false
+        }
+      ],
+      "transformations": [
+        {
+          "id": "merge",
+          "options": {}
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "noValue": "no data"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".*status.*"
+            },
+            "properties": [
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "0": {
+                        "text": "RED",
+                        "color": "red",
+                        "index": 0
+                      },
+                      "1": {
+                        "text": "YELLOW",
+                        "color": "orange",
+                        "index": 1
+                      },
+                      "2": {
+                        "text": "GREEN",
+                        "color": "green",
+                        "index": 2
+                      }
+                    }
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".*free_mbps.*"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "Mbits"
+              },
+              {
+                "id": "decimals",
+                "value": 0
+              },
+              {
+                "id": "noValue",
+                "value": "N/A"
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "red",
+                      "value": null
+                    },
+                    {
+                      "color": "orange",
+                      "value": 200
+                    },
+                    {
+                      "color": "green",
+                      "value": 500
+                    }
+                  ]
+                }
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".*(ratio|free_pct).*"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "percentunit"
+              },
+              {
+                "id": "decimals",
+                "value": 1
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".*(certain|attributed).*"
+            },
+            "properties": [
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "0": {
+                        "text": "aggregate / uncertain",
+                        "color": "orange",
+                        "index": 0
+                      },
+                      "1": {
+                        "text": "attributed",
+                        "color": "green",
+                        "index": 1
+                      }
+                    }
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "^(active|enabled|connected|disabled|mapped|declared|shared).*"
+            },
+            "properties": [
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "0": {
+                        "text": "no",
+                        "color": "text",
+                        "index": 0
+                      },
+                      "1": {
+                        "text": "yes",
+                        "color": "green",
+                        "index": 1
+                      }
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "footer": {
+          "show": false
+        }
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "CPU busy",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "august-prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 140,
+        "w": 8,
+        "h": 8
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "august-prometheus"
+          },
+          "expr": "100 - (avg by (node) (rate(node_cpu_seconds_total{mode=\"idle\",node=~\"$node\"}[5m])) * 100)",
+          "legendFormat": "{{node}}",
+          "refId": "A",
+          "instant": false,
+          "format": "time_series",
+          "range": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "noValue": "no data",
+          "custom": {
+            "fillOpacity": 8,
+            "lineWidth": 1,
+            "spanNulls": false,
+            "insertNulls": 300000
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Memory used",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "august-prometheus"
+      },
+      "gridPos": {
+        "x": 8,
+        "y": 140,
+        "w": 8,
+        "h": 8
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "august-prometheus"
+          },
+          "expr": "1 - (node_memory_MemAvailable_bytes{node=~\"$node\"} / node_memory_MemTotal_bytes{node=~\"$node\"})",
+          "legendFormat": "{{node}}",
+          "refId": "A",
+          "instant": false,
+          "format": "time_series",
+          "range": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "noValue": "no data",
+          "custom": {
+            "fillOpacity": 8,
+            "lineWidth": 1,
+            "spanNulls": false,
+            "insertNulls": 300000
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Load average, 5m",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "august-prometheus"
+      },
+      "gridPos": {
+        "x": 16,
+        "y": 140,
+        "w": 8,
+        "h": 8
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "august-prometheus"
+          },
+          "expr": "node_load5{node=~\"$node\"}",
+          "legendFormat": "{{node}}",
+          "refId": "A",
+          "instant": false,
+          "format": "time_series",
+          "range": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "noValue": "no data",
+          "custom": {
+            "fillOpacity": 8,
+            "lineWidth": 1,
+            "spanNulls": false,
+            "insertNulls": 300000
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Network errors and drops per second",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "august-prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 148,
+        "w": 8,
+        "h": 8
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "august-prometheus"
+          },
+          "expr": "sum by (node) (rate(node_network_receive_errs_total{node=~\"$node\"}[5m]) + rate(node_network_transmit_errs_total{node=~\"$node\"}[5m]))",
+          "legendFormat": "{{node}} errors",
+          "refId": "A",
+          "instant": false,
+          "format": "time_series",
+          "range": true
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "august-prometheus"
+          },
+          "expr": "sum by (node) (rate(node_network_receive_drop_total{node=~\"$node\"}[5m]) + rate(node_network_transmit_drop_total{node=~\"$node\"}[5m]))",
+          "legendFormat": "{{node}} drops",
+          "refId": "B",
+          "instant": false,
+          "format": "time_series",
+          "range": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "noValue": "no data",
+          "custom": {
+            "fillOpacity": 8,
+            "lineWidth": 1,
+            "spanNulls": false,
+            "insertNulls": 300000
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "TCP retransmit rate",
+      "description": "Retransmitted segments over sent segments.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "august-prometheus"
+      },
+      "gridPos": {
+        "x": 8,
+        "y": 148,
+        "w": 8,
+        "h": 8
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "august-prometheus"
+          },
+          "expr": "rate(node_netstat_Tcp_RetransSegs{node=~\"$node\"}[5m]) / clamp_min(rate(node_netstat_Tcp_OutSegs{node=~\"$node\"}[5m]), 1)",
+          "legendFormat": "{{node}}",
+          "refId": "A",
+          "instant": false,
+          "format": "time_series",
+          "range": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "noValue": "no data",
+          "custom": {
+            "fillOpacity": 8,
+            "lineWidth": 1,
+            "spanNulls": false,
+            "insertNulls": 300000
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "User port reachability and TCP connect latency",
+      "description": "Availability from the monitoring host, on the ports users connect to. Packet loss is not measured: nothing here sends ICMP, and inventing a loss figure from a TCP connect would be a number with no source.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "august-prometheus"
+      },
+      "gridPos": {
+        "x": 16,
+        "y": 148,
+        "w": 8,
+        "h": 8
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "august-prometheus"
+          },
+          "expr": "probe_success{node=~\"$node\"}",
+          "legendFormat": "{{node}} :{{port}} up",
+          "refId": "A",
+          "instant": false,
+          "format": "time_series",
+          "range": true
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "august-prometheus"
+          },
+          "expr": "probe_duration_seconds{node=~\"$node\"}",
+          "legendFormat": "{{node}} :{{port}} latency",
+          "refId": "B",
+          "instant": false,
+          "format": "time_series",
+          "range": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "noValue": "no data",
+          "custom": {
+            "fillOpacity": 8,
+            "lineWidth": 1,
+            "spanNulls": false,
+            "insertNulls": 300000
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "type": "table",
+      "title": "Provisioning — Semaphore job durations",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "august-prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 156,
+        "w": 24,
+        "h": 8
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "august-prometheus"
+          },
+          "expr": "august_semaphore_last_success_timestamp_seconds",
+          "legendFormat": "",
+          "refId": "A",
+          "instant": true,
+          "format": "table",
+          "range": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "august-prometheus"
+          },
+          "expr": "august_semaphore_last_success_duration_seconds",
+          "legendFormat": "",
+          "refId": "B",
+          "instant": true,
+          "format": "table",
+          "range": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "august-prometheus"
+          },
+          "expr": "august_semaphore_task_duration_seconds{quantile=\"0.5\"}",
+          "legendFormat": "",
+          "refId": "C",
+          "instant": true,
+          "format": "table",
+          "range": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "august-prometheus"
+          },
+          "expr": "august_semaphore_task_duration_seconds{quantile=\"0.95\"}",
+          "legendFormat": "",
+          "refId": "D",
+          "instant": true,
+          "format": "table",
+          "range": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "august-prometheus"
+          },
+          "expr": "august_semaphore_task_duration_samples",
+          "legendFormat": "",
+          "refId": "E",
+          "instant": true,
+          "format": "table",
+          "range": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "august-prometheus"
+          },
+          "expr": "august_semaphore_tasks_read",
+          "legendFormat": "",
+          "refId": "F",
+          "instant": true,
+          "format": "table",
+          "range": false
+        }
+      ],
+      "transformations": [
+        {
+          "id": "merge",
+          "options": {}
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "noValue": "no data"
+        },
+        "overrides": []
+      },
+      "options": {
+        "showHeader": true,
+        "footer": {
+          "show": false
+        }
+      }
+    },
+    {
+      "type": "table",
+      "title": "First observed connected",
+      "description": "First OBSERVED connection: when this exporter first saw the node connected - not when it first came up. Nothing in the panel records that, and this series starts when the exporter does, so the gap between creation and service cannot be claimed from it.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "august-prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 164,
+        "w": 24,
+        "h": 8
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "august-prometheus"
+          },
+          "expr": "august_node_first_observed_connected_timestamp_seconds{node=~\"$node\",pool=~\"$pool\"}",
+          "legendFormat": "",
+          "refId": "A",
+          "instant": true,
+          "format": "table",
+          "range": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "august-prometheus"
+          },
+          "expr": "august_node_created_timestamp_seconds{node=~\"$node\",pool=~\"$pool\"}",
+          "legendFormat": "",
+          "refId": "B",
+          "instant": true,
+          "format": "table",
+          "range": false
+        }
+      ],
+      "transformations": [
+        {
+          "id": "merge",
+          "options": {}
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "noValue": "no data"
+        },
+        "overrides": []
+      },
+      "options": {
+        "showHeader": true,
+        "footer": {
+          "show": false
+        }
+      }
+    }
+  ],
+  "templating": {
+    "list": [
+      {
+        "name": "environment",
+        "label": "Environment",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "august-prometheus"
+        },
+        "refresh": 1,
+        "query": "label_values(august_service_capacity_mbps, fleet)",
+        "includeAll": true,
+        "multi": false,
+        "allValue": ".*",
+        "current": {
+          "selected": true,
+          "text": [
+            "All"
+          ],
+          "value": [
+            "$__all"
+          ]
+        },
+        "sort": 1
+      },
+      {
+        "name": "pool",
+        "label": "Pool",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "august-prometheus"
+        },
+        "refresh": 1,
+        "query": "label_values(august_pool_members, pool)",
+        "includeAll": true,
+        "multi": true,
+        "allValue": ".*",
+        "current": {
+          "selected": true,
+          "text": [
+            "All"
+          ],
+          "value": [
+            "$__all"
+          ]
+        },
+        "sort": 1
+      },
+      {
+        "name": "country",
+        "label": "Country / location",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "august-prometheus"
+        },
+        "refresh": 1,
+        "query": "label_values(august:node_meta, country)",
+        "includeAll": true,
+        "multi": true,
+        "allValue": ".*",
+        "current": {
+          "selected": true,
+          "text": [
+            "All"
+          ],
+          "value": [
+            "$__all"
+          ]
+        },
+        "sort": 1
+      },
+      {
+        "name": "node",
+        "label": "Node",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "august-prometheus"
+        },
+        "refresh": 1,
+        "query": "label_values(august:node_meta{pool=~\"$pool\",country=~\"$country\"}, node)",
+        "includeAll": true,
+        "multi": true,
+        "allValue": ".*",
+        "current": {
+          "selected": true,
+          "text": [
+            "All"
+          ],
+          "value": [
+            "$__all"
+          ]
+        },
+        "sort": 1
+      },
+      {
+        "name": "bridge",
+        "label": "Bridge",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "august-prometheus"
+        },
+        "refresh": 1,
+        "query": "label_values(august_bridge_info, name)",
+        "includeAll": true,
+        "multi": true,
+        "allValue": ".*",
+        "current": {
+          "selected": true,
+          "text": [
+            "All"
+          ],
+          "value": [
+            "$__all"
+          ]
+        },
+        "sort": 1
+      }
+    ]
+  }
+}

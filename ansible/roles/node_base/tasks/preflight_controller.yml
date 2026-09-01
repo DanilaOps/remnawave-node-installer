@@ -141,6 +141,79 @@
   loop_control:
     label: "{{ item }}"
 
+- name: Refuse a documentation address as the operator's permanent SSH access
+  # management_cidrs_extra is the one place a human types their own public
+  # address, and it is the difference between "I can still log in directly" and
+  # "only the controller can reach this node". Copied straight from
+  # examples/fleet.yml.example it holds an RFC 5737 documentation address, which
+  # is never routed - so the rule is written, the firewall looks configured, and
+  # the operator finds out it is not the first time they need it. Refused here,
+  # controller-side, before the VPS is touched.
+  ansible.builtin.assert:
+    that:
+      # Containment, not string equality: the trap is any address out of those
+      # three blocks, whatever prefix somebody wrote it with.
+      - >-
+        not ((item | ansible.utils.ipaddr('network'))
+             | remnawave_ip_in_cidrs(['192.0.2.0/24', '198.51.100.0/24',
+                                      '203.0.113.0/24', '2001:db8::/32']))
+    fail_msg: >-
+      management_cidrs_extra contains {{ item }}, which is in a range reserved for documentation
+      (RFC 5737 / RFC 3849) and is never routed on the internet. That is the value shipped in
+      ansible/examples/fleet.yml.example. Put your own public address in
+      /etc/remnawave/fleet.yml as management_cidrs_extra, or remove the entry.
+  loop: "{{ management_cidrs_extra | default([]) }}"
+  loop_control:
+    label: "{{ item }}"
+
+- name: Report that only the controller will keep direct SSH access
+  # Not a failure: a fleet that is only ever administered through Semaphore is a
+  # legitimate choice. But it has to be a choice somebody made and can see,
+  # because the firewall this run installs has a default-drop input chain.
+  ansible.builtin.debug:
+    msg: >-
+      management_cidrs_extra is empty, so after this run TCP/{{ ansible_port | default(22) }} on
+      {{ inventory_hostname }} will be reachable from the controller only - the address sshd sees
+      for this very connection. To keep direct access from your own machine, add it to
+      /etc/remnawave/fleet.yml as "management_cidrs_extra: ['<your public IP>/32']" and re-run
+      template 02. See ansible/README.md, "Keeping your own SSH access".
+  when: management_cidrs_extra | default([]) | length == 0
+
+- name: Report who will keep direct SSH access
+  ansible.builtin.debug:
+    msg: >-
+      TCP/{{ ansible_port | default(22) }} on {{ inventory_hostname }} will be reachable from the
+      controller (discovered from this connection) and from
+      {{ management_cidrs_extra | join(', ') }}. Nothing else: the input chain drops by default.
+  when: management_cidrs_extra | default([]) | length > 0
+
+- name: Validate node-side monitoring
+  # Controller-side, so an exporter that would be published to the internet is
+  # refused before the VPS is touched. The exporter has no authentication, so
+  # its port belongs in a source-restricted rule and never in the public set.
+  ansible.builtin.assert:
+    that:
+      - (node_monitoring_exporter_port | int) not in (node_public_tcp_ports | default([]) | map('int') | list)
+      - (node_monitoring_exporter_port | int) not in (node_public_udp_ports | default([]) | map('int') | list)
+      - not (node_monitoring_enabled | bool) or (monitoring_scrape_cidrs | length > 0)
+    fail_msg: >-
+      Monitoring is configured in a way that would publish it. Port
+      {{ node_monitoring_exporter_port }} must not appear in node_public_tcp_ports or
+      node_public_udp_ports, and node_monitoring_enabled needs at least one address in
+      monitoring_scrape_cidrs - node_exporter authenticates nobody.
+
+- name: Validate every monitoring scrape CIDR
+  ansible.builtin.assert:
+    that:
+      - (item | ansible.utils.ipaddr) != false
+      - (item | ansible.utils.ipaddr('prefix') | int) > 0
+    fail_msg: >-
+      monitoring_scrape_cidrs contains {{ item }}, which is not a host or subnet that names the
+      monitoring host.
+  loop: "{{ monitoring_scrape_cidrs | default([]) }}"
+  loop_control:
+    label: "{{ item }}"
+
 - name: Validate bridge input
   ansible.builtin.assert:
     that:

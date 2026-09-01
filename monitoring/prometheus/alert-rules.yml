@@ -1,0 +1,416 @@
+# Prometheus alerting rules for the August VPN fleet.
+#
+# NOT installed by Ansible. Copy this file to the monitoring server
+# yourself and point prometheus.yml's rule_files at it - see
+# monitoring/README.ru.md. Ansible manages the node-side agent only.
+#
+# Checked in CI by monitoring/tests/test_monitoring_rules.sh, which runs
+# promtool against this exact file, so what CI accepted is byte for
+# byte what Prometheus loads.
+#
+#
+# WHAT THIS FILE IS FOR, AND WHAT IT DELIBERATELY DOES NOT DO
+#
+# This fleet already has an alerting system outside Prometheus. It covers a
+# server going down for any reason, nodes being added, edited or removed, user
+# changes, the torrent blocker, the CRM, and a general "critical" channel.
+# Re-sending any of that from here would not add information; it would teach
+# people that two systems say the same thing and that one of them can be
+# ignored. So this file answers only the question the other system cannot:
+# is a machine we already know is up running out of CPU, memory or bandwidth?
+#
+# Removed from alerting on purpose, and still published as metrics for the
+# dashboard - metric is not the same thing as alert:
+#
+#   NodeOffline, NodeUnhealthy, NodeUnknownToPanel, ScrapeTargetDown
+#       a node or a server being unreachable. The existing system owns this.
+#   TopologyDrift, NodeIdentityUnmapped, NodeIdentityAmbiguous,
+#   NodeAdministrativelyDisabled
+#       a node was added, edited, disabled or removed. The existing system owns
+#       node edits; here the same facts stay as august_topology_drift and
+#       august_node_identity_* so the dashboard can show them.
+#   PoolSingleNodeRemaining
+#       a consequence of a node going down, which is already alerted elsewhere.
+#   CapacityUnrated
+#       informational. "We never measured this link" is a state for a panel,
+#       not a page, and it is true for weeks at a time.
+#   SemaphoreExporterDegraded, SemaphoreNoRecentInstall
+#       the Semaphore exporter is not finished; it must not page anyone yet.
+#
+# ROUTING. Alertmanager forwards severity="critical" to Telegram and nothing
+# else - see monitoring/alertmanager/alertmanager.yml.example. Everything at
+# warning or info below is therefore deliberately visible in Prometheus and
+# Grafana and deliberately silent on the phone. Adding a rule at critical is
+# adding a page; that is the whole decision.
+#
+# THRESHOLDS. Bandwidth is measured in Mbit/s still free, not in percent free.
+# 20% of a 5 Gbit/s link is a gigabit, which is not an emergency, and 20% of a
+# 1 Gbit/s link is 200 Mbit/s, which is; one percentage cannot mean both. The
+# percentage stays on the dashboard next to the absolute number.
+#
+#   CPU     warning  > 80% for 10m      critical > 90% for 5m
+#   memory  warning  > 85% for 10m      critical > 95% for 5m
+#   free    warning  < 500 Mbit/s 5m    critical < 200 Mbit/s 5m
+#
+# Download and upload are evaluated separately and the rules fire per direction,
+# so the direction label on a firing alert is the bottleneck by construction:
+# a node with 170 Mbit/s free down and 2.9 Gbit/s free up produces exactly one
+# critical alert, and it says download.
+#
+# A bandwidth alert only ever exists where somebody measured the capacity. The
+# august:alert_*_free_mbps rules in recording-rules.yml produce no series for an
+# unmeasured node, a shared rating or a pool whose figure stopped being
+# attributable, so no threshold here can invent a number for them.
+---
+groups:
+  # --- CPU and memory: the two things that page ------------------------------
+  - name: august_resources
+    rules:
+      - alert: AugustNodeCpuHigh
+        expr: august:node_cpu_busy_ratio > 0.80
+        for: 10m
+        labels:
+          severity: warning
+          class: resource
+        annotations:
+          summary: "🟡 CPU high — {{ $labels.node }}"
+          description: >-
+            CPU has been above 80% for 10 minutes, now
+            {{ $value | humanizePercentage }}. Node {{ $labels.node }}.
+            Not paged; watch it on the dashboard, row 9.
+
+      - alert: AugustNodeCpuCritical
+        expr: august:node_cpu_busy_ratio > 0.90
+        for: 5m
+        labels:
+          severity: critical
+          class: resource
+        annotations:
+          summary: "🔴 CPU critical — {{ $labels.node }}"
+          description: >-
+            CPU {{ $value | humanizePercentage }}, above 90% for 5 minutes.
+            Node {{ $labels.node }}. Sustained, not a spike: the 5 minute delay
+            has already passed.
+
+      - alert: AugustNodeMemoryHigh
+        expr: august:node_memory_used_ratio > 0.85
+        for: 10m
+        labels:
+          severity: warning
+          class: resource
+        annotations:
+          summary: "🟡 Memory high — {{ $labels.node }}"
+          description: >-
+            Memory in use {{ $value | humanizePercentage }} for 10 minutes on
+            {{ $labels.node }}, measured against MemAvailable rather than
+            MemFree, so page cache is not counted as used. Not paged.
+
+      - alert: AugustNodeMemoryCritical
+        expr: august:node_memory_used_ratio > 0.95
+        for: 5m
+        labels:
+          severity: critical
+          class: resource
+        annotations:
+          summary: "🔴 Memory critical — {{ $labels.node }}"
+          description: >-
+            Memory in use {{ $value | humanizePercentage }} on
+            {{ $labels.node }}, above 95% for 5 minutes. Under 5% of total is
+            available for a new allocation; the OOM killer is the next event.
+
+  # --- Bandwidth headroom, in Mbit/s still free ------------------------------
+  - name: august_bandwidth
+    rules:
+      - alert: AugustNodeBandwidthLow
+        expr: august:alert_node_free_mbps < 500
+        for: 5m
+        labels:
+          severity: warning
+          class: capacity
+        annotations:
+          summary: "🟡 Bandwidth low — {{ $labels.node }} ({{ $labels.direction }})"
+          description: >-
+            {{ $value | printf "%.0f" }} Mbit/s free on {{ $labels.direction }},
+            below the 500 Mbit/s warning floor for 5 minutes.
+            Node {{ $labels.node }}, pool {{ $labels.pool }}.
+            Bottleneck: {{ $labels.direction }}. Used and total are on the
+            dashboard, row 4. Not paged.
+
+      - alert: AugustNodeBandwidthCritical
+        expr: august:alert_node_free_mbps < 200
+        for: 5m
+        labels:
+          severity: critical
+          class: capacity
+        annotations:
+          summary: "🔴 Bandwidth critical — {{ $labels.node }} ({{ $labels.direction }})"
+          description: >-
+            Only {{ $value | printf "%.0f" }} Mbit/s free on
+            {{ $labels.direction }} for 5 minutes, below the 200 Mbit/s floor.
+            Node {{ $labels.node }}, pool {{ $labels.pool }}.
+            Bottleneck: {{ $labels.direction }} - the other direction is not
+            what fired this. Used and total: dashboard row 4.
+
+      - alert: AugustPoolBandwidthLow
+        expr: august:alert_pool_free_mbps < 500
+        for: 5m
+        labels:
+          severity: warning
+          class: capacity
+        annotations:
+          summary: "🟡 Pool bandwidth low — {{ $labels.pool }} ({{ $labels.direction }})"
+          description: >-
+            {{ $value | printf "%.0f" }} Mbit/s free on {{ $labels.direction }}
+            across pool {{ $labels.pool }}, below 500 Mbit/s for 5 minutes.
+            Bottleneck: {{ $labels.direction }}. Not paged.
+
+      - alert: AugustPoolBandwidthCritical
+        expr: august:alert_pool_free_mbps < 200
+        for: 5m
+        labels:
+          severity: critical
+          class: capacity
+        annotations:
+          summary: "🔴 Pool bandwidth critical — {{ $labels.pool }} ({{ $labels.direction }})"
+          description: >-
+            Only {{ $value | printf "%.0f" }} Mbit/s free on
+            {{ $labels.direction }} across pool {{ $labels.pool }}, below the
+            200 Mbit/s floor for 5 minutes. Bottleneck: {{ $labels.direction }}.
+            The whole location is close to full, not one machine.
+
+      - alert: AugustBridgeBandwidthLow
+        expr: august:alert_bridge_free_mbps < 500
+        for: 5m
+        labels:
+          severity: warning
+          class: capacity
+        annotations:
+          summary: "🟡 Bridge bandwidth low — {{ $labels.name }} ({{ $labels.direction }})"
+          description: >-
+            {{ $value | printf "%.0f" }} Mbit/s free on {{ $labels.direction }}
+            over bridge {{ $labels.name }}, below 500 Mbit/s for 5 minutes.
+            Bottleneck: {{ $labels.direction }}. Not paged.
+
+      - alert: AugustBridgeBandwidthCritical
+        expr: august:alert_bridge_free_mbps < 200
+        for: 5m
+        labels:
+          severity: critical
+          class: capacity
+        annotations:
+          summary: "🔴 Bridge bandwidth critical — {{ $labels.name }} ({{ $labels.direction }})"
+          description: >-
+            Only {{ $value | printf "%.0f" }} Mbit/s free on
+            {{ $labels.direction }} over bridge {{ $labels.name }}, below the
+            200 Mbit/s floor for 5 minutes. Bottleneck: {{ $labels.direction }}.
+            This is the RU leg, not the exit node's own capacity.
+
+  # --- Can the monitoring still see? -----------------------------------------
+  #
+  # All warning: none of these is an outage, every one of them means a number
+  # elsewhere is not trustworthy, and the existing alerting system already says
+  # when a machine is actually down. They belong on the dashboard's data-quality
+  # row and in nobody's Telegram.
+  - name: august_data_quality
+    rules:
+      - alert: AugustRequiredSeriesMissing
+        # Only for a series that used to arrive and stopped. During a staged
+        # rollout most nodes simply have no agent yet, and "not installed here"
+        # is not a fault - the old unconditional form of this rule fired four
+        # times over on a fleet where exactly one node was monitored on purpose.
+        # max_over_time looks back a day: present at some point, absent now.
+        expr: |
+          august:required_series_present == 0
+          and on (series) (max_over_time(august:required_series_present[1d]) == 1)
+        for: 15m
+        labels:
+          severity: warning
+          class: data
+        annotations:
+          summary: "August: {{ $labels.series }} stopped arriving"
+          description: >-
+            This series was being produced earlier today and is not now, so
+            every capacity figure derived from it is stale rather than zero.
+            A series that never arrived on this fleet does not raise this.
+
+      - alert: AugustTrafficCounterStale
+        expr: august:traffic_counter_age_seconds > 300
+        for: 5m
+        labels:
+          severity: warning
+          class: data
+        annotations:
+          summary: "August: a traffic counter has stopped moving"
+          description: >-
+            The series exists and is not being updated
+            ({{ $value | printf "%.0f" }}s old). Usage reads as flat, which
+            looks like an idle node and is not one.
+
+      - alert: AugustCapacityExporterStale
+        # Kept because it is the one failure only this stack can see: the
+        # exporter process answering scrapes while its own collection has
+        # stopped. A server that is down is somebody else's alert.
+        expr: august:exporter_age_seconds > 180
+        for: 2m
+        labels:
+          severity: warning
+          class: data
+        annotations:
+          summary: "August: the capacity exporter is serving a stale answer"
+          description: >-
+            Its own timestamp is {{ $value | printf "%.0f" }}s old while the
+            scrape still succeeds - the process is up and its collection is not
+            running. Every capacity number on the dashboard is that old.
+
+      - alert: AugustNodeSessionCollectorStale
+        expr: august:node_sessions_age_seconds > 120
+        for: 5m
+        labels:
+          severity: warning
+          class: data
+        annotations:
+          summary: "August: the session collector on {{ $labels.node }} is stale"
+          description: >-
+            The textfile has not been rewritten for
+            {{ $value | printf "%.0f" }}s. The socket count shown for this node
+            is the last one it managed to write.
+
+      - alert: AugustBridgeMetricMissing
+        # Same staged-rollout guard as RequiredSeriesMissing: a bridge whose
+        # endpoints have no agent yet has never reported, and that is not a
+        # fault. Only a tag that reported and stopped raises this.
+        expr: |
+          august:bridge_metric_missing == 1
+          and on (name) (min_over_time(august:bridge_metric_missing[1d]) == 0)
+        for: 15m
+        labels:
+          severity: warning
+          class: data
+        annotations:
+          summary: "August: bridge {{ $labels.name }} stopped reporting traffic"
+          description: >-
+            The bridge is declared and enabled and its outbound tag was
+            reporting earlier today. Either the tag in
+            monitoring/capacity/capacity.yml is no longer the tag the node uses,
+            or the node stopped reporting it. Its capacity row means nothing
+            until this clears.
+
+      - alert: AugustUnmappedTraffic
+        expr: august:unmapped_traffic_bps > 0
+        for: 30m
+        labels:
+          severity: warning
+          class: data
+        annotations:
+          summary: "August: traffic belongs to no known node"
+          description: >-
+            {{ $value | humanize }}bps is being reported under a name the
+            capacity inventory does not know. It is counted nowhere, so every
+            total on the dashboard is short by this much.
+
+      - alert: AugustPanelStateStale
+        expr: august_capacity_panel_state_stale == 1
+        for: 10m
+        labels:
+          severity: warning
+          class: data
+        annotations:
+          summary: "August: no confirmed node state from the panel"
+          description: >-
+            The exporter has no answer it trusts, so every node reads as unknown
+            rather than healthy. Active capacity is not being recomputed.
+
+      - alert: AugustPanelUnreachable
+        expr: august_capacity_panel_reachable == 0
+        for: 15m
+        labels:
+          severity: warning
+          class: data
+        annotations:
+          summary: "August: the panel is not answering the capacity exporter"
+          description: >-
+            Within the staleness window the last good answer is still in use, so
+            this is a warning and not yet a wrong dashboard. If it persists,
+            AugustPanelStateStale follows.
+
+      - alert: AugustCapacityInventoryInvalid
+        expr: august_capacity_inventory_valid == 0
+        for: 5m
+        labels:
+          severity: warning
+          class: data
+        annotations:
+          summary: "August: the capacity inventory on disk was refused"
+          description: >-
+            Run "python3 monitoring/validate_capacity.py monitoring/capacity/capacity.yml".
+            Until it passes, the exporter serves the last inventory that was good.
+
+      - alert: AugustCapacityInventoryLastGoodInUse
+        expr: august_capacity_inventory_last_good_in_use == 1
+        for: 30m
+        labels:
+          severity: warning
+          class: data
+        annotations:
+          summary: "August: serving an older capacity inventory"
+          description: >-
+            The file on disk is syntactically or semantically invalid, so an
+            earlier accepted version is in use. Edits made since then are not in
+            effect.
+
+  # --- Capacity figures that cannot be trusted -------------------------------
+  #
+  # Warnings, never pages. Each one says "the number next to this is an upper
+  # bound", which is a thing to fix in the inventory, not at 3am.
+  - name: august_capacity_quality
+    rules:
+      - alert: AugustPoolCapacityUncertain
+        expr: august_pool_capacity_certain == 0
+        for: 30m
+        labels:
+          severity: warning
+          class: capacity
+        annotations:
+          summary: "August: pool {{ $labels.pool }} has an upper-bound figure"
+          description: >-
+            A member left and the pool's rating is an aggregate, so its free
+            capacity is an upper bound rather than a measurement. No pool
+            bandwidth alert is raised while this holds - that would be inventing
+            a number.
+
+      - alert: AugustPoolCapacityUnattributable
+        expr: august_pool_capacity_aggregate == 1 and on (pool) (august_pool_members == 0)
+        for: 30m
+        labels:
+          severity: warning
+          class: capacity
+        annotations:
+          summary: "August: pool {{ $labels.pool }} has capacity but no members"
+          description: >-
+            Its capacity is stated at the pool because the source table rates the
+            location, so no free percentage can be computed. Name its nodes in
+            monitoring/capacity/capacity.yml.
+
+      - alert: AugustNodeSessionsRed
+        expr: august:node_session_ratio >= 0.9
+        for: 10m
+        labels:
+          severity: warning
+          class: capacity
+        annotations:
+          summary: "August: {{ $labels.node }} is near its session ceiling"
+          description: >-
+            {{ $value | humanizePercentage }} of the established-session limit.
+            Sockets, not users: a multiplexed client holds one for many streams.
+
+      - alert: AugustNodeQuotaRed
+        expr: august:node_quota_ratio >= 0.9
+        for: 30m
+        labels:
+          severity: warning
+          class: capacity
+        annotations:
+          summary: "August: {{ $labels.node }} has used {{ $value | humanizePercentage }} of its traffic quota"
+          description: >-
+            The quota is a billing limit, not a capacity limit. Nothing throttles
+            automatically; this is notice to look at the plan.

@@ -705,9 +705,102 @@ class ControllerTests(unittest.TestCase):
     def test_semaphore_templates_enforce_serial_installs_and_secret_bootstrap(self) -> None:
         tool = self.read("tools/semaphore_bootstrap.py")
         self.assertIn('"allow_parallel_tasks": wanted["allow_parallel_tasks"]', tool)
-        self.assertIn('"name": "bootstrap_ssh_password"', tool)
-        self.assertIn('"type": "secret"', tool)
         self.assertIn('"name": "bootstrap_trust_new_host_keys"', tool)
+
+
+class SecretsNeverReachArgvTests(unittest.TestCase):
+    """No secret may be passed to ansible-playbook as -e name=value.
+
+    argv is world-readable through /proc/<pid>/cmdline. A panel JWT was found
+    sitting in the argv of an orphaned ansible-playbook process thirty hours
+    after the task that started it had been cancelled, readable by every local
+    account on the controller. Two mechanisms put it there, and both are closed
+    here: a Variable Group value, and a survey answer.
+
+    What is allowed instead: -e @file (Ansible decrypts an extra-vars file
+    in-process, so only the path is on the command line) and environment
+    variables (Semaphore's env column, which does not touch argv).
+    """
+
+    #: Anything whose value must never appear after "-e name=".
+    SECRET_NAMES = (
+        "bootstrap_ssh_password",
+        "vault_remnawave_panel_token",
+        "remnawave_panel_token",
+        "vault_node_root_password",
+        "vault_cloudflare_token",
+        "vault_regru_password",
+        "vault_bridge_secret",
+        "vault_verify_probe_vless_uuid",
+        "ansible_password",
+        "ansible_ssh_pass",
+        "grafana_admin_password",
+        "semaphore_api_token",
+    )
+
+    def read(self, relative: str) -> str:
+        return (ROOT / relative).read_text(encoding="utf-8")
+
+    @staticmethod
+    def code_only(text: str) -> str:
+        """The file with its comment lines removed.
+
+        The rule is about what gets executed, and the comments explaining the
+        rule necessarily quote the very thing they forbid.
+        """
+        return "\n".join(line for line in text.splitlines() if not line.lstrip().startswith("#"))
+
+    def test_no_survey_field_is_a_secret(self) -> None:
+        # A survey answer becomes --extra-vars, so a "secret" survey field is a
+        # secret in argv however Semaphore stores it.
+        tool = self.code_only(self.read("tools/semaphore_bootstrap.py"))
+        self.assertNotIn('"type": "secret"', tool)
+        self.assertNotIn('"name": "bootstrap_ssh_password"', tool)
+
+    def test_template_arguments_carry_no_inline_values(self) -> None:
+        # Every -e in a template's arguments must be a file reference.
+        tool = self.code_only(self.read("tools/semaphore_bootstrap.py"))
+        for match in re.finditer(r'"-e",\s*"([^"]+)"', tool):
+            value = match.group(1)
+            self.assertTrue(
+                value.startswith("@"),
+                f"template argument -e {value} is an inline value; use -e @file",
+            )
+
+    def test_the_wrappers_never_put_a_secret_on_the_command_line(self) -> None:
+        for name in ("provision-node", "setup-controller"):
+            text = self.code_only((ROOT.parent / name).read_text(encoding="utf-8"))
+            for secret in self.SECRET_NAMES:
+                self.assertNotIn(
+                    f"-e {secret}=",
+                    text,
+                    f"{name} puts {secret} in argv; pass it through the vault file or the environment",
+                )
+                self.assertNotIn(f'-e "{secret}=', text, f"{name} puts {secret} in argv")
+
+    def test_no_playbook_or_role_builds_an_extra_vars_secret(self) -> None:
+        # Catches a task that shells out to ansible-playbook with -e name=value.
+        for path in list(ROOT.rglob("*.yml")) + list(ROOT.rglob("*.j2")):
+            if any(part in (".venv", "collections", ".cache") for part in path.parts):
+                continue
+            text = self.code_only(path.read_text(encoding="utf-8", errors="ignore"))
+            for secret in self.SECRET_NAMES:
+                self.assertNotIn(
+                    f"-e {secret}=",
+                    text,
+                    f"{path} puts {secret} on a command line",
+                )
+
+    def test_the_vault_password_travels_as_an_environment_variable(self) -> None:
+        # Not as a value: the environment is not argv.
+        tool = self.read("tools/semaphore_bootstrap.py")
+        self.assertIn("ANSIBLE_VAULT_PASSWORD_FILE", tool)
+        self.assertIn("/etc/remnawave/vault-pass", tool)
+
+    def test_the_documentation_states_the_rule(self) -> None:
+        readme = self.read("semaphore/README.md")
+        self.assertIn("no secret reaches Ansible as", readme)
+        self.assertIn("/proc/<pid>/cmdline", readme)
 
 
 if __name__ == "__main__":

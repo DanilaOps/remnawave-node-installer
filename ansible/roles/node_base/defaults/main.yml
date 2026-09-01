@@ -56,6 +56,18 @@ bridge_spec:
   enabled: false
 node_role: direct
 
+# --- Node-side monitoring ----------------------------------------------------
+# Off by default, and additive when it is on: it appends one source-restricted
+# rule to the ruleset this role already writes and changes nothing that is
+# already in it. The variables live here rather than in node_monitoring because
+# the rule is rendered here, and a listener whose firewall rule is written by a
+# different run is a listener that is briefly public.
+node_monitoring_enabled: false
+node_monitoring_exporter_port: 9100
+# Sources allowed to reach the exporter. Empty with monitoring on is refused by
+# node_monitoring's preflight rather than quietly published.
+monitoring_scrape_cidrs: []
+
 node_hardening_enabled: true
 node_ssh_allow_root_password: false
 node_fail2ban_enabled: true

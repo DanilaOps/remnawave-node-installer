@@ -1,0 +1,145 @@
+---
+- name: Create the node_exporter system group
+  ansible.builtin.group:
+    name: "{{ node_exporter_group }}"
+    system: true
+    state: present
+
+- name: Create the node_exporter system account
+  # No shell, no home to write to, no password. It reads /proc and one directory
+  # and has no reason to be able to do anything else.
+  ansible.builtin.user:
+    name: "{{ node_exporter_user }}"
+    group: "{{ node_exporter_group }}"
+    system: true
+    shell: /usr/sbin/nologin
+    create_home: false
+    home: /nonexistent
+    state: present
+
+- name: Create the pinned node_exporter directory
+  ansible.builtin.file:
+    path: "{{ node_exporter_install_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Create the textfile collector directory
+  ansible.builtin.file:
+    path: "{{ node_monitoring_textfile_dir }}"
+    state: directory
+    owner: "{{ node_exporter_user }}"
+    group: "{{ node_exporter_group }}"
+    mode: "0755"
+
+- name: Check the installed node_exporter binary
+  ansible.builtin.stat:
+    path: "{{ node_exporter_binary_path }}"
+  register: node_monitoring_binary
+
+- name: Fetch, verify and publish the pinned node_exporter release
+  # A dry-run does none of it, and that is deliberate rather than a shortcut.
+  # get_url reaches the network even in check mode to decide whether the file
+  # would change, so a dry-run of this role used to make a real request to
+  # GitHub - and fail on a controller with no egress for a reason that has
+  # nothing to do with the deployment. What would happen is reported instead.
+  when: not ansible_check_mode
+  block:
+    - name: Download the pinned node_exporter archive against a checksum
+      # Either the hash pinned in this repository, or the release's own
+      # sha256sums.txt when none is pinned. There is no third path: the archive
+      # is never unpacked unverified.
+      ansible.builtin.get_url:
+        url: "{{ node_exporter_release_base }}/{{ node_exporter_archive }}"
+        dest: "/var/cache/{{ node_exporter_archive }}"
+        checksum: >-
+          sha256:{{ node_exporter_sha256
+                    if node_exporter_sha256 | length > 0
+                    else node_exporter_release_base ~ '/sha256sums.txt' }}
+        owner: root
+        group: root
+        mode: "0644"
+        timeout: 300
+      register: node_monitoring_archive
+
+    - name: Extract the pinned node_exporter release
+      ansible.builtin.unarchive:
+        src: "/var/cache/{{ node_exporter_archive }}"
+        dest: "{{ node_exporter_install_dir }}"
+        remote_src: true
+        extra_opts: [--strip-components=1]
+        owner: root
+        group: root
+      when: node_monitoring_archive.changed or not node_monitoring_binary.stat.exists
+
+    - name: Publish the pinned node_exporter binary
+      ansible.builtin.copy:
+        src: "{{ node_exporter_install_dir }}/node_exporter"
+        dest: "{{ node_exporter_binary_path }}"
+        remote_src: true
+        owner: root
+        group: root
+        mode: "0755"
+      notify: Restart node_exporter
+
+- name: Report the release a dry-run would fetch
+  ansible.builtin.debug:
+    msg: >-
+      Would fetch {{ node_exporter_archive }}, verify it against
+      {{ 'the hash pinned in this repository'
+         if node_exporter_sha256 | length > 0
+         else "the release's own sha256sums.txt" }}
+      and publish {{ node_exporter_binary_path }}.
+      {{ 'It is already installed.' if node_monitoring_binary.stat.exists
+         else 'Nothing of it is on this host yet.' }}
+  when: ansible_check_mode
+
+- name: Install the node_exporter unit
+  ansible.builtin.template:
+    src: node_exporter.service.j2
+    dest: /etc/systemd/system/node_exporter.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart node_exporter
+
+- name: Enable and start node_exporter
+  ansible.builtin.systemd_service:
+    name: node_exporter.service
+    enabled: true
+    state: started
+    daemon_reload: true
+  # In a dry-run on a host that does not have the unit yet, systemd knows
+  # nothing about it; what would happen is reported below instead.
+  when: not ansible_check_mode or 'node_exporter.service' in node_base_systemd_units | default([])
+
+- name: Report the exporter a dry-run would install
+  ansible.builtin.debug:
+    msg: >-
+      Would install node_exporter {{ node_exporter_version }}, bind it to
+      {{ node_monitoring_bind_address }}:{{ node_monitoring_exporter_port }} and enable the unit.
+      Reachable only from {{ monitoring_scrape_cidrs | join(', ') }}.
+  when:
+    - ansible_check_mode
+    - "'node_exporter.service' not in node_base_systemd_units | default([])"
+
+- name: Read the installed node_exporter version
+  ansible.builtin.command:
+    argv: ["{{ node_exporter_binary_path }}", --version]
+  register: node_monitoring_version_output
+  changed_when: false
+  # Read-only: a dry-run checks the version that is already there.
+  check_mode: false
+  failed_when:
+    - node_monitoring_version_output.rc != 0
+    - not ansible_check_mode
+
+- name: Verify the exact pinned node_exporter version
+  ansible.builtin.assert:
+    that:
+      - node_exporter_version in (node_monitoring_version_output.stdout | default('') ~
+                                  node_monitoring_version_output.stderr | default(''))
+    fail_msg: >-
+      The installed node_exporter is not the pinned {{ node_exporter_version }}.
+  when: node_monitoring_version_output.rc | default(1) == 0

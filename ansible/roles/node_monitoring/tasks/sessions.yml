@@ -1,0 +1,61 @@
+---
+- name: Install the established-session collector
+  ansible.builtin.template:
+    src: august-node-sessions.sh.j2
+    dest: "{{ node_monitoring_sessions_script }}"
+    owner: root
+    group: root
+    mode: "0755"
+  notify: Restart the session collector timer
+
+- name: Install the session collector units
+  ansible.builtin.template:
+    src: "{{ item.src }}"
+    dest: "{{ item.dest }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - src: august-node-sessions.service.j2
+      dest: /etc/systemd/system/august-node-sessions.service
+    - src: august-node-sessions.timer.j2
+      dest: /etc/systemd/system/august-node-sessions.timer
+  loop_control:
+    label: "{{ item.dest }}"
+  notify: Restart the session collector timer
+
+- name: Enable and start the session collector timer
+  ansible.builtin.systemd_service:
+    name: august-node-sessions.timer
+    enabled: true
+    state: started
+    daemon_reload: true
+  when: not ansible_check_mode or 'august-node-sessions.timer' in node_base_systemd_units | default([])
+
+- name: Report the session collector a dry-run would install
+  ansible.builtin.debug:
+    msg: >-
+      Would install {{ node_monitoring_sessions_script }} and run it every
+      {{ node_monitoring_sessions_interval }}, counting established sessions on
+      {{ node_monitoring_session_ports | join(', ') }} and never on
+      {{ node_monitoring_session_excluded_ports | join(', ') }}.
+  when:
+    - ansible_check_mode
+    - "'august-node-sessions.timer' not in node_base_systemd_units | default([])"
+
+- name: Check whether a session count has ever been produced
+  ansible.builtin.stat:
+    path: "{{ node_monitoring_sessions_prom }}"
+  register: node_monitoring_first_count
+
+- name: Produce the first session count now
+  # Without this the textfile is missing until the first timer tick and
+  # verification below would have nothing to read. Only on the first run: after
+  # that the timer owns the file, and running the collector on every play would
+  # report a change on a node where nothing changed.
+  ansible.builtin.command:
+    argv: ["{{ node_monitoring_sessions_script }}"]
+  changed_when: true
+  when:
+    - not ansible_check_mode
+    - not node_monitoring_first_count.stat.exists

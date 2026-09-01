@@ -1,0 +1,85 @@
+---
+- name: Read the exporter's own output
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ node_monitoring_exporter_port }}/metrics"
+    return_content: true
+    status_code: 200
+    timeout: 15
+  register: node_monitoring_scrape
+  changed_when: false
+  # Read-only: a dry-run checks the exporter that is already running.
+  check_mode: false
+  failed_when:
+    - node_monitoring_scrape.status | default(0) != 200
+    - not ansible_check_mode
+
+- name: Require the exporter to publish the session count
+  ansible.builtin.assert:
+    that:
+      - "'august_node_vpn_established_sockets_total' in node_monitoring_scrape.content"
+      - "'august_node_vpn_ports_declared' in node_monitoring_scrape.content"
+      - "'node_cpu_seconds_total' in node_monitoring_scrape.content"
+    fail_msg: >-
+      The exporter answered but published neither the session count nor CPU. The textfile collector
+      directory is {{ node_monitoring_textfile_dir }}; check that
+      {{ node_monitoring_sessions_prom }} exists and is readable by {{ node_exporter_user }}.
+  when:
+    - node_monitoring_sessions_enabled | bool
+    - node_monitoring_scrape.status | default(0) == 200
+
+- name: Require the control port to be absent from the session count
+  # The one assertion that has to hold whatever else changes: a capacity figure
+  # must never include the panel's own connection.
+  ansible.builtin.assert:
+    that:
+      - >-
+        'august_node_vpn_established_sockets{port="' ~ (item | string) ~ '"'
+        not in node_monitoring_scrape.content
+    fail_msg: >-
+      The exporter is counting port {{ item }} as a user session. That is a control port.
+  loop: "{{ node_monitoring_session_excluded_ports | map('int') | list }}"
+  loop_control:
+    label: "{{ item }}"
+  when:
+    - node_monitoring_sessions_enabled | bool
+    - node_monitoring_scrape.status | default(0) == 200
+
+- name: Read the managed nftables table again after installation
+  ansible.builtin.command:
+    argv: [nft, list, table, inet, "{{ node_firewall_table }}"]
+  register: node_monitoring_final_ruleset
+  changed_when: false
+  check_mode: false
+  when: node_firewall_enabled | default(true) | bool
+
+- name: Require the exporter port to stay restricted to the monitoring host
+  ansible.builtin.assert:
+    that:
+      - node_monitoring_final_ruleset.stdout | remnawave_firewall_covers(item)
+    fail_msg: >-
+      {{ item }} is no longer allowed to reach the exporter, or the rule was replaced by an
+      unrestricted one. An unauthenticated exporter must never be reachable from anywhere else.
+  loop: "{{ monitoring_scrape_cidrs }}"
+  loop_control:
+    label: "{{ item }}"
+  when:
+    - node_firewall_enabled | default(true) | bool
+    - not ansible_check_mode
+
+- name: Require the exporter port not to be open to everyone
+  # The rule node_base writes is source-restricted. If the port ever appears in
+  # the unrestricted public set instead, the allow list above would still pass
+  # while the exporter is in fact public, so that shape is checked directly.
+  ansible.builtin.assert:
+    that:
+      - >-
+        node_monitoring_final_ruleset.stdout
+        | regex_findall('tcp dport \{[^}]*\}')
+        | select('search', '\b' ~ (node_monitoring_exporter_port | string) ~ '\b')
+        | list | length == 0
+    fail_msg: >-
+      Port {{ node_monitoring_exporter_port }} appears in the unrestricted public port set of the
+      firewall. node_public_tcp_ports must not contain the exporter port.
+  when:
+    - node_firewall_enabled | default(true) | bool
+    - not ansible_check_mode

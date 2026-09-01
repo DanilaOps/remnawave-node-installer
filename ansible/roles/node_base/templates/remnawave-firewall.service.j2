@@ -1,7 +1,7 @@
 [Unit]
 Description=Remnawave node nftables policy
 Wants=network-pre.target
-Before=network-pre.target docker.service
+Before=network-pre.target
 
 [Service]
 Type=oneshot
@@ -11,4 +11,3 @@ RemainAfterExit=yes
 
 [Install]
 WantedBy=multi-user.target
-

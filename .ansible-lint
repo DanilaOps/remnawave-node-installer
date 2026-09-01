@@ -5,6 +5,12 @@ exclude_paths:
   - ansible/.venv/
   - ansible/collections/
   - ansible/roles/*/molecule/
+  # Not Ansible. monitoring/ holds the configuration of the monitoring server,
+  # which is installed by hand: Prometheus rules, an Alertmanager config, a
+  # Grafana dashboard and the Python that reads them. Linting Prometheus YAML
+  # against Ansible's rules produces findings that mean nothing. yamllint and
+  # promtool cover these files instead - see monitoring/tests/.
+  - monitoring/
 mock_roles: []
 skip_list:
   # These roles exchange one explicit deployment contract. Prefixing every

@@ -24,7 +24,7 @@ jobs:
         run: bash check-mirror.sh ./install-mirror.sh
 
       - name: Validate the entry-point wrappers and test scripts
-        run: shellcheck -S warning provision-node setup-controller ci-local ansible/tests/*.sh
+        run: shellcheck -S warning provision-node setup-controller ci-local ansible/tests/*.sh monitoring/tests/*.sh
 
       - name: Reject CRLF and trailing whitespace in tracked text files
         # Guards the files this project writes. LICENSE came from upstream with
@@ -68,7 +68,7 @@ jobs:
             -p ansible/collections
 
       - name: Validate YAML
-        run: yamllint -c .yamllint.yml ansible .github
+        run: yamllint -c .yamllint.yml ansible .github monitoring
 
       - name: Validate role structure and filters
         run: |
@@ -104,8 +104,44 @@ jobs:
           ansible-playbook -i ansible/inventories/staging/hosts.yml -c local \
             ansible/tests/preflight_guards.yml --limit ee01
 
+      - name: Verify the operator keeps direct SSH access to every node
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq nftables
+          bash ansible/tests/test_ssh_access_policy.sh
+
       - name: Verify preflight never contacts a VPS that has no managed account
         run: bash ansible/tests/test_preflight_no_node_contact.sh
+
+      - name: Dry-run the node monitoring agent on a host that has none of it
+        run: bash ansible/tests/test_node_monitoring_check_mode.sh
+
+      # The monitoring server is installed by hand, so these steps check the
+      # configuration this repository ships for it rather than any deployment
+      # of it. promtool and amtool are downloaded here only to run as linters.
+      - name: Validate the versioned capacity inventory
+        run: python monitoring/validate_capacity.py monitoring/capacity/capacity.yml
+
+      - name: Test the monitoring model, exporters and dashboard
+        run: python -m unittest discover -s monitoring/tests -p 'test_*.py'
+
+      - name: Check the Prometheus, Alertmanager and Grafana configuration
+        run: |
+          curl -fsSLo /tmp/prometheus.tar.gz \
+            https://github.com/prometheus/prometheus/releases/download/v3.14.0/prometheus-3.14.0.linux-amd64.tar.gz
+          curl -fsSLo /tmp/alertmanager.tar.gz \
+            https://github.com/prometheus/alertmanager/releases/download/v0.33.0/alertmanager-0.33.0.linux-amd64.tar.gz
+          tar -xzf /tmp/prometheus.tar.gz -C /tmp
+          tar -xzf /tmp/alertmanager.tar.gz -C /tmp
+          sudo install -m 0755 /tmp/prometheus-3.14.0.linux-amd64/promtool /usr/local/bin/promtool
+          sudo install -m 0755 /tmp/alertmanager-0.33.0.linux-amd64/amtool /usr/local/bin/amtool
+          bash monitoring/tests/test_monitoring_rules.sh
+
+      - name: Prove the accounting contract against the real PromQL engine
+        run: bash monitoring/tests/test_service_accounting.sh
+
+      - name: Prove what may and may not page somebody
+        run: bash monitoring/tests/test_alert_thresholds.sh
 
       - name: Render core templates and validate the firewall
         run: |
@@ -198,8 +234,11 @@ jobs:
       # One role failing must not cancel the other: both answers in one run.
       fail-fast: false
       matrix:
-        role: [node_base, remnawave_node]
-    name: molecule (${{ matrix.role }})
+        include:
+          - {role: node_base, scenario: default}
+          - {role: remnawave_node, scenario: default}
+          - {role: node_monitoring, scenario: default}
+    name: molecule (${{ matrix.role }} / ${{ matrix.scenario }})
     # Molecule writes its own ansible.cfg for the playbooks it runs, but the
     # collections its driver requires are resolved by a runtime that reads only
     # the process environment. Without this the scenario cannot see the
@@ -223,4 +262,4 @@ jobs:
             -p ansible/collections
 
       - name: Test ${{ matrix.role }} on Debian 12, Debian 13 and Ubuntu 24.04
-        run: cd ansible/roles/${{ matrix.role }} && molecule test
+        run: cd ansible/roles/${{ matrix.role }} && molecule test -s ${{ matrix.scenario }}

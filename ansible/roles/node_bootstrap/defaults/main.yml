@@ -26,15 +26,19 @@ bootstrap_supported_os:
 
 # Login used for the very first connection, before bootstrap_user exists.
 #
-# Three sources, in the order that wins:
-#   1. -e bootstrap_ssh_password=... - what Semaphore passes from a secret survey
-#      field of that exact name. Survey secrets are never stored in Semaphore's
-#      database, so a one-off VPS password belongs there rather than in a
-#      Variable Group, which keeps its secrets at rest.
-#   2. NODE_ROOT_PASSWORD in the environment - ./provision-node prompts for it and
+# Two sources, in the order that wins:
+#   1. NODE_ROOT_PASSWORD in the environment - ./provision-node prompts for it and
 #      never writes it to disk or into argv.
-#   3. vault_node_root_password - for unattended runs; normally left empty.
-# Empty from all three means key-only bootstrap, which is the target state.
+#   2. vault_node_root_password - encrypted in /etc/remnawave/secrets.yml, which
+#      Ansible decrypts in-process. For unattended runs; normally left empty.
+# Empty from both means key-only bootstrap, which is the target state.
+#
+# Deliberately not a third source: -e bootstrap_ssh_password=... from a Semaphore
+# secret survey field. Semaphore passes survey answers as --extra-vars, so the
+# value lands in argv and is readable by any local account through
+# /proc/<pid>/cmdline for the length of the run. The variable is still honoured
+# if something sets it, because the precedence chain below reads it - but nothing
+# in this project puts it on a command line any more.
 bootstrap_ssh_user: root
 bootstrap_ssh_password: >-
   {{ lookup('env', 'NODE_ROOT_PASSWORD')

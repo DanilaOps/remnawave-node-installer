@@ -1,0 +1,121 @@
+---
+# The read-only half of monitoring that lives on a node. It adds an exporter and
+# a session counter and nothing else: no agent that can change the node, no
+# scraper that reaches out, no second firewall.
+#
+# It is off by default. Turning it on is one line in /etc/remnawave/fleet.yml
+# plus the addresses of the monitoring host, and it takes effect on the next
+# ordinary install run, because the firewall rule that makes the exporter
+# reachable is rendered by node_base from the same variables.
+
+# --- Lifecycle ---------------------------------------------------------------
+# present installs the agent; absent removes it again through Ansible rather
+# than through an operator on SSH. See tasks/remove.yml.
+node_monitoring_state: present
+# Everything this role installs as a unit, named once so the removal path
+# cannot drift from the install path.
+node_monitoring_units:
+  - node_exporter.service
+  - august-node-sessions.service
+  - august-node-sessions.timer
+
+# --- Pinned node_exporter ----------------------------------------------------
+# Recorded so a node can be rebuilt to the same version. Bumping it is a
+# decision, not a side effect of a rerun.
+node_exporter_version: 1.12.1
+node_exporter_release_repository: prometheus/node_exporter
+node_exporter_architecture_map:
+  x86_64: amd64
+  aarch64: arm64
+node_exporter_architecture: "{{ node_exporter_architecture_map[ansible_facts.architecture] | default('amd64') }}"
+node_exporter_archive: >-
+  node_exporter-{{ node_exporter_version }}.linux-{{ node_exporter_architecture }}.tar.gz
+node_exporter_release_base: >-
+  https://github.com/{{ node_exporter_release_repository }}/releases/download/v{{ node_exporter_version }}
+# Preferred: pin the hash here, so the download is checked against something
+# that did not come from the same place as the file. Left empty, the release's
+# own sha256sums.txt is used, which still catches a truncated or corrupted
+# download but trusts the same host.
+node_exporter_sha256: ""
+node_exporter_install_dir: "/opt/node_exporter-{{ node_exporter_version }}"
+node_exporter_binary_path: /usr/local/bin/node_exporter
+node_exporter_user: node-exporter
+node_exporter_group: node-exporter
+
+# --- Listener ----------------------------------------------------------------
+# The exporter has no authentication and no TLS, so what protects it is the
+# firewall, and the role refuses to install it without one. Binding to a private
+# address as well is better where a node has one; on a plain public VPS there is
+# no such address and the nftables rule is the whole control.
+node_monitoring_exporter_port: 9100
+node_monitoring_bind_address: "0.0.0.0"
+# Sources allowed to reach the exporter port. Set in /etc/remnawave/fleet.yml to
+# the monitoring host's address. Empty is refused, not silently public.
+monitoring_scrape_cidrs: []
+
+# --- Collectors --------------------------------------------------------------
+node_monitoring_textfile_dir: /var/lib/node_exporter/textfile
+# What node_exporter itself gathers. Deliberately narrow: this is a VPN node,
+# and every collector is a syscall budget and an information surface.
+node_monitoring_enabled_collectors:
+  - conntrack
+  - cpu
+  - diskstats
+  - filefd
+  - filesystem
+  - loadavg
+  - meminfo
+  - netdev
+  - netstat
+  - sockstat
+  - stat
+  - textfile
+  - time
+  - uname
+  - vmstat
+node_monitoring_disabled_collectors:
+  # Everything that would enumerate what runs on the node. The panel already
+  # knows which services exist and the exporter does not need to publish it.
+  - systemd
+  - processes
+
+# --- Established VPN socket collector ----------------------------------------
+# What this counts, said plainly: established TCP sockets on the node's VPN
+# inbound ports. Not users and not sessions. One user can hold several sockets
+# and a multiplexed client can hold one for many streams, so calling the number
+# "users" would be a claim nothing here can support. The metric name says
+# sockets, and the panel's own online-user figure is published separately
+# alongside it.
+#
+# The file is written through a temporary name and renamed, so node_exporter
+# never reads a half-written file and never reports a dip that did not happen.
+node_monitoring_sessions_enabled: true
+node_monitoring_sessions_interval: 15s
+node_monitoring_sessions_script: /usr/local/bin/august-node-sessions
+node_monitoring_sessions_prom: "{{ node_monitoring_textfile_dir }}/august_sessions.prom"
+
+# The VPN inbound TCP ports, and only those. Derived from the inbounds this node
+# actually publishes rather than from node_public_tcp_ports: that list also
+# holds 80, which serves the ACME challenge and the masking site, and an HTTP
+# request is not a VPN socket. A fleet that adds a TCP inbound gets it counted
+# without editing anything here; one that adds a plain web port does not.
+node_vpn_tcp_ports: >-
+  {{ inbound_specs | default([])
+     | selectattr('port', 'defined')
+     | rejectattr('network', 'equalto', 'udp')
+     | map(attribute='port') | map('int') | unique | list }}
+# Set this only where the VPN ports genuinely cannot be derived. The collector
+# then publishes an explicit "not declared" state instead of counting the wrong
+# ports, and the dashboard shows unknown rather than zero.
+node_monitoring_vpn_ports_unknown_ack: false
+
+node_monitoring_session_ports: "{{ node_vpn_tcp_ports | difference(node_monitoring_session_excluded_ports) }}"
+# Never counted, whatever else happens. Remnawave's NODE_PORT carries the
+# panel's own connection, SSH carries the operator's, the exporter port carries
+# Prometheus, and 80 carries the ACME challenge and the decoy site. None of them
+# is user load, and a capacity number that includes them hides free capacity.
+node_monitoring_session_excluded_ports:
+  - "{{ remnawave_node_port | default(2222) | int }}"
+  - "{{ ansible_port | default(22) | int }}"
+  - "{{ node_monitoring_exporter_port | default(9100) | int }}"
+  - 80

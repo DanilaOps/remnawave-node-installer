@@ -99,5 +99,22 @@
       tags: [remnawave_panel]
     - role: remnawave_node
       tags: [remnawave_node]
+    # Additive and off by default. It runs here rather than in a playbook of its
+    # own because the firewall rule that makes the exporter reachable is
+    # rendered by node_base above: installing the listener in a separate run
+    # would leave a window where it is reachable from anywhere.
+    #
+    # Ansible manages the node-side agent only. Prometheus, Grafana,
+    # Alertmanager and the exporters that read the panel live on a monitoring
+    # server that is installed by hand - see monitoring/README.ru.md.
+    #
+    # The second condition is what makes a rollback reachable: removing the
+    # agent means running this role with node_monitoring_state=absent, and by
+    # then node_monitoring_enabled is usually already false.
+    - role: node_monitoring
+      tags: [node_monitoring]
+      when: >-
+        node_monitoring_enabled | default(false) | bool
+        or node_monitoring_state | default('present') == 'absent'
     - role: node_verify
       tags: [node_verify]
