@@ -104,6 +104,9 @@ jobs:
           ansible-playbook -i ansible/inventories/staging/hosts.yml -c local \
             ansible/tests/preflight_guards.yml --limit ee01
 
+      - name: Verify preflight never contacts a VPS that has no managed account
+        run: bash ansible/tests/test_preflight_no_node_contact.sh
+
       - name: Render core templates and validate the firewall
         run: |
           sudo apt-get update -qq

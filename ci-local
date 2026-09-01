@@ -77,6 +77,7 @@ step fast:bridge-verify       fast
 step fast:management-cidrs    fast
 step fast:check-mode-controller fast
 step fast:preflight-guards    fast
+step fast:preflight-no-contact fast
 step fast:render-firewall     fast
 step fast:ansible-lint        fast
 # full lane - the panel and nginx jobs
@@ -112,6 +113,7 @@ run_step() {
     fast:check-mode-controller) bash ansible/tests/test_check_mode_controller.sh ;;
     fast:preflight-guards)  ansible-playbook -i ansible/inventories/staging/hosts.yml -c local \
                               ansible/tests/preflight_guards.yml --limit ee01 ;;
+    fast:preflight-no-contact) bash ansible/tests/test_preflight_no_node_contact.sh ;;
     fast:render-firewall)   render_and_validate_firewall ;;
     fast:ansible-lint)      ansible-lint ;;
     full:panel-idempotency) bash ansible/tests/test_panel_idempotency.sh ;;

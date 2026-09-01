@@ -611,6 +611,18 @@ Three templates, and deliberately no others:
 | **Install / Reconcile Node** | `ansible/playbooks/provision_node.yml` | yes |
 | **Verify Node** | `ansible/playbooks/provision_node.yml`, `--tags node_verify` | no |
 
+**Preflight opens no connection to the node at all.** It is the template pressed
+for a VPS that was created a minute ago and does not carry the managed account
+yet, so every check it runs is controller-side: the inventory, the derived
+identity, the panel API and a DNS report. The two plays that do need the node -
+bootstrap's login check and the installation itself - declare
+`gather_facts: false` and gather facts from an explicit task behind a
+`remnawave_preflight_only` guard, because Ansible's implicit "Gathering Facts"
+task carries the `always` tag and would otherwise log in as `deployer` before
+`deployer` exists. `ansible/tests/test_preflight_no_node_contact.sh` holds that
+guarantee: it runs the template against a dead address with `ssh` replaced by a
+stub that records every invocation, and fails if the log is not empty.
+
 Reconcile *is* update and *is* repair, so there is no separate button for either:
 one mutating template means one thing to get right. Dangerous operations —
 `certificate_force_reissue`, `reality_rotate_keys`,

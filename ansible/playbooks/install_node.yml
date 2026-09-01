@@ -70,11 +70,27 @@
 - name: Install and verify the node
   hosts: remnawave_nodes
   become: true
-  gather_facts: true
+  # Deliberately not gather_facts: true - see the same comment in bootstrap.yml.
+  # Facts come from the explicit task below, which carries "always" because
+  # node-side preflight carries it too and reads facts. Both sit behind the
+  # guard, so a controller-side preflight run ends this play before either of
+  # them reaches for a node that may not be reachable yet.
+  gather_facts: false
   # The shared Config Profile is reconciled with a read-modify-write, so even a
   # deliberate fleet-wide run touches it one node at a time.
   serial: 1
   any_errors_fatal: true
+
+  pre_tasks:
+    - name: Leave the node alone on a controller-side preflight run
+      ansible.builtin.meta: end_play
+      when: remnawave_preflight_only | bool
+      tags: [always]
+
+    - name: Gather facts from the node
+      ansible.builtin.setup:
+        gather_subset: [all]
+      tags: [always]
 
   roles:
     - role: node_base

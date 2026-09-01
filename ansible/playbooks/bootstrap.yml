@@ -127,11 +127,27 @@
 
 - name: Verify the managed account can log in and escalate
   hosts: remnawave_nodes
-  gather_facts: true
+  # Deliberately not gather_facts: true. The implicit "Gathering Facts" task
+  # carries the "always" tag, so it opens an SSH session even under
+  # --tags preflight - and a controller-side preflight is run precisely when the
+  # managed account may not exist yet, which made this play fail with
+  # "Permission denied (publickey,password)" before install_node.yml's
+  # controller-side play had a chance to run. The explicit setup below is an
+  # ordinary task, so it is selected by tags like the checks that consume it.
+  gather_facts: false
   become: true
   any_errors_fatal: true
 
   tasks:
+    - name: Leave the node alone on a controller-side preflight run
+      ansible.builtin.meta: end_play
+      when: remnawave_preflight_only | bool
+      tags: [always]
+
+    - name: Gather facts through the managed account
+      ansible.builtin.setup:
+        gather_subset: [all]
+
     - name: Confirm privilege escalation works for the managed account
       ansible.builtin.command:
         argv: [id, -un]
