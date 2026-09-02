@@ -116,5 +116,21 @@
       when: >-
         node_monitoring_enabled | default(false) | bool
         or node_monitoring_state | default('present') == 'absent'
+    # Measure the node's capacity now that its network path is up and stable, but
+    # before node_verify and the capacity sync. Off unless the host sets
+    # capacity_auto_test; a node already measured is reused, not retested. It
+    # changes no routing, Xray, firewall or sysctl - it only runs iperf3.
+    - role: node_capacity_test
+      tags: [node_capacity_test]
+      when: capacity_auto_test | default(false) | bool
     - role: node_verify
       tags: [node_verify]
+
+# Fold this node's inventory-declared capacity into the monitoring capacity
+# inventory, so a standard node's throughput is written once - on its host - and
+# never again by hand. Controller-side and additive: it rewrites one file under
+# /etc/august-monitoring and contacts no node. It is a no-op on a controller that
+# has no monitoring stack, and can be disabled with capacity_sync_enabled=false.
+# See playbooks/sync_capacity.yml and monitoring/sync_capacity.py.
+- name: Sync the monitoring capacity inventory from the Ansible inventory
+  import_playbook: sync_capacity.yml

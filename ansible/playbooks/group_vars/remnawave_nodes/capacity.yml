@@ -1,0 +1,71 @@
+---
+# A node's capacity, declared once, on the host in the Ansible inventory.
+#
+# The point of this file is to remove a second, manual edit. A standard node's
+# rated throughput used to be typed in the inventory and again by hand in
+# monitoring/capacity/capacity.yml; now the inventory is the only place it is
+# written. playbooks/sync_capacity.yml folds these fields into the capacity
+# inventory the exporter reads.
+#
+# On a host, three fields and nothing else:
+#
+#   tr02:
+#     ansible_host: 1.2.3.4
+#     capacity_download_mbps: 1000
+#     capacity_upload_mbps: 1000
+#     capacity_certain: true
+#
+# capacity_download_mbps / capacity_upload_mbps
+#     What the machine is rated to carry, per direction, in Mbit/s. Write a bare
+#     number - "1000", not "1000" in quotes and not "1 Gbit/s". A quoted number
+#     is refused, the same way the capacity file refuses one, because it compares
+#     wrong. Leave a direction out and it is published as unmeasured rather than
+#     guessed.
+# capacity_certain
+#     true when the figure is a rating you stand behind - it is then counted as a
+#     declared per-node capacity. false (the default) publishes the node as
+#     unmeasured: visible on the dashboard, contributing nothing to a total,
+#     because a number nobody is sure of is not a measurement.
+#
+# The pool a node belongs to is its country by default (tr02 -> pool TR). A node
+# that publishes its own figure cannot live in a pool that is rated as one whole
+# location - the same gigabits would be counted twice - so for such a location
+# set capacity_pool to a per-node pool. sync_capacity.yml refuses the clash with
+# a message that says exactly this rather than producing a wrong total.
+#
+# The other way to fill the figure is to let the installer measure it:
+#
+#   tr02:
+#     ansible_host: 1.2.3.4
+#     capacity_auto_test: true
+#
+# On install the node runs iperf3 to several Russian cities, in both directions,
+# three times each; the best stable route wins (median per city, maximum across
+# cities), a 90% safety margin is applied and the result is rounded down. With at
+# least two cities agreeing per direction the node is rated capacity_certain and
+# the figure becomes the source of truth in a generated per-node file; below that
+# the node stays unmeasured and no rating is invented. The knobs and endpoints
+# live in the node_capacity_test role. capacity_auto_test and a manual figure on
+# the same host are refused - one source of truth, not two.
+#
+# The role ships a working default set of Russian iperf3 servers - Moscow, Saint
+# Petersburg, Nizhny Novgorod, Chelyabinsk and Tyumen, primary and one fallback
+# each - taken from github.com/itdoginfo/russian-iperf3-servers. They are named
+# in the role, not fetched at run time, so nothing is piped from the internet to
+# a shell. Public iperf3 servers change, though, so this is a default and not a
+# promise. Swap one server, or the whole list, without touching the role, in
+# fleet.yml or group_vars:
+#
+#   # one server:
+#   capacity_test_host_moscow: iperf.my-own-server.example
+#   # or the whole set:
+#   capacity_test_endpoints:
+#     - city: Moscow
+#       hosts:
+#         - {host: iperf-a.example, ports: "{{ capacity_test_ports }}"}
+#         - {host: iperf-b.example, ports: "{{ capacity_test_ports }}"}
+#
+# A server that does not answer on any port is skipped and its fallback is tried;
+# if too few cities answer, the node stays unmeasured rather than mis-rated.
+capacity_certain: false
+node_capacity_pool: "{{ capacity_pool | default(node_country_code) }}"

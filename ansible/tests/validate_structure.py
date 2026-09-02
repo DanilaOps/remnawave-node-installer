@@ -23,6 +23,9 @@ EXPECTED_ROLES = {
     # Monitoring is two roles because it is two machines: an agent on every node
     # and a stack on exactly one host, and neither belongs inside the other.
     "node_monitoring",
+    # Measures a new node's capacity with iperf3 and records it as the
+    # Ansible-side source of truth, so a rating is not typed by hand.
+    "node_capacity_test",
 }
 
 

@@ -168,7 +168,7 @@ check_line_endings() {
 
 check_syntax() {
   local playbook
-  for playbook in provision_node install_node bootstrap show_node_identity controller; do
+  for playbook in provision_node install_node sync_capacity bootstrap show_node_identity controller; do
     ansible-playbook "ansible/playbooks/${playbook}.yml" --syntax-check || return 1
   done
 }

@@ -1,0 +1,39 @@
+---
+# Measure a node's capacity on demand, before or after it is in production.
+#
+#   Measure and show, change nothing:
+#     ansible-playbook ansible/playbooks/measure_capacity.yml --limit tr02
+#
+#   Measure and record it as the source of truth, then sync monitoring:
+#     ansible-playbook ansible/playbooks/measure_capacity.yml --limit tr02 \
+#       -e capacity_measure_apply=true
+#
+# It forces a fresh measurement (unlike an ordinary install, which reuses a
+# node's existing rating). A dry run writes nothing and leaves the next sync
+# unchanged; an apply records the rating and folds it into the deployed capacity
+# inventory. It changes no routing, Xray, firewall or sysctl - only iperf3 runs.
+#
+# One node at a time on purpose: the test is a real transfer to Russia, and
+# several at once would compete for the same public servers and for the exit's
+# own uplink.
+- name: Measure node capacity with iperf3
+  hosts: remnawave_nodes
+  become: true
+  gather_facts: true
+  serial: 1
+  any_errors_fatal: true
+  vars:
+    # Always measure here, whatever the host declares - that is the point of
+    # running this playbook - and honour the apply switch.
+    capacity_auto_test: true
+    capacity_auto_retest: true
+    capacity_test_apply: "{{ capacity_measure_apply | default(false) | bool }}"
+  roles:
+    - role: node_capacity_test
+      tags: [node_capacity_test]
+
+# Fold a recorded rating into the deployed capacity inventory. A dry run
+# (capacity_measure_apply not set) recorded nothing, so this is a no-op then.
+- name: Sync the monitoring capacity inventory
+  ansible.builtin.import_playbook: sync_capacity.yml
+  when: capacity_measure_apply | default(false) | bool

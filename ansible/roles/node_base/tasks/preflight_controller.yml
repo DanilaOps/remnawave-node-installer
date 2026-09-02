@@ -214,6 +214,84 @@
   loop_control:
     label: "{{ item }}"
 
+- name: Validate the capacity a node declares in the inventory
+  # Caught here, controller-side, so a quoted or negative figure fails before the
+  # node is touched rather than being refused later by the capacity sync. A bare
+  # number only: "1000", never "1000" in quotes, which compares wrong the same
+  # way the capacity file refuses it.
+  ansible.builtin.assert:
+    that:
+      - capacity_download_mbps is not defined or (capacity_download_mbps is number and capacity_download_mbps >= 0)
+      - capacity_upload_mbps is not defined or (capacity_upload_mbps is number and capacity_upload_mbps >= 0)
+      - capacity_certain is not defined or (capacity_certain | string | lower) in ['true', 'false']
+    fail_msg: >-
+      Capacity on {{ inventory_hostname }} is malformed. capacity_download_mbps and
+      capacity_upload_mbps must be bare non-negative numbers (1000, not "1000"), and
+      capacity_certain must be true or false. See group_vars/remnawave_nodes/capacity.yml.
+
+- name: Refuse manual and auto capacity on the same node
+  # Two sources of truth for one figure is ambiguous, so it is refused rather
+  # than resolved by guessing which wins. capacity_auto_test measures it;
+  # capacity_download_mbps/upload_mbps state it by hand. Not both.
+  ansible.builtin.assert:
+    that:
+      - >-
+        not (capacity_auto_test | default(false) | bool)
+        or (capacity_download_mbps is not defined and capacity_upload_mbps is not defined)
+    fail_msg: >-
+      {{ inventory_hostname }} sets capacity_auto_test together with a manual capacity figure.
+      Choose one: capacity_auto_test to measure the rating, or capacity_download_mbps and
+      capacity_upload_mbps with capacity_certain to state it by hand.
+
+- name: Refuse an auto-tested node in an aggregate pool before iperf runs
+  # Fail early, before any traffic: an auto rating is a per-node figure, and a
+  # pool rated as one whole location cannot hold one. Reuses the sync tool's own
+  # check with a synthetic rating so the rule is defined in exactly one place.
+  when: capacity_auto_test | default(false) | bool
+  block:
+    - name: Probe the target pool with a synthetic per-node rating
+      ansible.builtin.command:
+        argv:
+          - "{{ ansible_playbook_python }}"
+          - "{{ playbook_dir }}/../../monitoring/sync_capacity.py"
+          - --base
+          - "{{ playbook_dir }}/../../monitoring/capacity/capacity.yml"
+          - --inventory-json
+          - "-"
+          - --check
+        stdin: >-
+          {{ [{'name': node_name, 'pool': node_capacity_pool,
+               'download_mbps': 1, 'upload_mbps': 1, 'certain': true}] | to_json }}
+      register: capacity_pool_probe
+      changed_when: false
+      failed_when: false
+
+    - name: Stop before testing a node its pool cannot rate
+      ansible.builtin.assert:
+        that:
+          - capacity_pool_probe.rc == 0
+        fail_msg: >-
+          {{ node_name }} is set to auto-measure its capacity, but pool {{ node_capacity_pool }}
+          cannot take a per-node rating: {{ capacity_pool_probe.stderr | trim }}
+          Set capacity_pool to a per-node pool, keep this node unrated inside the aggregate
+          pool, or migrate the pool separately - the auto-test will not run until this is
+          resolved.
+
+- name: Report that a declared node cannot share an aggregate pool
+  # The one capacity mistake the sync tool would otherwise catch only at the end:
+  # a node that rates itself in a pool the base rates as one location. Surfaced
+  # here as a warning with the fix, so the operator sees it before the run.
+  ansible.builtin.debug:
+    msg: >-
+      {{ inventory_hostname }} declares its own capacity and belongs to pool
+      {{ node_capacity_pool }}. If that pool is rated as one location in
+      monitoring/capacity/capacity.yml, the capacity sync will refuse it - put the node in a
+      per-node pool with capacity_pool instead. A pool cannot be a location total and hold a
+      member that rates itself; the same capacity would be counted twice.
+  when:
+    - capacity_certain | default(false) | bool
+    - capacity_download_mbps is defined or capacity_upload_mbps is defined
+
 - name: Validate bridge input
   ansible.builtin.assert:
     that:

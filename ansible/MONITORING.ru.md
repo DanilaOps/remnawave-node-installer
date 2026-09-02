@@ -232,6 +232,65 @@ ansible-playbook ansible/playbooks/install_node.yml --limit tr01 --tags firewall
 
 ---
 
+## Ёмкость ноды: один раз в inventory
+
+Ёмкость новой ноды указывается **один раз**, в Ansible inventory, и сама
+попадает в monitoring — руками в `monitoring/capacity/capacity.yml` больше
+ничего не дописывается.
+
+Вручную:
+
+```yaml
+tr02:
+  ansible_host: 1.2.3.4
+  capacity_download_mbps: 1000
+  capacity_upload_mbps: 1000
+  capacity_certain: true
+```
+
+Автоматически (installer измеряет сам):
+
+```yaml
+tr02:
+  ansible_host: 1.2.3.4
+  capacity_auto_test: true
+```
+
+В auto-режиме нода на установке запускает iperf3 до нескольких российских
+городов в обе стороны по три раза: берётся медиана по городу и максимум между
+городами, применяется запас 90 % и округление вниз. Если хотя бы два города
+ответили в каждую сторону — нода получает `capacity_certain` и измеренная
+величина становится источником истины (генерируемый per-node файл, переживает
+следующий sync). Иначе нода остаётся `unmeasured`, ничего не выдумывается.
+
+**Список серверов — встроенный default.** Роль `node_capacity_test` уже содержит
+актуальный набор из
+[itdoginfo/russian-iperf3-servers](https://github.com/itdoginfo/russian-iperf3-servers)
+(Москва, СПб, Нижний Новгород, Челябинск, Тюмень — primary + fallback у каждого).
+Серверы прописаны в роли и опрашиваются напрямую; никакой `wget | bash` при
+установке не выполняется. Публичные iperf3-серверы со временем меняются — это
+именно default, а не гарантия. Свой набор задаётся без правки роли, в
+`fleet.yml` или group_vars:
+
+```yaml
+# один сервер:
+capacity_test_host_moscow: iperf.my-server.example
+# или весь список:
+capacity_test_endpoints:
+  - city: Moscow
+    hosts:
+      - {host: iperf-a.example, ports: "{{ capacity_test_ports }}"}
+      - {host: iperf-b.example, ports: "{{ capacity_test_ports }}"}
+```
+
+Порт — конфигурируемый диапазон `5201–5209` (`capacity_test_ports`). Недоступный
+primary → fallback; недоступны оба → город пропускается, остальные считаются.
+`capacity_auto_test` вместе с ручной величиной на одной ноде запрещены —
+источник истины один. Померить ноду отдельно (в том числе до production) можно
+через `ansible/playbooks/measure_capacity.yml`.
+
+---
+
 ## Дальше
 
 Ноды готовы к scrape. Что делать на monitoring-сервере — Prometheus, правила,
