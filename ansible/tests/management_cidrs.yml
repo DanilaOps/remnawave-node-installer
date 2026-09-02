@@ -1,0 +1,101 @@
+---
+# The management allow list decides whether Ansible can still reach the node
+# after the firewall is applied, so every branch of it is checked here without a
+# server. Scenario 4 must fail: the run refuses to build a firewall that would
+# lock out the address sshd is actually seeing.
+- name: Verify how the management allow list is resolved
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  become: false
+
+  tasks:
+    - name: Discovered address that is also listed in the extras
+      block:
+        - name: Set inputs for scenario 1
+          ansible.builtin.set_fact:
+            management_cidrs: []
+            management_cidrs_extra: ["203.0.113.9/32"]
+            node_base_observed_ssh_source: 203.0.113.9
+        - name: Resolve scenario 1
+          ansible.builtin.import_role:
+            name: node_base
+            tasks_from: preflight_management_cidrs.yml
+        - name: The address must appear exactly once
+          ansible.builtin.assert:
+            that:
+              - management_cidrs == ["203.0.113.9/32"]
+            fail_msg: "duplicate or wrong result: {{ management_cidrs }}"
+            success_msg: "discovered + same extra -> {{ management_cidrs }}"
+
+    - name: Discovered address only
+      block:
+        - name: Set inputs for scenario 2
+          ansible.builtin.set_fact:
+            management_cidrs: []
+            management_cidrs_extra: []
+            node_base_observed_ssh_source: 203.0.113.9
+        - name: Resolve scenario 2
+          ansible.builtin.import_role:
+            name: node_base
+            tasks_from: preflight_management_cidrs.yml
+        - name: The discovered address must be the whole list
+          ansible.builtin.assert:
+            that:
+              - management_cidrs == ["203.0.113.9/32"]
+            success_msg: "discovered only -> {{ management_cidrs }}"
+
+    - name: Discovered address plus a separate workstation
+      block:
+        - name: Set inputs for scenario 3
+          ansible.builtin.set_fact:
+            management_cidrs: []
+            management_cidrs_extra: ["198.51.100.7/32", "198.51.100.7/32"]
+            node_base_observed_ssh_source: 203.0.113.9
+        - name: Resolve scenario 3
+          ansible.builtin.import_role:
+            name: node_base
+            tasks_from: preflight_management_cidrs.yml
+        - name: Both addresses must be present, each once
+          ansible.builtin.assert:
+            that:
+              - management_cidrs == ["203.0.113.9/32", "198.51.100.7/32"]
+            success_msg: "controller + workstation -> {{ management_cidrs }}"
+
+    - name: An explicit list that would lock out the live session
+      block:
+        - name: Set inputs for scenario 4
+          ansible.builtin.set_fact:
+            management_cidrs: ["198.51.100.7/32"]
+            management_cidrs_extra: []
+            node_base_observed_ssh_source: 203.0.113.9
+        - name: Resolve scenario 4
+          ansible.builtin.import_role:
+            name: node_base
+            tasks_from: preflight_management_cidrs.yml
+        - name: This point must not be reached
+          ansible.builtin.fail:
+            msg: >-
+              An explicit management_cidrs that excludes the live SSH source was accepted;
+              applying that firewall would lock the controller out of the node.
+      rescue:
+        - name: The lockout was refused
+          ansible.builtin.debug:
+            msg: "explicit list without the live source -> refused, as it must be"
+
+    - name: An explicit list that keeps the live session
+      block:
+        - name: Set inputs for scenario 5
+          ansible.builtin.set_fact:
+            management_cidrs: ["203.0.113.0/24"]
+            management_cidrs_extra: ["198.51.100.7/32"]
+            node_base_observed_ssh_source: 203.0.113.9
+        - name: Resolve scenario 5
+          ansible.builtin.import_role:
+            name: node_base
+            tasks_from: preflight_management_cidrs.yml
+        - name: The explicit list wins and the extras are still merged
+          ansible.builtin.assert:
+            that:
+              - management_cidrs == ["203.0.113.0/24", "198.51.100.7/32"]
+            success_msg: "explicit list + extras -> {{ management_cidrs }}"

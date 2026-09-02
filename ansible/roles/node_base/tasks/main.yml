@@ -1,0 +1,26 @@
+---
+# The controller-side half runs in its own play in install_node.yml, before the
+# DNS record is reconciled and before anything reaches this server. What is left
+# here needs the node itself.
+- name: Run node-side preflight checks
+  ansible.builtin.import_tasks: preflight_node.yml
+  tags: [always, preflight]
+
+- name: Configure the base operating system
+  ansible.builtin.import_tasks: system.yml
+  tags: [system]
+
+- name: Install and configure Docker
+  ansible.builtin.import_tasks: docker.yml
+  tags: [docker]
+
+- name: Install the node firewall
+  ansible.builtin.import_tasks: firewall.yml
+  when: node_firewall_enabled | bool
+  tags: [firewall]
+
+- name: Apply host hardening
+  ansible.builtin.import_tasks: hardening.yml
+  when: node_hardening_enabled | bool
+  tags: [hardening]
+

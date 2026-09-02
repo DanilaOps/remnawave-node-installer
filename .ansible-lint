@@ -1,0 +1,21 @@
+---
+profile: production
+exclude_paths:
+  - ansible/.cache/
+  - ansible/.venv/
+  - ansible/collections/
+  - ansible/roles/*/molecule/
+  # Not Ansible. monitoring/ holds the configuration of the monitoring server,
+  # which is installed by hand: Prometheus rules, an Alertmanager config, a
+  # Grafana dashboard and the Python that reads them. Linting Prometheus YAML
+  # against Ansible's rules produces findings that mean nothing. yamllint and
+  # promtool cover these files instead - see monitoring/tests/.
+  - monitoring/
+mock_roles: []
+skip_list:
+  # These roles exchange one explicit deployment contract. Prefixing every
+  # shared input/output with the currently executing role would duplicate names.
+  - var-naming[no-role-prefix]
+  # Firewall activation is intentionally immediate: a rollback timer must be
+  # armed and confirmed before execution continues to RemnaNode.
+  - no-handler

@@ -1,0 +1,167 @@
+---
+- name: Validate Host declaration
+  ansible.builtin.assert:
+    that:
+      - remnawave_host_spec.remark | length > 0
+      - remnawave_host_spec.address | length > 0
+      - remnawave_host_spec.inbound_tag in remnawave_inbound_uuid_map
+      - remnawave_host_spec.port | int > 0
+      - remnawave_host_spec.tags | default([]) | length <= 10
+      - >-
+        remnawave_host_spec.tags | default([]) | select('match', '^[A-Z0-9_:]+$') | list | length
+        == remnawave_host_spec.tags | default([]) | length
+      - >-
+        remnawave_host_spec.tags | default([]) | map('length') | select('le', 36) | list | length
+        == remnawave_host_spec.tags | default([]) | length
+    fail_msg: "Invalid Host declaration: {{ remnawave_host_spec }}"
+
+- name: Build desired Host payload
+  ansible.builtin.set_fact:
+    remnawave_desired_host: >-
+      {{ {
+           'inbound': {
+             'configProfileUuid': remnawave_config_profile_uuid,
+             'configProfileInboundUuid': remnawave_inbound_uuid_map[remnawave_host_spec.inbound_tag]
+           },
+           'remark': remnawave_host_spec.remark,
+           'address': remnawave_host_spec.address,
+           'port': remnawave_host_spec.port | int,
+           'sni': remnawave_host_spec.sni | default(selfsteal_domain),
+           'fingerprint': remnawave_host_spec.fingerprint | default(reality_fingerprint),
+           'securityLayer': remnawave_host_spec.security_layer | default('DEFAULT'),
+           'isHidden': remnawave_host_spec.is_hidden | default(false) | bool,
+           'isDisabled': remnawave_host_spec.is_disabled | default(false) | bool,
+           'tags': remnawave_host_spec.tags | default([]),
+           'nodes': remnawave_host_spec.node_uuids | default([remnawave_node_uuid])
+         }
+         | combine({'xrayJsonTemplateUuid': remnawave_xray_json_template_uuid}
+                   if xray_json_template_name | default('') | length > 0 else {})
+         | combine(remnawave_host_spec.extra | default({}), recursive=True) }}
+
+- name: Match Host by UUID or stable identity
+  ansible.builtin.set_fact:
+    remnawave_host_matches: >-
+      {{ (remnawave_hosts_response.json.response | selectattr('uuid', 'equalto', remnawave_host_spec.uuid) | list)
+         if remnawave_host_spec.uuid | default('') | length > 0 else
+         (remnawave_hosts_response.json.response |
+          selectattr('remark', 'equalto', remnawave_host_spec.remark) |
+          selectattr('address', 'equalto', remnawave_host_spec.address) | list) }}
+
+- name: Fall back to inbound identity for a renamed Host
+  ansible.builtin.set_fact:
+    remnawave_host_matches: >-
+      {{ remnawave_hosts_response.json.response |
+         selectattr('inbound.configProfileInboundUuid', 'defined') |
+         selectattr('inbound.configProfileInboundUuid', 'equalto', remnawave_inbound_uuid_map[remnawave_host_spec.inbound_tag]) |
+         selectattr('address', 'equalto', remnawave_host_spec.address) | list }}
+  when: remnawave_host_matches | length == 0
+
+- name: Fall back to remark identity for a re-addressed Host
+  ansible.builtin.set_fact:
+    # A Host whose address changed - the fleet moving from publishing the
+    # domain to publishing the node's IP - still carries its remark and its
+    # inbound. Matching on those repairs the existing Host in place; without
+    # this the reconcile would leave the stale Host behind and create a second
+    # one beside it.
+    remnawave_host_matches: >-
+      {{ remnawave_hosts_response.json.response |
+         selectattr('inbound.configProfileInboundUuid', 'defined') |
+         selectattr('inbound.configProfileInboundUuid', 'equalto', remnawave_inbound_uuid_map[remnawave_host_spec.inbound_tag]) |
+         selectattr('remark', 'equalto', remnawave_host_spec.remark) | list }}
+  when: remnawave_host_matches | length == 0
+
+- name: Reject ambiguous Hosts
+  ansible.builtin.assert:
+    that:
+      - remnawave_host_matches | length <= 1
+    fail_msg: "Multiple Hosts match {{ remnawave_host_spec.remark }} at {{ remnawave_host_spec.address }}."
+
+- name: Normalize the Host returned by Panel for comparison
+  ansible.builtin.set_fact:
+    remnawave_host_actual: >-
+      {{ remnawave_host_matches[0] | default({}) | remnawave_normalize_host_links }}
+
+- name: Determine Host change
+  ansible.builtin.set_fact:
+    remnawave_host_needs_update: >-
+      {{ remnawave_host_matches | length == 0 or
+         not (remnawave_desired_host | remnawave_is_subset(remnawave_host_actual, ['uuid'])) }}
+
+- name: Create Host
+  ansible.builtin.uri:
+    url: "{{ remnawave_api_base }}/hosts"
+    method: POST
+    headers:
+      Authorization: "Bearer {{ remnawave_panel_token }}"
+    body_format: json
+    body: "{{ remnawave_desired_host }}"
+    return_content: true
+    status_code: 201
+    timeout: "{{ remnawave_api_timeout }}"
+    validate_certs: "{{ remnawave_panel_validate_certs }}"
+  register: remnawave_host_create
+  delegate_to: localhost
+  become: false
+  no_log: true
+  changed_when: true
+  when: remnawave_host_matches | length == 0
+
+- name: Report the Host a dry-run would create
+  ansible.builtin.debug:
+    msg: >-
+      Would create Host '{{ remnawave_host_spec.remark }}' for
+      {{ remnawave_host_spec.address }}:{{ remnawave_host_spec.port }} on inbound
+      {{ remnawave_host_spec.inbound_tag }} - the Panel carries no Host with that identity.
+  when:
+    - ansible_check_mode
+    - remnawave_host_matches | length == 0
+
+- name: Store created or existing Host UUID
+  ansible.builtin.set_fact:
+    # Ordered so that a dry-run, where the POST above did not run, still gets a
+    # usable value for an existing Host and an empty one for a Host that would
+    # have been created. A real run is covered by the assert in hosts.yml.
+    remnawave_current_host_uuid: >-
+      {{ remnawave_host_matches[0].uuid if remnawave_host_matches | length > 0
+         else remnawave_host_create.json.response.uuid | default('') }}
+
+- name: Update Host only when managed fields differ
+  ansible.builtin.uri:
+    url: "{{ remnawave_api_base }}/hosts"
+    method: PATCH
+    headers:
+      Authorization: "Bearer {{ remnawave_panel_token }}"
+    body_format: json
+    body: "{{ remnawave_desired_host | combine({'uuid': remnawave_current_host_uuid}) }}"
+    return_content: true
+    status_code: 200
+    timeout: "{{ remnawave_api_timeout }}"
+    validate_certs: "{{ remnawave_panel_validate_certs }}"
+  register: remnawave_host_update
+  delegate_to: localhost
+  become: false
+  no_log: true
+  changed_when: true
+  when:
+    - remnawave_host_matches | length == 1
+    - remnawave_host_needs_update | bool
+
+- name: Report the Host update a dry-run would make
+  ansible.builtin.debug:
+    msg: >-
+      Would update Host '{{ remnawave_host_spec.remark }}' ({{ remnawave_current_host_uuid }}):
+      its managed fields differ from what the Panel holds.
+  when:
+    - ansible_check_mode
+    - remnawave_host_matches | length == 1
+    - remnawave_host_needs_update | bool
+
+- name: Append Host reconciliation result
+  ansible.builtin.set_fact:
+    remnawave_host_uuids: >-
+      {{ remnawave_host_uuids +
+         ([remnawave_current_host_uuid] if remnawave_current_host_uuid | length > 0 else []) }}
+    remnawave_panel_hosts_changed: >-
+      {{ remnawave_panel_hosts_changed | bool or
+         remnawave_host_matches | length == 0 or
+         remnawave_host_needs_update | bool }}

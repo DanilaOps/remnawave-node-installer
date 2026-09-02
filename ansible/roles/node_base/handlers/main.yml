@@ -1,0 +1,43 @@
+---
+# See the note in semaphore_controller/handlers/main.yml: in a dry-run the change
+# that notified a handler was only planned, so the service it would restart may
+# not be installed at all. Each handler acts on a real run and reports otherwise.
+- name: Restart SSH
+  ansible.builtin.systemd_service:
+    name: ssh
+    state: restarted
+  when: not ansible_check_mode
+
+- name: Report the SSH restart a dry-run would make
+  ansible.builtin.debug:
+    msg: Would restart ssh.service so the hardening drop-in takes effect.
+  listen: Restart SSH
+  when: ansible_check_mode
+
+- name: Restart Docker
+  ansible.builtin.systemd_service:
+    name: docker
+    state: restarted
+  when: not ansible_check_mode
+
+- name: Report the Docker restart a dry-run would make
+  ansible.builtin.debug:
+    msg: Would restart docker.service - /etc/docker/daemon.json changed.
+  listen: Restart Docker
+  when: ansible_check_mode
+
+- name: Restart fail2ban
+  ansible.builtin.systemd_service:
+    name: fail2ban
+    state: restarted
+  when: not ansible_check_mode
+
+- name: Report the fail2ban restart a dry-run would make
+  ansible.builtin.debug:
+    msg: Would restart fail2ban.service - its jail configuration changed.
+  listen: Restart fail2ban
+  when: ansible_check_mode
+
+- name: Reload systemd
+  ansible.builtin.systemd_service:
+    daemon_reload: true

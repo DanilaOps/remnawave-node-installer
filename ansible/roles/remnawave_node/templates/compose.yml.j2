@@ -1,0 +1,58 @@
+---
+services:
+  remnanode:
+    image: {{ remnawave_node_image }}
+    container_name: {{ remnawave_node_container }}
+    hostname: {{ node_name | lower }}
+    network_mode: host
+    env_file:
+      - {{ remnawave_node_env_path }}
+    restart: unless-stopped
+{% if node_plugins | length > 0 %}
+    cap_add:
+      - NET_ADMIN
+{% endif %}
+    security_opt:
+      - no-new-privileges:true
+    volumes:
+      - {{ xray_binary_path }}:/usr/local/bin/xray:ro
+      - {{ remnawave_logs_dir }}:/var/log/xray
+{% for geodata in geodata_files if geodata_enabled | bool %}
+      - {{ remnawave_geodata_dir }}/{{ geodata.name }}:/usr/local/share/xray/{{ geodata.name }}:ro
+{% endfor %}
+    healthcheck:
+      test: ["CMD-SHELL", "/command/s6-svstat /run/service/xray | grep -q '^up'"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: 20m
+        max-file: "5"
+
+  nginx-selfsteal:
+    image: {{ remnawave_nginx_image }}
+    container_name: {{ remnawave_nginx_container }}
+    network_mode: host
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    volumes:
+      - {{ remnawave_nginx_dir }}/nginx.conf:/etc/nginx/nginx.conf:ro
+      - /etc/letsencrypt:/etc/letsencrypt:ro
+      - {{ remnawave_install_root }}/selfsteal:/var/www/selfsteal:ro
+      - {{ remnawave_install_root }}/acme-webroot:/var/www/acme:ro
+      - {{ remnawave_nginx_logs_dir }}:/var/log/nginx
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:9080/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    logging:
+      driver: json-file
+      options:
+        max-size: 20m
+        max-file: "5"

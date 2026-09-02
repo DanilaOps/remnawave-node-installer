@@ -1,0 +1,113 @@
+---
+node_base_supported_os:
+  Debian: ["12", "13"]
+  Ubuntu: ["24.04"]
+node_base_supported_architectures: [x86_64, aarch64]
+node_base_minimum_free_mb: 2048
+node_base_hostname: "{{ node_name | lower }}"
+# Docker bind-mounts /etc/hostname into every container, which makes it a mount
+# point hostnamectl cannot replace, so the Molecule scenarios turn this off the
+# way they turn off the firewall and the hardening. A real node sets its name.
+node_base_manage_hostname: true
+node_base_timezone: UTC
+node_base_upgrade_packages: true
+node_base_reboot_if_required: true
+node_base_packages:
+  - ca-certificates
+  - certbot
+  - curl
+  - fail2ban
+  - gnupg
+  - iproute2
+  - jq
+  - nftables
+  - openssl
+  - python3
+  - python3-apt
+  - python3-docker
+  - unzip
+  - unattended-upgrades
+
+docker_apt_channel: stable
+docker_package_version: ""
+docker_packages:
+  - docker-ce
+  - docker-ce-cli
+  - containerd.io
+  - docker-buildx-plugin
+  - docker-compose-plugin
+docker_daemon_options:
+  log-driver: json-file
+  log-opts:
+    max-size: 20m
+    max-file: "5"
+  live-restore: true
+  userland-proxy: false
+
+node_firewall_enabled: true
+node_firewall_table: remnawave_filter
+node_firewall_config_path: /etc/nftables.d/remnawave-filter.nft
+node_firewall_rollback_seconds: 120
+management_cidrs: []
+remnawave_panel_cidrs: []
+node_public_tcp_ports: [80, 443]
+node_public_udp_ports: []
+bridge_spec:
+  enabled: false
+node_role: direct
+
+# --- Node-side monitoring ----------------------------------------------------
+# Off by default, and additive when it is on: it appends one source-restricted
+# rule to the ruleset this role already writes and changes nothing that is
+# already in it. The variables live here rather than in node_monitoring because
+# the rule is rendered here, and a listener whose firewall rule is written by a
+# different run is a listener that is briefly public.
+node_monitoring_enabled: false
+node_monitoring_exporter_port: 9100
+# Sources allowed to reach the exporter. Empty with monitoring on is refused by
+# node_monitoring's preflight rather than quietly published.
+monitoring_scrape_cidrs: []
+
+node_hardening_enabled: true
+node_ssh_allow_root_password: false
+node_fail2ban_enabled: true
+node_disable_unused_protocols: true
+node_sysctl:
+  net.ipv4.tcp_rfc1337: 1
+  net.ipv4.tcp_syncookies: 1
+  net.ipv4.conf.all.accept_redirects: 0
+  net.ipv4.conf.default.accept_redirects: 0
+  net.ipv4.conf.all.send_redirects: 0
+  net.ipv4.conf.default.send_redirects: 0
+  net.ipv4.conf.all.rp_filter: 1
+  net.ipv4.conf.default.rp_filter: 1
+  net.ipv4.ip_forward: 1
+  net.ipv6.conf.all.forwarding: 1
+  net.core.default_qdisc: fq
+  net.ipv4.tcp_congestion_control: bbr
+
+remnawave_panel_validate_certs: true
+remnawave_api_timeout: 60
+preflight_check_dns: true
+# Turning the panel checks off removes everything that protects the shared Config
+# Profile from a conflicting node, so it has to be acknowledged for that run.
+preflight_ack_unchecked_panel: false
+# A node whose identity is deliberately not derived from its inventory hostname
+# sets this in its own host block. It exists so that the check which catches a
+# fleet-wide identity - one supplied as a global extra var - has an escape hatch
+# that is per host and visible in the inventory.
+node_identity_override_ack: false
+# Inbound protocols the panel strips per node before pushing a config
+# (MANAGED_CLIENT_PROTOCOLS in the panel). An inbound of any other protocol is
+# delivered to every node in full, so the shared profile refuses to carry one
+# unless its tag is listed in shared_profile_allowed_unmanaged_inbound_tags.
+shared_profile_managed_protocols: [vless, trojan, shadowsocks, hysteria]
+shared_profile_allowed_unmanaged_inbound_tags: []
+preflight_check_panel: true
+preflight_check_ports: true
+# A container reports only its bind mounts, never the root filesystem of the
+# machine underneath it, so the Molecule scenarios turn this check off the way
+# they turn off the DNS, panel and port checks. A real node always reports "/"
+# and keeps it on.
+preflight_check_disk: true
+preflight_require_ntp_sync: false

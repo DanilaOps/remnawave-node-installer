@@ -1,0 +1,46 @@
+---
+dependency:
+  name: galaxy
+driver:
+  name: docker
+platforms:
+  - name: remnawave-node-debian12
+    image: geerlingguy/docker-debian12-ansible:latest
+    pre_build_image: true
+    privileged: true
+    cgroupns_mode: host
+    command: /lib/systemd/systemd
+    volumes:
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+  - name: remnawave-node-debian13
+    image: geerlingguy/docker-debian13-ansible:latest
+    pre_build_image: true
+    privileged: true
+    cgroupns_mode: host
+    command: /lib/systemd/systemd
+    volumes:
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+  - name: remnawave-node-ubuntu2404
+    image: geerlingguy/docker-ubuntu2404-ansible:latest
+    pre_build_image: true
+    privileged: true
+    cgroupns_mode: host
+    command: /lib/systemd/systemd
+    volumes:
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+provisioner:
+  name: ansible
+  config_options:
+    defaults:
+      # Molecule runs every playbook against an ansible.cfg it writes itself and
+      # points ANSIBLE_CONFIG at, so the project ansible.cfg in the repository
+      # root is never read from a scenario - no matter what the current directory
+      # is. These two lines are that file's roles_path and collections_path
+      # restated for Molecule, so a scenario resolves exactly what every other
+      # entry point of this project resolves. The scenario's project directory is
+      # the role directory itself: one level up holds the roles, two levels up
+      # holds the collections CI installs with "-p ansible/collections".
+      roles_path: ${MOLECULE_PROJECT_DIRECTORY}/..
+      collections_path: ${MOLECULE_PROJECT_DIRECTORY}/../../collections:~/.ansible/collections:/usr/share/ansible/collections
+verifier:
+  name: ansible

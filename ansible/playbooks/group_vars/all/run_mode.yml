@@ -1,0 +1,20 @@
+---
+# Which tags a run was started with decides whether the node may be contacted at
+# all.
+#
+# Semaphore's "01 - Preflight" template runs
+# provision_node.yml --tags preflight --check, and that template has to stay
+# purely controller-side: the VPS it is asked about may not carry the managed
+# account yet, so anything that opens an SSH session to it dies with
+# "Permission denied (publickey,password)". Ansible's implicit "Gathering Facts"
+# task is exactly such a thing and it carries the "always" tag, so it survives
+# --tags; the plays that need facts therefore gather them from an explicit task
+# placed behind this guard.
+#
+# ansible_run_tags is ['all'] when no --tags was given and the literal list
+# otherwise, so a run is preflight-only exactly when every tag it asked for is
+# one that controller-side preflight answers without leaving the controller.
+remnawave_preflight_only: >-
+  {{ (ansible_run_tags | default(['all'])
+      | reject('in', ['preflight', 'always'])
+      | list | length) == 0 }}

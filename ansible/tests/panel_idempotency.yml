@@ -1,0 +1,54 @@
+---
+- name: Reconcile resources against mock Remnawave Panel
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  become: false
+  vars:
+    node_id: mock_01
+    node_name: MOCK-01
+    node_public_ip: 203.0.113.10
+    node_country: DE
+    selfsteal_domain: node.example.test
+    selfsteal_local_port: 9443
+    selfsteal_socket: ""
+    remnawave_panel_url: http://127.0.0.1:18080
+    remnawave_panel_token: mock-token
+    remnawave_panel_validate_certs: false
+    remnawave_node_env_path: "{{ test_node_env_path }}"
+    remnawave_node_image: ghcr.io/remnawave/node:3.3.2
+    remnawave_node_port: 2222
+    remnawave_validate_xray_profile: false
+    profile_name: Mock-Profile
+    config_profile_mode: shared
+    config_profile_create: false
+    config_profile_require_routing: true
+    inbound_specs:
+      - tag: MOCK_01_REALITY
+        port: 443
+        network: raw
+    host_specs:
+      - remark: Mock Germany
+        # The connection address is the node's IP; the TLS name is the domain.
+        address: 203.0.113.10
+        inbound_tag: MOCK_01_REALITY
+        port: 443
+        sni: node.example.test
+        fingerprint: firefox
+        security_layer: DEFAULT
+        tags: [EU, DIRECT]
+    internal_squad_name: Mock Squad
+    # A separate object from the Config Profile above: a Subscription Template of
+    # type XRAY_JSON, which the published Host has to carry.
+    xray_json_template_name: Mock Xray Template
+    internal_squad_create: true
+    reality_private_key: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+    reality_short_ids: ["0011223344556677"]
+    reality_rotate_keys: false
+    reality_xver: 1
+    bridge_spec:
+      enabled: false
+    xhttp_path: /api/v1/update
+    xhttp_extra_params: {}
+  roles:
+    - role: remnawave_panel

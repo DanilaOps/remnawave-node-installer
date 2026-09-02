@@ -1,0 +1,49 @@
+---
+# One scenario of ansible/tests/render_ssh_policy.yml. Separate file because the
+# management allow list is resolved by importing the production task file, and
+# that has to happen once per scenario with different inputs.
+- name: Create the scenario directory
+  ansible.builtin.file:
+    path: "{{ render_dir }}/{{ scenario.name }}"
+    state: directory
+    mode: "0755"
+
+- name: Declare the scenario inputs
+  ansible.builtin.set_fact:
+    management_cidrs: []
+    management_cidrs_extra: "{{ scenario.extra }}"
+    node_base_observed_ssh_source: "{{ observed_controller }}"
+
+- name: Resolve the management allow list the way a real run does
+  ansible.builtin.import_role:
+    name: node_base
+    tasks_from: preflight_management_cidrs.yml
+
+- name: Record what was resolved
+  ansible.builtin.copy:
+    content: "{{ management_cidrs | to_nice_json }}\n"
+    dest: "{{ render_dir }}/{{ scenario.name }}/management_cidrs.json"
+    mode: "0644"
+
+- name: Render the node firewall
+  ansible.builtin.template:
+    src: "{{ playbook_dir }}/../roles/node_base/templates/remnawave-filter.nft.j2"
+    dest: "{{ render_dir }}/{{ scenario.name }}/remnawave-filter.nft"
+    mode: "0644"
+
+- name: Render the fail2ban jail
+  ansible.builtin.template:
+    src: "{{ playbook_dir }}/../roles/node_base/templates/fail2ban-sshd.local.j2"
+    dest: "{{ render_dir }}/{{ scenario.name }}/remnawave-sshd.local"
+    mode: "0644"
+
+- name: Render the node firewall a second time, unchanged
+  # The template task's changed flag is what gates the whole apply block in
+  # node_base/tasks/firewall.yml, including the rollback timer. If a second
+  # render of the same inputs differs by one byte, every re-run of template 02
+  # rewrites and reloads the ruleset - and a ruleset that is rewritten on every
+  # run is a ruleset that can drop a connection on every run.
+  ansible.builtin.template:
+    src: "{{ playbook_dir }}/../roles/node_base/templates/remnawave-filter.nft.j2"
+    dest: "{{ render_dir }}/{{ scenario.name }}/remnawave-filter.second.nft"
+    mode: "0644"

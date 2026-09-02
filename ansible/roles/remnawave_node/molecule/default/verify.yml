@@ -1,0 +1,17 @@
+---
+- name: Verify pinned Xray installation
+  hosts: all
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Read installed Xray version
+      ansible.builtin.command:
+        argv: [/opt/remnawave-node/remnanode/xray-core-26.6.27/xray, version]
+      register: molecule_xray_version
+      changed_when: false
+
+    - name: Require pinned Xray version
+      ansible.builtin.assert:
+        that:
+          - molecule_xray_version.stdout is match('^Xray 26.6.27 ')
+

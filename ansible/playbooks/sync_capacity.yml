@@ -1,0 +1,162 @@
+---
+# Fold the capacity declared in the Ansible inventory into the capacity
+# inventory the monitoring exporter reads, so a standard node's throughput is
+# written once - on its host - and never a second time by hand.
+#
+# Runs entirely on the controller: it reads the inventory and rewrites one file
+# under /etc/august-monitoring, and never contacts a node. It is safe to run on
+# its own for a fleet-wide reconcile, and install_node.yml imports it so a new
+# node's capacity appears without a separate step.
+#
+# It changes nothing where the monitoring stack is not installed - a controller
+# without /etc/august-monitoring simply reports the sync as skipped. And it
+# refuses to publish a capacity inventory that would not validate, or one where a
+# node that rates itself was placed in a pool rated as a whole location: the
+# deployed file is only ever replaced by a document the model accepts.
+- name: Sync monitoring capacity from the Ansible inventory
+  hosts: remnawave_nodes
+  connection: local
+  gather_facts: false
+  become: false
+  run_once: true
+  any_errors_fatal: true
+  vars:
+    # This play runs on the controller; name its Python rather than letting
+    # discovery run it against a node over SSH.
+    ansible_python_interpreter: "{{ ansible_playbook_python }}"
+    # Not a self-referencing "{{ capacity_sync_enabled | default(true) }}", which
+    # Ansible resolves into an infinite loop. The default is applied where the
+    # flag is read, below.
+    capacity_repo_root: "{{ playbook_dir }}/../.."
+    capacity_sync_tool: "{{ capacity_repo_root }}/monitoring/sync_capacity.py"
+    capacity_base_file: "{{ capacity_repo_root }}/monitoring/capacity/capacity.yml"
+    capacity_deployed_file: "{{ capacity_deployed_path | default('/etc/august-monitoring/capacity.yml') }}"
+
+  tasks:
+    - name: See whether the monitoring capacity inventory lives on this controller
+      ansible.builtin.stat:
+        path: "{{ capacity_deployed_file | dirname }}"
+      register: capacity_target_dir
+
+    - name: Say plainly when the sync does not run
+      ansible.builtin.debug:
+        msg: >-
+          Capacity sync skipped:
+          {{ 'it is disabled (capacity_sync_enabled=false)'
+             if not (capacity_sync_enabled | default(true) | bool)
+             else 'the monitoring capacity directory ' ~ (capacity_deployed_file | dirname)
+                  ~ ' is not on this host, so there is nothing to sync into' }}.
+      when: not (capacity_sync_enabled | default(true) | bool) or not capacity_target_dir.stat.exists
+
+    - name: Sync capacity into the deployed inventory
+      when:
+        - capacity_sync_enabled | default(true) | bool
+        - capacity_target_dir.stat.exists
+      block:
+        - name: Collect the capacity every node declares in the inventory
+          # A Jinja object literal, so a bare number in the inventory stays a
+          # number here and in the JSON below - a quoted "1000" would compare
+          # wrong, and the sync tool refuses it rather than write it. Only the
+          # node's name, pool and figures are carried; the address never is.
+          ansible.builtin.set_fact:
+            capacity_inventory_nodes: >-
+              {{ capacity_inventory_nodes | default([])
+                 + [ {
+                       'name': hostvars[item].node_name,
+                       'pool': hostvars[item].node_capacity_pool,
+                       'download_mbps': hostvars[item].capacity_download_mbps | default(none),
+                       'upload_mbps': hostvars[item].capacity_upload_mbps | default(none),
+                       'certain': hostvars[item].capacity_certain | default(false) | bool,
+                     } ] }}
+          loop: "{{ groups['remnawave_nodes'] | default([]) | sort }}"
+          loop_control:
+            label: "{{ hostvars[item].node_name | default(item) }}"
+          when: >-
+            hostvars[item].capacity_download_mbps is defined
+            or hostvars[item].capacity_upload_mbps is defined
+
+        - name: Find auto-measured ratings recorded by the capacity test
+          # The Ansible-side source of truth for auto-tested nodes. Read here so a
+          # measured rating survives every sync, and so it is folded in the same
+          # way a manual figure is - a node is auto XOR manual (preflight refuses
+          # both), so the two never collide.
+          ansible.builtin.find:
+            paths: "{{ capacity_measured_dir | default('/var/lib/august-capacity/measured') }}"
+            patterns: "*.yml"
+          register: capacity_overlays
+
+        - name: Load each auto-measured rating
+          ansible.builtin.set_fact:
+            capacity_overlay_nodes: "{{ capacity_overlay_nodes | default([]) + [lookup('file', item.path) | from_yaml] }}"
+          loop: "{{ capacity_overlays.files | default([]) }}"
+          loop_control:
+            label: "{{ item.path | basename }}"
+
+        - name: Combine measured and manual capacity - manual wins on a clash
+          # Overlays first, manual last: sync_capacity.py lets the last entry for
+          # a name win, so a hand-supplied figure overrides a stale auto one if an
+          # operator ever sets both.
+          ansible.builtin.set_fact:
+            capacity_inventory_nodes: >-
+              {{ (capacity_overlay_nodes | default([])) + (capacity_inventory_nodes | default([])) }}
+
+        - name: A working area for the merge
+          ansible.builtin.tempfile:
+            state: directory
+            suffix: august-capacity-sync
+          register: capacity_workdir
+          changed_when: false
+
+        - name: Write the declared capacity as JSON
+          ansible.builtin.copy:
+            content: "{{ capacity_inventory_nodes | default([]) | to_json }}"
+            dest: "{{ capacity_workdir.path }}/inventory.json"
+            mode: "0600"
+          changed_when: false
+
+        - name: Regenerate the capacity inventory, validating before it is written
+          # Non-zero exit is a real failure - an invalid merge or a pool that
+          # cannot take a rated member - and it stops the play with the tool's
+          # own message. Nothing has been published at this point.
+          ansible.builtin.command:
+            argv:
+              - "{{ ansible_playbook_python }}"
+              - "{{ capacity_sync_tool }}"
+              - --base
+              - "{{ capacity_base_file }}"
+              - --inventory-json
+              - "{{ capacity_workdir.path }}/inventory.json"
+              - --output
+              - "{{ capacity_workdir.path }}/capacity.yml"
+          register: capacity_sync_result
+          changed_when: false
+
+        - name: Publish the synced inventory only when it actually changed
+          # 0644 is all the exporter needs: it only reads the file, and the file
+          # carries no secret. Owner is left to whatever writes it - root on the
+          # controller - rather than pinned to a group that has to exist first.
+          ansible.builtin.copy:
+            src: "{{ capacity_workdir.path }}/capacity.yml"
+            dest: "{{ capacity_deployed_file }}"
+            remote_src: true
+            mode: "0644"
+          register: capacity_published
+          # The exporter re-reads the file on its next scrape, so no reload is
+          # needed. It keeps the last good inventory if this one were ever bad,
+          # but it never is: the tool validated it before it was written here.
+
+        - name: Report what the sync did
+          ansible.builtin.debug:
+            msg: >-
+              {{ capacity_sync_result.stderr | trim }}.
+              {{ 'The deployed capacity inventory was updated.'
+                 if capacity_published is changed
+                 else 'It already matched; nothing changed.' }}
+
+      always:
+        - name: Remove the working area
+          ansible.builtin.file:
+            path: "{{ capacity_workdir.path }}"
+            state: absent
+          changed_when: false
+          when: capacity_workdir is defined and capacity_workdir.path is defined

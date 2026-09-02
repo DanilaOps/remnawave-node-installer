@@ -1,0 +1,8 @@
+[Unit]
+Description=Rollback a failed Remnawave firewall deployment
+
+[Service]
+Type=oneshot
+ExecStart=-/usr/sbin/nft delete table inet {{ node_firewall_table }}
+ExecStart=/usr/sbin/nft -f /run/remnawave-nft-backup.nft
+

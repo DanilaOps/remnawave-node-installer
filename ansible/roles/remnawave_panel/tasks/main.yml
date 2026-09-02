@@ -1,0 +1,82 @@
+---
+- name: Validate Panel role inputs
+  ansible.builtin.assert:
+    that:
+      - inbound_specs | length > 0
+      - host_specs | length > 0
+      - inbound_specs | map(attribute='tag') | list | unique | length == inbound_specs | length
+      - inbound_specs | map(attribute='port') | map('int') | select('ge', 1) | list | length == inbound_specs | length
+      - internal_squad_uuid | length > 0 or internal_squad_name | length > 0
+      - not (selfsteal_domain | lower is search('apple|icloud'))
+    fail_msg: Panel inputs must contain unique inbounds, at least one Host and an Internal Squad identity.
+
+- name: Authenticate to Remnawave Panel and obtain the node key
+  ansible.builtin.import_tasks: authenticate.yml
+
+- name: Resolve bridge identity before rendering the profile
+  ansible.builtin.import_tasks: bridge_identity.yml
+  when: bridge_spec.enabled | default(false) | bool
+
+- name: Reconcile Config Profile and inbounds
+  ansible.builtin.import_tasks: profile.yml
+
+- name: Reconcile Node
+  ansible.builtin.import_tasks: node.yml
+
+- name: Resolve the Xray JSON template published Hosts must carry
+  # A Host, not a Node, carries the template, so this runs before Hosts and after
+  # the Node. Empty name: the field is left alone, whatever the panel already has.
+  ansible.builtin.include_tasks: xray_template.yml
+  when: xray_json_template_name | default('') | length > 0
+
+- name: Reconcile Hosts
+  ansible.builtin.import_tasks: hosts.yml
+
+- name: Reconcile Internal Squad
+  ansible.builtin.import_tasks: squad.yml
+
+- name: Reconcile bridge service user
+  ansible.builtin.import_tasks: bridge_user.yml
+  when: bridge_spec.enabled | default(false) | bool
+
+- name: Collect the Panel objects a dry-run would still have to create
+  ansible.builtin.set_fact:
+    remnawave_panel_pending_objects: >-
+      {{ (['the Node'] if remnawave_node_uuid | length == 0 else []) +
+         (['the Internal Squad'] if remnawave_internal_squad_uuid | length == 0 else []) +
+         (['inbound(s) ' ~ remnawave_missing_inbound_tags | join(', ')]
+          if remnawave_missing_inbound_tags | length > 0 else []) +
+         (['Host(s) ' ~ (host_specs | length - remnawave_host_uuids | length) | string]
+          if remnawave_host_uuids | length < host_specs | length else []) }}
+
+- name: Explain why a dry-run cannot configure a node the Panel has not registered
+  ansible.builtin.debug:
+    msg: >-
+      Dry-run stops after this play: {{ remnawave_panel_pending_objects | join(', ') }} do not exist
+      in the Panel yet, so the node's own configuration would be rendered against identifiers the
+      Panel has not issued and every check on it would be meaningless. Everything above was checked
+      for real: the Panel token, the shared Config Profile and its routing, the ownership of every
+      inbound tag, DNS, the platform, the SSH policy and the firewall inputs. Run without --check to
+      register the node; every later --check then walks the whole run, including nginx, the
+      certificate, the container and verification.
+  when:
+    - ansible_check_mode
+    - remnawave_panel_pending_objects | length > 0
+
+- name: End the dry-run for a node the Panel has not registered
+  ansible.builtin.meta: end_host
+  when:
+    - ansible_check_mode
+    - remnawave_panel_pending_objects | length > 0
+
+- name: Publish Panel reconciliation facts
+  ansible.builtin.set_stats:
+    data:
+      node_uuid: "{{ remnawave_node_uuid | default('') }}"
+      config_profile_uuid: "{{ remnawave_config_profile_uuid | default('') }}"
+      inbound_uuids: "{{ remnawave_managed_inbound_uuids | default([]) }}"
+      host_uuids: "{{ remnawave_host_uuids | default([]) }}"
+      internal_squad_uuid: "{{ remnawave_internal_squad_uuid | default('') }}"
+      bridge_id: "{{ bridge_spec.id | default('') }}"
+      subscription_refresh_required: "{{ subscription_refresh_required | default(false) }}"
+    per_host: true

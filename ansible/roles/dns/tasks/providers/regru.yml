@@ -1,0 +1,157 @@
+---
+# REG.RU API v2: every call is POST <base>/<method> with a JSON document in the
+# input_data form field. Credentials come from the vault and never leave the
+# controller, whose address must be allow-listed for API access in the account.
+- name: Require REG.RU credentials
+  ansible.builtin.assert:
+    that:
+      - regru_username | length > 0
+      - regru_password | length > 0
+    fail_msg: >-
+      regru_username and regru_password must come from the vault
+      (vault_regru_username / vault_regru_password). REG.RU also requires API access
+      to be enabled for the account and the controller's address to be allow-listed.
+  no_log: true
+
+- name: Read the current resource records of the zone
+  ansible.builtin.uri:
+    url: "{{ regru_api_url }}/zone/get_resource_records"
+    method: POST
+    body_format: form-urlencoded
+    body:
+      input_format: json
+      input_data: >-
+        {{ {'username': regru_username,
+            'password': regru_password,
+            'domains': [{'dname': dns_zone}]} | to_json }}
+    return_content: true
+    status_code: 200
+    timeout: "{{ dns_api_timeout }}"
+  register: regru_zone
+  delegate_to: localhost
+  become: false
+  no_log: true
+  changed_when: false
+  # Read-only: it runs in check mode too, so a dry-run sees real state.
+  check_mode: false
+
+- name: Require a successful zone read
+  ansible.builtin.assert:
+    that:
+      - regru_zone.json.result | default('') == 'success'
+    fail_msg: >-
+      REG.RU refused to list zone {{ dns_zone }}
+      (result={{ regru_zone.json.result | default('unknown') }},
+      error={{ regru_zone.json.error_code | default('none') }}).
+
+- name: Select the managed record
+  ansible.builtin.set_fact:
+    dns_zone_records: "{{ regru_zone.json | remnawave_dns_records(dns_zone) }}"
+
+- name: Narrow down to this node's name and type
+  ansible.builtin.set_fact:
+    dns_current: "{{ dns_zone_records | remnawave_dns_matches(dns_record_name, dns_record_type) }}"
+
+- name: Refuse to guess between several records for the same name
+  ansible.builtin.assert:
+    that:
+      - dns_current | length <= 1 or dns_prune_extra_records | bool
+    fail_msg: >-
+      {{ dns_record_fqdn }} already has {{ dns_current | length }} {{ dns_record_type }} records
+      ({{ dns_current | map(attribute='content') | list }}). Remove the stale ones, or set
+      dns_prune_extra_records=true to let this role delete the ones that do not match
+      {{ dns_record_value }}.
+
+- name: Decide what has to change
+  ansible.builtin.set_fact:
+    dns_record_present: "{{ dns_current | selectattr('content', 'equalto', dns_record_value) | list | length > 0 }}"
+    dns_record_stale: "{{ dns_current | rejectattr('content', 'equalto', dns_record_value) | list }}"
+
+- name: Remove only records of this exact name, type and stale address
+  ansible.builtin.uri:
+    url: "{{ regru_api_url }}/zone/remove_record"
+    method: POST
+    body_format: form-urlencoded
+    body:
+      input_format: json
+      input_data: >-
+        {{ {'username': regru_username,
+            'password': regru_password,
+            'domains': [{'dname': dns_zone}],
+            'subdomain': dns_record_name,
+            'content': item.content,
+            'record_type': dns_record_type} | to_json }}
+    return_content: true
+    status_code: 200
+    timeout: "{{ dns_api_timeout }}"
+  register: regru_removed
+  delegate_to: localhost
+  become: false
+  no_log: true
+  changed_when: true
+  failed_when: regru_removed.json.result | default('') != 'success'
+  loop: "{{ dns_record_stale }}"
+  loop_control:
+    label: "{{ dns_record_name }} -> {{ item.content }}"
+
+- name: Create the managed record
+  ansible.builtin.uri:
+    url: "{{ regru_api_url }}/zone/add_alias"
+    method: POST
+    body_format: form-urlencoded
+    body:
+      input_format: json
+      input_data: >-
+        {{ {'username': regru_username,
+            'password': regru_password,
+            'domains': [{'dname': dns_zone}],
+            'subdomain': dns_record_name,
+            'ipaddr': dns_record_value} | to_json }}
+    return_content: true
+    status_code: 200
+    timeout: "{{ dns_api_timeout }}"
+  register: regru_created
+  delegate_to: localhost
+  become: false
+  no_log: true
+  changed_when: true
+  failed_when: regru_created.json.result | default('') != 'success'
+  when: not dns_record_present | bool
+
+- name: Re-read the zone after a change
+  ansible.builtin.uri:
+    url: "{{ regru_api_url }}/zone/get_resource_records"
+    method: POST
+    body_format: form-urlencoded
+    body:
+      input_format: json
+      input_data: >-
+        {{ {'username': regru_username,
+            'password': regru_password,
+            'domains': [{'dname': dns_zone}]} | to_json }}
+    return_content: true
+    status_code: 200
+    timeout: "{{ dns_api_timeout }}"
+  register: regru_zone_final
+  delegate_to: localhost
+  become: false
+  no_log: true
+  changed_when: false
+  when: regru_created is not skipped | default(false) or regru_removed.changed | default(false)
+
+- name: Confirm the registrar now holds exactly the managed record
+  ansible.builtin.assert:
+    that:
+      - >-
+        (regru_zone_final.json | remnawave_dns_records(dns_zone) |
+         remnawave_dns_matches(dns_record_name, dns_record_type) |
+         selectattr('content', 'equalto', dns_record_value) | list | length) == 1
+    fail_msg: >-
+      After reconciliation {{ dns_record_fqdn }} still does not hold an
+      {{ dns_record_type }} record for {{ dns_record_value }}.
+  when: regru_zone_final is not skipped | default(false)
+
+- name: Record whether the registrar was changed
+  ansible.builtin.set_fact:
+    dns_record_changed: >-
+      {{ (regru_created is not skipped | default(false)) or (regru_removed.changed | default(false)) }}

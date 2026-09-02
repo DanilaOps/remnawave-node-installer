@@ -1,3 +1,4 @@
+---
 name: QA
 
 on:
@@ -7,6 +8,8 @@ on:
 permissions:
   contents: read
 
+# Every command runs from the repository root against the single ansible.cfg,
+# exactly the way the wrappers and Semaphore run them.
 jobs:
   shell-checks:
     runs-on: ubuntu-latest
@@ -19,3 +22,244 @@ jobs:
 
       - name: Validate mirror installer
         run: bash check-mirror.sh ./install-mirror.sh
+
+      - name: Validate the entry-point wrappers and test scripts
+        run: shellcheck -S warning provision-node setup-controller ci-local ansible/tests/*.sh monitoring/tests/*.sh
+
+      - name: Reject CRLF and trailing whitespace in tracked text files
+        # Guards the files this project writes. LICENSE came from upstream with
+        # CRLF and nobody will ever edit it, so it is excluded by name rather
+        # than rewritten: a gate that fails on a file that is never touched is a
+        # gate people learn to ignore.
+        run: |
+          bad=0
+          while IFS= read -r file; do
+            case "$file" in
+              *.png|*.jpg|*.ico|*.zip) continue ;;
+              LICENSE) continue ;;
+            esac
+            if grep -qlU $'\r' "$file" 2>/dev/null; then
+              echo "CRLF in $file"; bad=1
+            fi
+            if grep -qE ' +$' "$file" 2>/dev/null; then
+              echo "trailing whitespace in $file"; bad=1
+            fi
+          done < <(git ls-files)
+          exit "$bad"
+
+  # Fast lane: everything that needs no container and no network. Runs on every
+  # push so a mistake is visible within a minute.
+  fast:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install Ansible test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r ansible/requirements.txt
+          ansible-galaxy collection install -r ansible/collections/requirements.yml \
+            -p ansible/collections
+
+      - name: Validate YAML
+        run: yamllint -c .yamllint.yml ansible .github monitoring
+
+      - name: Validate role structure and filters
+        run: |
+          python ansible/tests/validate_structure.py
+          python -m unittest discover -s ansible/tests -p 'test_*.py'
+
+      - name: Run Ansible syntax check
+        run: |
+          for playbook in provision_node install_node bootstrap show_node_identity controller; do
+            ansible-playbook "ansible/playbooks/${playbook}.yml" --syntax-check
+          done
+
+      - name: Verify an external inventory still resolves the whole node
+        run: bash ansible/tests/test_external_inventory.sh
+
+      - name: Verify how node names are allocated
+        run: bash ansible/tests/test_node_naming.sh
+
+      - name: Verify bridge acceptance handles direct, entry and probe-only nodes
+        run: bash ansible/tests/test_bridge_verify.sh
+
+      - name: Verify how the management allow list is resolved
+        run: ansible-playbook -i localhost, -c local ansible/tests/management_cidrs.yml
+
+      - name: Verify the controller firewall dry-run never touches a unit it did not install
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq nftables
+          bash ansible/tests/test_check_mode_controller.sh
+
+      - name: Verify the guards on deployment values and node identity
+        run: |
+          ansible-playbook -i ansible/inventories/staging/hosts.yml -c local \
+            ansible/tests/preflight_guards.yml --limit ee01
+
+      - name: Verify the operator keeps direct SSH access to every node
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq nftables
+          bash ansible/tests/test_ssh_access_policy.sh
+
+      - name: Verify preflight never contacts a VPS that has no managed account
+        run: bash ansible/tests/test_preflight_no_node_contact.sh
+
+      - name: Dry-run the node monitoring agent on a host that has none of it
+        run: bash ansible/tests/test_node_monitoring_check_mode.sh
+
+      # The monitoring server is installed by hand, so these steps check the
+      # configuration this repository ships for it rather than any deployment
+      # of it. promtool and amtool are downloaded here only to run as linters.
+      - name: Validate the versioned capacity inventory
+        run: python monitoring/validate_capacity.py monitoring/capacity/capacity.yml
+
+      - name: Test the monitoring model, exporters and dashboard
+        run: python -m unittest discover -s monitoring/tests -p 'test_*.py'
+
+      - name: Check the Prometheus, Alertmanager and Grafana configuration
+        run: |
+          curl -fsSLo /tmp/prometheus.tar.gz \
+            https://github.com/prometheus/prometheus/releases/download/v3.14.0/prometheus-3.14.0.linux-amd64.tar.gz
+          curl -fsSLo /tmp/alertmanager.tar.gz \
+            https://github.com/prometheus/alertmanager/releases/download/v0.33.0/alertmanager-0.33.0.linux-amd64.tar.gz
+          tar -xzf /tmp/prometheus.tar.gz -C /tmp
+          tar -xzf /tmp/alertmanager.tar.gz -C /tmp
+          sudo install -m 0755 /tmp/prometheus-3.14.0.linux-amd64/promtool /usr/local/bin/promtool
+          sudo install -m 0755 /tmp/alertmanager-0.33.0.linux-amd64/amtool /usr/local/bin/amtool
+          bash monitoring/tests/test_monitoring_rules.sh
+
+      - name: Prove the accounting contract against the real PromQL engine
+        run: bash monitoring/tests/test_service_accounting.sh
+
+      - name: Prove what may and may not page somebody
+        run: bash monitoring/tests/test_alert_thresholds.sh
+
+      - name: Render core templates and validate the firewall
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq nftables
+          render_dir="$RUNNER_TEMP/remnawave-render"
+          mkdir -p "$render_dir"
+          ansible-playbook -i localhost, -c local ansible/tests/render_templates.yml \
+            -e render_output_dir="$render_dir"
+          sudo nft -c -f "$render_dir/remnawave-filter-test.nft"
+          sudo nft -c -f "$render_dir/remnawave-controller-test.nft"
+
+      - name: Run Ansible lint
+        run: ansible-lint
+
+  # Full lane: containers, stateful mocks and Molecule. Required for a pull
+  # request, skipped on intermediate pushes so the fast lane stays readable.
+  #
+  # It is three jobs and not one on purpose. These checks do not depend on each
+  # other, and as a single job the first failure hid every problem below it, so
+  # each red run revealed exactly one defect and cost a full round trip. Split,
+  # one run shows all of them at once. Nothing here is allowed to fail softly:
+  # there is no continue-on-error, and fail-fast is off only so that the other
+  # matrix legs still report.
+  panel:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install Ansible test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r ansible/requirements.txt
+          ansible-galaxy collection install -r ansible/collections/requirements.yml \
+            -p ansible/collections
+
+      - name: Verify Panel API idempotency and concurrency guards against the mock
+        run: |
+          bash ansible/tests/test_panel_idempotency.sh
+          bash ansible/tests/test_panel_bridge_idempotency.sh
+          bash ansible/tests/test_panel_errors.sh
+          bash ansible/tests/test_panel_entities.sh
+          bash ansible/tests/test_shared_profile_concurrency.sh
+
+      - name: Verify standalone acceptance resolves the Panel itself, read-only
+        run: bash ansible/tests/test_verify_standalone.sh
+
+      - name: Verify --check --diff is honest before, during and after reconciliation
+        run: bash ansible/tests/test_check_mode_panel.sh
+
+      - name: Verify the end-to-end probe is fail-closed and works
+        run: bash ansible/tests/test_tunnel_probe.sh
+
+      - name: Verify DNS reconciliation against the stateful mock registrar
+        run: bash ansible/tests/test_dns_idempotency.sh
+
+  nginx:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install Ansible test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r ansible/requirements.txt
+          ansible-galaxy collection install -r ansible/collections/requirements.yml \
+            -p ansible/collections
+
+      - name: Validate the rendered nginx configuration in the pinned image
+        run: bash ansible/tests/validate_nginx.sh
+
+  molecule:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    strategy:
+      # One role failing must not cancel the other: both answers in one run.
+      fail-fast: false
+      matrix:
+        include:
+          - {role: node_base, scenario: default}
+          - {role: remnawave_node, scenario: default}
+          - {role: node_monitoring, scenario: default}
+    name: molecule (${{ matrix.role }} / ${{ matrix.scenario }})
+    # Molecule writes its own ansible.cfg for the playbooks it runs, but the
+    # collections its driver requires are resolved by a runtime that reads only
+    # the process environment. Without this the scenario cannot see the
+    # collections installed above and pulls its own from galaxy.
+    env:
+      ANSIBLE_CONFIG: ${{ github.workspace }}/ansible.cfg
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install Ansible test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r ansible/requirements.txt
+          ansible-galaxy collection install -r ansible/collections/requirements.yml \
+            -p ansible/collections
+
+      - name: Test ${{ matrix.role }} on Debian 12, Debian 13 and Ubuntu 24.04
+        run: cd ansible/roles/${{ matrix.role }} && molecule test -s ${{ matrix.scenario }}

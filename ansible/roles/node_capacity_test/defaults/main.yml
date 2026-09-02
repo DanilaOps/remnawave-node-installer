@@ -1,0 +1,97 @@
+---
+# Auto-measured per-node capacity: run iperf3 from a new node to several Russian
+# endpoints, in both directions, several times, and turn the result into a rated
+# capacity the monitoring stack can count. Off unless a host asks for it with
+# capacity_auto_test: true.
+#
+# The arithmetic - median per city, maximum across cities, safety margin,
+# rounding, the minimum number of cities before a figure is trusted - is in
+# monitoring/iperf_capacity.py and is not repeated here; these are only its
+# knobs. The measurement itself is monitoring/iperf_runner.py, run on the node.
+
+# --- Lifecycle ---------------------------------------------------------------
+# Off by default. A host turns it on; nothing here runs otherwise.
+capacity_auto_test: false
+# A measured node is not retested on an ordinary re-run: the first good result is
+# reused and the install stays changed=0. Set this (or run measure_capacity.yml)
+# to force a fresh measurement. A retest that comes back inconclusive keeps the
+# previous good rating rather than destroying it.
+capacity_auto_retest: false
+# Whether a good result is recorded as the source of truth. True during install.
+# measure_capacity.yml sets it false for a measure-only dry run: iperf runs and
+# the summary is shown, but nothing is written and the next sync is unchanged.
+capacity_test_apply: true
+
+# --- How the test is run -----------------------------------------------------
+capacity_test_runs: 3                      # successful passes per city per direction
+capacity_test_duration_seconds: 10
+capacity_test_parallel_streams: 8
+capacity_test_retries: 1                   # extra attempts to top up a busy pass
+capacity_test_connect_timeout_seconds: 5   # TCP probe before a port is used
+capacity_test_run_timeout_seconds: 30      # hard cap on one iperf3 run
+# The ports a public iperf3 server commonly listens on; the runner probes them in
+# order and uses the first that answers.
+capacity_test_ports: [5201, 5202, 5203, 5204, 5205, 5206, 5207, 5208, 5209]
+
+# --- How a rating is derived -------------------------------------------------
+capacity_test_safety_factor: 0.90          # rate at 90% of the best stable figure
+capacity_test_round_down_mbps: 100         # then round DOWN to this step
+capacity_test_min_valid_cities: 2          # a direction needs this many cities to be trusted
+
+# --- Where results live (controller-side) ------------------------------------
+# The Ansible-side source of truth for a measured node. One file per node, read
+# by sync_capacity.yml, so the rating survives the next run without a retest and
+# is never lost by a sync. Carries the node's name, pool and figures plus
+# provenance - no address, no secret.
+capacity_measured_dir: /var/lib/august-capacity/measured
+# Raw per-run figures, kept for diagnostics. Trimmed, no giant JSON.
+capacity_test_raw_dir: /var/lib/august-capacity/raw
+
+# --- The endpoints -----------------------------------------------------------
+# Geographically spread Russian iperf3 servers, so the best real route to Russia
+# is found and one congested city does not lower the rating. The five cities and
+# their servers are the current set from the reference project
+# (github.com/itdoginfo/russian-iperf3-servers, speedtest.sh) - primary and one
+# fallback each - but they are named HERE, in the repo, and reached directly. No
+# remote script is fetched and piped to a shell at run time.
+#
+# Each city is tried primary first, then fallback; a host that does not answer on
+# any port is skipped, and if fewer than capacity_test_min_valid_cities cities
+# answer in a direction the node stays unmeasured rather than mis-rated - so a
+# stale entry degrades gracefully, it does not lie.
+#
+# PUBLIC iperf3 SERVERS COME AND GO. This is a working default, not a promise.
+# Override a single host with capacity_test_host_<city>[_fallback], or replace
+# the whole list with capacity_test_endpoints, in /etc/remnawave/fleet.yml or
+# group_vars - no change to the role.
+capacity_test_endpoints:
+  - city: Moscow
+    hosts:
+      - host: "{{ capacity_test_host_moscow | default('spd-rudp.hostkey.ru') }}"
+        ports: "{{ capacity_test_ports }}"
+      - host: "{{ capacity_test_host_moscow_fallback | default('st.tver.ertelecom.ru') }}"
+        ports: "{{ capacity_test_ports }}"
+  - city: SaintPetersburg
+    hosts:
+      - host: "{{ capacity_test_host_spb | default('st.spb.ertelecom.ru') }}"
+        ports: "{{ capacity_test_ports }}"
+      - host: "{{ capacity_test_host_spb_fallback | default('st.yar.ertelecom.ru') }}"
+        ports: "{{ capacity_test_ports }}"
+  - city: NizhnyNovgorod
+    hosts:
+      - host: "{{ capacity_test_host_nn | default('st.nn.ertelecom.ru') }}"
+        ports: "{{ capacity_test_ports }}"
+      - host: "{{ capacity_test_host_nn_fallback | default('speed-nn.vtt.net') }}"
+        ports: "{{ capacity_test_ports }}"
+  - city: Chelyabinsk
+    hosts:
+      - host: "{{ capacity_test_host_chelyabinsk | default('st.chel.ertelecom.ru') }}"
+        ports: "{{ capacity_test_ports }}"
+      - host: "{{ capacity_test_host_chelyabinsk_fallback | default('st.mgn.ertelecom.ru') }}"
+        ports: "{{ capacity_test_ports }}"
+  - city: Tyumen
+    hosts:
+      - host: "{{ capacity_test_host_tyumen | default('st.tmn.ertelecom.ru') }}"
+        ports: "{{ capacity_test_ports }}"
+      - host: "{{ capacity_test_host_tyumen_fallback | default('st.krsk.ertelecom.ru') }}"
+        ports: "{{ capacity_test_ports }}"

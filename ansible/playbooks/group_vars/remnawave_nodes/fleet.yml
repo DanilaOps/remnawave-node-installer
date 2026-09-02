@@ -1,0 +1,74 @@
+---
+# Fleet-wide policy and pinned versions: identical on every node, independent of
+# which inventory the run came from.
+#
+# These are group-scoped rather than declared under group_vars/all on purpose:
+# ansible_user and ansible_port must not leak onto localhost or onto the
+# controller playbook, which run in the same directory.
+
+# --- Connection --------------------------------------------------------------
+ansible_user: deployer
+ansible_port: 22
+node_role: direct
+node_ssh_allow_root_password: true
+
+# A freshly created VPS has no entry in known_hosts. Accepting the key on first
+# contact is reasonable for a brand new server and wrong for an existing one, so
+# it stays an explicit per-run decision (the first-run flag in Semaphore, or
+# -e bootstrap_trust_new_host_keys=true). A key that is already known and has
+# changed is always a failure, never a new trust decision.
+bootstrap_trust_new_host_keys: false
+
+# --- Reconciliation scope ----------------------------------------------------
+# install_node.yml writes to one shared Config Profile, so it reconciles one node
+# per run. A run that resolves to more than one host is refused unless this is
+# set on purpose; a fleet-wide reconcile then still runs strictly one at a time.
+node_allow_bulk: false
+
+# --- Runtime -----------------------------------------------------------------
+remnawave_node_image: ghcr.io/remnawave/node:3.3.2
+remnawave_node_port: 2222
+
+xray_version: 26.6.27
+xray_checksums:
+  x86_64: b3e5902d06d6282fe53cfa2fc426058b9aeaa429b2c812e20887cd47f26d08bf
+  aarch64: 13a251379bea366c2cf10363ad71e75734193d401f26f518bf0c25e5c8f8c931
+
+# --- SSH policy --------------------------------------------------------------
+# Fixed operational decision for this fleet: the SSH key is the primary way in,
+# and root with a password stays as the fallback that survives a wiped
+# authorized_keys file. The role default is the safe one (no password login) and
+# is deliberately left alone for anyone else using these roles; this fleet opts
+# in here, and node_base proves the effective sshd configuration afterwards.
+
+# --- DNS ---------------------------------------------------------------------
+# Registrar automation is off in the published defaults: it needs credentials in
+# the vault and the controller's address allow-listed at the registrar. Turn it
+# on in /etc/remnawave/fleet.yml.
+dns_provider: none
+# A second A record for the same name is reported, not guessed at.
+dns_prune_extra_records: false
+
+# --- Certificate -------------------------------------------------------------
+# http01 is answered from the webroot nginx already serves, so issuance and
+# renewal never take the decoy site down. auto proves the challenge path against
+# the staging CA before spending a production issuance on a brand new node.
+certificate_mode: http01
+certificate_acme_environment: auto
+
+# --- Verification ------------------------------------------------------------
+# Strict acceptance stays fail-closed: without a real end-to-end probe the run
+# fails rather than reporting a node nobody proved carries traffic. The built-in
+# probe needs two things once, ever: an Xray client binary on the controller and
+# the VLESS UUID of an existing panel user in vault_verify_probe_vless_uuid. See
+# ansible/README.md, "End-to-end probe". verify_tunnel_probe_command replaces the
+# built-in probe entirely when a deployment wants its own.
+verify_require_tunnel_probe: true
+verify_tunnel_probe_command: []
+verify_require_node_port_denied_probe: true
+verify_node_port_untrusted_probe_host: localhost
+
+bridge_spec:
+  enabled: false
+
+node_plugins: []

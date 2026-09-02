@@ -1,0 +1,75 @@
+---
+- name: Require at least one authorized key for the managed account
+  ansible.builtin.assert:
+    that:
+      - bootstrap_authorized_keys | length > 0
+      - bootstrap_authorized_keys | select('match', '^(ssh-|ecdsa-|sk-)') | list | length
+        == bootstrap_authorized_keys | length
+      - bootstrap_user is match('^[a-z_][a-z0-9_-]{0,31}$')
+    fail_msg: >-
+      bootstrap_authorized_keys must contain the controller's public key(s) in OpenSSH format.
+      Without a key this role would create an account nobody can use.
+
+- name: Ensure a Python interpreter exists for Ansible modules
+  ansible.builtin.raw: >-
+    test -x /usr/bin/python3 ||
+    (apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq python3)
+  register: bootstrap_python_install
+  changed_when: "'Setting up python3' in bootstrap_python_install.stdout"
+
+- name: Gather facts once Python is available
+  ansible.builtin.setup:
+
+- name: Validate the platform before changing anything
+  ansible.builtin.assert:
+    that:
+      - ansible_facts.distribution in bootstrap_supported_os
+      - ansible_facts.distribution_major_version in bootstrap_supported_os[ansible_facts.distribution]
+    fail_msg: >-
+      Supported systems are Debian 12, Debian 13 and Ubuntu 24.04;
+      this host reports {{ ansible_facts.distribution }} {{ ansible_facts.distribution_version }}.
+
+- name: Install the packages required for management
+  ansible.builtin.apt:
+    name: "{{ bootstrap_packages }}"
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+    lock_timeout: 300
+
+- name: Create the managed account
+  ansible.builtin.user:
+    name: "{{ bootstrap_user }}"
+    shell: "{{ bootstrap_user_shell }}"
+    groups: "{{ bootstrap_user_groups }}"
+    append: true
+    create_home: true
+    state: present
+
+- name: Authorize the controller keys for the managed account
+  ansible.posix.authorized_key:
+    user: "{{ bootstrap_user }}"
+    key: "{{ item }}"
+    state: present
+    exclusive: false
+  loop: "{{ bootstrap_authorized_keys }}"
+  loop_control:
+    label: "{{ item.split(' ')[0] }} {{ item.split(' ')[2] | default('') }}"
+
+- name: Grant password-less sudo to the managed account
+  ansible.builtin.copy:
+    content: "{{ bootstrap_user }} ALL=(ALL) NOPASSWD:ALL\n"
+    dest: "{{ bootstrap_sudoers_path }}"
+    owner: root
+    group: root
+    mode: "0440"
+    validate: /usr/sbin/visudo -cf %s
+
+- name: Report the account the next run must use
+  ansible.builtin.debug:
+    msg: >-
+      {{ inventory_hostname }} is ready for ansible_user={{ bootstrap_user }}.
+      sshd policy, firewall and hardening are applied later by node_base.
+  # Visible even when the play suppressed its output because a password was used:
+  # the operator still needs to see that the account exists.
+  no_log: false

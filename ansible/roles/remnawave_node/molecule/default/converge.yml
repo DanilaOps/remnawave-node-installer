@@ -1,0 +1,31 @@
+---
+- name: Converge pinned Xray installation
+  hosts: all
+  become: true
+  gather_facts: true
+  vars:
+    remnawave_node_dir: /opt/remnawave-node/remnanode
+    remnawave_state_dir: /opt/remnawave-node/state
+    xray_version: 26.6.27
+    xray_release_repository: XTLS/Xray-core
+    xray_assets:
+      x86_64: Xray-linux-64.zip
+      aarch64: Xray-linux-arm64-v8a.zip
+    xray_checksums:
+      x86_64: b3e5902d06d6282fe53cfa2fc426058b9aeaa429b2c812e20887cd47f26d08bf
+      aarch64: 13a251379bea366c2cf10363ad71e75734193d401f26f518bf0c25e5c8f8c931
+    xray_install_dir: "/opt/remnawave-node/remnanode/xray-core-{{ xray_version }}"
+    xray_binary_path: "{{ xray_install_dir }}/xray"
+    remnawave_desired_xray_config:
+      log:
+        loglevel: warning
+      inbounds: []
+      outbounds:
+        - tag: DIRECT
+          protocol: freedom
+  tasks:
+    - name: Run the real Xray task file
+      ansible.builtin.include_role:
+        name: remnawave_node
+        tasks_from: xray.yml
+

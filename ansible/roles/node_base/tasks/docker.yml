@@ -1,0 +1,76 @@
+---
+- name: Create the APT keyring directory
+  ansible.builtin.file:
+    path: /etc/apt/keyrings
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Install Docker repository signing key
+  ansible.builtin.get_url:
+    url: "https://download.docker.com/linux/{{ ansible_facts.distribution | lower }}/gpg"
+    dest: /etc/apt/keyrings/docker.asc
+    owner: root
+    group: root
+    mode: "0644"
+    force: false
+
+- name: Configure the official Docker APT repository
+  ansible.builtin.apt_repository:
+    repo: >-
+      deb [arch={{ 'amd64' if ansible_facts.architecture == 'x86_64' else 'arm64' }}
+      signed-by=/etc/apt/keyrings/docker.asc]
+      https://download.docker.com/linux/{{ ansible_facts.distribution | lower }}
+      {{ ansible_facts.distribution_release }} {{ docker_apt_channel }}
+    filename: docker
+    state: present
+    update_cache: true
+
+- name: Build the versioned Docker package list
+  ansible.builtin.set_fact:
+    node_base_docker_packages: >-
+      {{ docker_packages if docker_package_version | length == 0 else
+         docker_packages | map('regex_replace', '^(docker-ce|docker-ce-cli)$', '\1=' ~ docker_package_version) | list }}
+
+- name: Install Docker Engine and Compose V2
+  ansible.builtin.apt:
+    name: "{{ node_base_docker_packages }}"
+    state: present
+    allow_downgrade: false
+    lock_timeout: 300
+
+- name: Configure Docker daemon defaults
+  ansible.builtin.copy:
+    content: "{{ docker_daemon_options | to_nice_json }}\n"
+    dest: /etc/docker/daemon.json
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart Docker
+
+- name: Enable Docker
+  ansible.builtin.systemd_service:
+    name: docker
+    state: started
+    enabled: true
+  # Docker comes from the package this run installs; in a dry-run nothing was
+  # installed, so systemd knows no docker.service yet.
+  when: not ansible_check_mode or 'docker.service' in node_base_systemd_units
+
+- name: Report the Docker unit a dry-run would enable
+  ansible.builtin.debug:
+    msg: Would install Docker Engine and Compose V2, then start and enable docker.service.
+  when:
+    - ansible_check_mode
+    - "'docker.service' not in node_base_systemd_units"
+
+- name: Flush Docker handler before dependent roles
+  ansible.builtin.meta: flush_handlers
+
+- name: Verify Docker Compose V2
+  ansible.builtin.command:
+    argv: [docker, compose, version]
+  register: node_base_compose_version
+  changed_when: false
+

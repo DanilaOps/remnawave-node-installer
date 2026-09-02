@@ -1,0 +1,20 @@
+# Pinned on purpose. The controller, Semaphore and CI all install from this one
+# file, so a floating range means the controller and the pipeline can end up on
+# different dependency graphs on different days - which is how a green pipeline
+# starts hiding a broken controller. Bump these deliberately, together, and let
+# CI prove the new set before it reaches a controller.
+#
+# molecule-plugins is the version that matters most here: everything before
+# 25.8.12 ships docker driver playbooks whose conditionals evaluate to a string
+# ("when: (lookup('env', 'HOME'))" in both create.yml and destroy.yml), which
+# ansible-core rejects from 2.19 onwards. 26.7.15 states them as
+# "lookup('env', 'HOME') is truthy" and is the version this set is tested with.
+ansible-core==2.20.8
+ansible-lint==25.12.2
+yamllint==1.38.0
+docker==7.2.0
+jmespath==1.1.0
+netaddr==1.3.0
+molecule==25.12.0
+molecule-plugins[docker]==26.7.15
+dnspython==2.8.0

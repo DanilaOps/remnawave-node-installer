@@ -1,0 +1,87 @@
+---
+# Render the two files that decide whether a human can still log in to a node:
+# the nftables ruleset and the fail2ban jail. Rendered from the real templates,
+# with management_cidrs produced by the real resolution task file rather than
+# hand-written, so what is checked afterwards is the production path.
+#
+#   ansible-playbook -i localhost, -c local ansible/tests/render_ssh_policy.yml \
+#     -e render_output_dir=/tmp/ssh-policy
+#
+# Four scenarios, one directory each:
+#   operator/       controller + one operator IPv4 /32
+#   controller/     controller only (management_cidrs_extra empty)
+#   dual-stack/     controller + an IPv4 /32 and an IPv6 /128
+#   public-ssh/     controller + 0.0.0.0/0 + ::/0 + one operator /32, which is
+#                   the live shape of a node whose SSH is deliberately open to
+#                   the internet. The firewall must honour the /0; the fail2ban
+#                   jail must not, because ignoreip 0.0.0.0/0 switches the jail
+#                   off for every source - on the one kind of node that is
+#                   actually exposed. See the same scenario in
+#                   test_ssh_access_policy.sh, section 6.
+- name: Render the SSH access policy
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  become: false
+  vars:
+    # The controller's address as sshd would report it. A documentation address
+    # is fine here: the resolution path takes it from the live connection and
+    # never judges it. Only management_cidrs_extra, which a human types, is
+    # checked against the documentation ranges - by preflight_controller.yml,
+    # covered in ansible/tests/preflight_guards.yml.
+    observed_controller: 198.51.100.20
+    # Deliberately not documentation addresses: controller-side preflight
+    # refuses those in management_cidrs_extra, and this playbook renders what a
+    # real deployment would. RFC 6598 shared space and a ULA stand in for an
+    # operator's own public v4 and v6.
+    operator_v4: 100.64.0.7/32
+    operator_v6: fd00:2026::7/128
+    scenarios:
+      - name: operator
+        extra: ["{{ operator_v4 }}"]
+      - name: controller
+        extra: []
+      - name: dual-stack
+        extra: ["{{ operator_v4 }}", "{{ operator_v6 }}"]
+      # A node whose SSH is open to the internet on purpose, with a specific
+      # trusted address alongside the two default routes. Both halves matter:
+      # the /0 has to reach the ruleset, and the /32 has to survive the filter
+      # the jail applies.
+      - name: public-ssh
+        extra: ["0.0.0.0/0", "::/0", "{{ operator_v4 }}"]
+    # Everything else the ruleset needs, at its production shape.
+    node_firewall_table: remnawave_ssh_policy_test
+    remnawave_panel_cidrs: [198.51.100.30/32]
+    remnawave_node_port: 2222
+    node_public_tcp_ports: [80, 443]
+    node_public_udp_ports: []
+    node_monitoring_enabled: false
+    monitoring_scrape_cidrs: []
+    node_monitoring_exporter_port: 9100
+    bridge_spec:
+      enabled: false
+
+  tasks:
+    - name: Make a workspace for the rendered files
+      # A fixed name in /tmp collides between users on one machine. CI passes
+      # render_output_dir explicitly.
+      ansible.builtin.tempfile:
+        state: directory
+        suffix: august-ssh-policy
+      register: render_workspace
+      when: render_output_dir | default('') | length == 0
+
+    - name: Remember where the rendered files go
+      ansible.builtin.set_fact:
+        render_dir: "{{ render_output_dir | default(render_workspace.path, true) }}"
+
+    - name: Render every scenario
+      ansible.builtin.include_tasks: render_ssh_policy_scenario.yml
+      loop: "{{ scenarios }}"
+      loop_control:
+        loop_var: scenario
+        label: "{{ scenario.name }}"
+
+    - name: Report the workspace
+      ansible.builtin.debug:
+        msg: "Rendered the SSH access policy into {{ render_dir }}"

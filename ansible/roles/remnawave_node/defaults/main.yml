@@ -1,0 +1,111 @@
+---
+remnawave_install_root: /opt/remnawave-node
+remnawave_compose_path: "{{ remnawave_install_root }}/compose.yml"
+remnawave_node_dir: "{{ remnawave_install_root }}/remnanode"
+remnawave_node_env_path: "{{ remnawave_node_dir }}/.env"
+remnawave_nginx_dir: "{{ remnawave_install_root }}/nginx"
+remnawave_state_dir: "{{ remnawave_install_root }}/state"
+remnawave_logs_dir: /var/log/remnanode
+remnawave_nginx_logs_dir: /var/log/nginx-selfsteal
+remnawave_geodata_dir: "{{ remnawave_install_root }}/geodata"
+
+remnawave_node_image: ghcr.io/remnawave/node:3.3.2
+remnawave_node_container: remnanode
+remnawave_node_port: 2222
+remnawave_nginx_image: nginx:1.29.3-alpine
+remnawave_nginx_container: nginx-selfsteal
+# The user the pinned nginx image runs as. Overridable so the rendered config can
+# be validated outside that image.
+remnawave_nginx_user: nginx
+
+xray_version: 26.6.27
+xray_release_repository: XTLS/Xray-core
+xray_assets:
+  x86_64: Xray-linux-64.zip
+  aarch64: Xray-linux-arm64-v8a.zip
+xray_checksums:
+  x86_64: b3e5902d06d6282fe53cfa2fc426058b9aeaa429b2c812e20887cd47f26d08bf
+  aarch64: 13a251379bea366c2cf10363ad71e75734193d401f26f518bf0c25e5c8f8c931
+xray_install_dir: "{{ remnawave_node_dir }}/xray-core-{{ xray_version }}"
+xray_binary_path: "{{ xray_install_dir }}/xray"
+
+selfsteal_domain: ""
+selfsteal_local_port: 9443
+selfsteal_socket: ""
+
+# The decoy site is generated per node from a stable seed: the same node keeps a
+# byte-identical site forever, different nodes get visibly different brand, copy,
+# layout, palette, class names, asset names and response size. Bump
+# selfsteal_decoy_generation to reroll the whole fleet; set selfsteal_decoy_salt
+# on one node to reroll only that node (for example after it was blocked).
+selfsteal_decoy_seed: "{{ node_id }}"
+selfsteal_decoy_salt: ""
+selfsteal_decoy_generation: 1
+remnawave_decoy_seed: >-
+  {{ selfsteal_decoy_seed }}|{{ selfsteal_decoy_salt }}|{{ selfsteal_decoy_generation }}
+# Generated content is a pure function of the seed, so overwriting it is a no-op
+# on every rerun. Set to false only to preserve hand edits made on the node.
+selfsteal_refresh_content: true
+selfsteal_virtual_hosts:
+  - name: primary
+    server_names: ["{{ selfsteal_domain }}"]
+    root: "{{ remnawave_install_root }}/selfsteal/html/primary"
+    title: Cloud Infrastructure
+
+certificate_enabled: true
+certificate_mode: http01
+certificate_name: "{{ selfsteal_domain }}"
+# Directory nginx reads the certificate from. Certbot always writes to
+# /etc/letsencrypt/live/<cert-name>; this variable exists so the rendered nginx
+# configuration can be validated against a throwaway certificate.
+certificate_live_dir: "/etc/letsencrypt/live/{{ certificate_name }}"
+certificate_renew_before_days: 30
+certificate_dns_propagation_seconds: 60
+acme_email: ""
+cloudflare_token: ""
+cloudflare_credentials_path: /etc/letsencrypt/cloudflare.ini
+
+# ACME environment.
+#
+#   auto (default) - a node with no certificate is issued a staging certificate
+#     first and a production one immediately after. The staging attempt costs
+#     nothing and proves DNS, port 80 and the challenge path actually work, so a
+#     misconfigured node cannot burn the production failure limit (5 per hostname
+#     per hour) on its first install. A node that already holds a valid
+#     production certificate issues nothing.
+#   staging / production - force one environment, for development or recovery.
+#
+# The environment of the installed certificate is detected from its issuer, so a
+# switch always produces a clean re-issue and a staging certificate can never be
+# left in place on a production node.
+certificate_acme_environment: auto
+certificate_acme_directories:
+  staging: https://acme-staging-v02.api.letsencrypt.org/directory
+  production: https://acme-v02.api.letsencrypt.org/directory
+certificate_acme_directory: ""
+# The environment the node must end up in, and therefore what the renewal timer
+# renews against.
+certificate_acme_target_environment: >-
+  {{ 'production' if certificate_acme_environment == 'auto' else certificate_acme_environment }}
+remnawave_acme_directory: >-
+  {{ certificate_acme_directory
+     if certificate_acme_directory | length > 0
+     else certificate_acme_directories[certificate_acme_target_environment | trim] }}
+certificate_force_reissue: false
+
+# HTTP-01 is answered from this directory, which nginx serves at
+# /.well-known/acme-challenge/. Certbot writes here while nginx keeps running,
+# so issuance and renewal never take the decoy site offline.
+certificate_webroot_path: "{{ remnawave_install_root }}/acme-webroot"
+
+geodata_enabled: false
+geodata_update_enabled: false
+geodata_update_calendar: "*-*-* 03:00:00"
+geodata_files: []
+
+node_plugins: []
+remnawave_maintenance_enabled: true
+remnawave_management_cli_enabled: true
+remnawave_disk_warning_percent: 85
+remnawave_disk_check_calendar: hourly
+remnawave_logrotate_retention: 14

@@ -1,0 +1,232 @@
+---
+# Measure a new node's capacity with iperf3 and record it as the Ansible-side
+# source of truth, so the operator never types a figure. Gated by the caller,
+# and re-checked here, so including the role unconditionally is safe.
+- name: Auto-measure this node's capacity
+  when: capacity_auto_test | default(false) | bool
+  vars:
+    capacity_repo_root: "{{ playbook_dir }}/../.."
+    capacity_node_overlay: "{{ capacity_measured_dir }}/{{ node_name }}.yml"
+  block:
+    # --- What already exists (controller-side) -------------------------------
+    - name: Look for a rating already measured for this node
+      ansible.builtin.stat:
+        path: "{{ capacity_node_overlay }}"
+      delegate_to: localhost
+      become: false
+      register: capacity_overlay_stat
+
+    - name: Read the existing rating, if any
+      ansible.builtin.slurp:
+        src: "{{ capacity_node_overlay }}"
+      delegate_to: localhost
+      become: false
+      register: capacity_overlay_raw
+      when: capacity_overlay_stat.stat.exists
+
+    - name: Understand the existing rating and decide whether to measure
+      ansible.builtin.set_fact:
+        capacity_existing: "{{ (capacity_overlay_raw.content | b64decode | from_yaml) if capacity_overlay_stat.stat.exists else {} }}"
+        capacity_measure_now: >-
+          {{ (capacity_auto_retest | default(false) | bool)
+             or not capacity_overlay_stat.stat.exists
+             or not ((capacity_overlay_raw.content | b64decode | from_yaml).certain | default(false) | bool
+                     if capacity_overlay_stat.stat.exists else false) }}
+
+    # --- Check mode: never generate traffic ----------------------------------
+    - name: Report what a check-mode run would do
+      ansible.builtin.debug:
+        msg: >-
+          capacity auto-test for {{ node_name }} would
+          {{ 'run a measurement' if capacity_measure_now else 'be skipped and reuse the existing rating' }}.
+          No iperf3 traffic is generated in check mode.
+      when: ansible_check_mode
+
+    # --- Reuse (idempotent path) --------------------------------------------
+    - name: Reuse the rating already measured
+      ansible.builtin.debug:
+        msg: >-
+          Reusing measured capacity for {{ node_name }}:
+          down {{ capacity_existing.download_mbps | default('?') }} /
+          up {{ capacity_existing.upload_mbps | default('?') }} Mbit/s
+          (source {{ capacity_existing.source | default('?') }},
+          measured {{ capacity_existing.measured_at | default('?') }}).
+      when:
+        - not ansible_check_mode
+        - not capacity_measure_now
+
+    # --- Measure -------------------------------------------------------------
+    - name: Measure the capacity
+      when:
+        - not ansible_check_mode
+        - capacity_measure_now
+      block:
+        - name: Ensure iperf3 is installed on the node
+          ansible.builtin.apt:
+            name: iperf3
+            state: present
+            update_cache: true
+            cache_valid_time: 3600
+
+        - name: A staging directory for the measurement scripts on the node
+          ansible.builtin.file:
+            path: /run/august-capacity
+            state: directory
+            mode: "0700"
+
+        - name: Stage the measurement scripts on the node
+          ansible.builtin.copy:
+            src: "{{ capacity_repo_root }}/monitoring/{{ item }}"
+            dest: "/run/august-capacity/{{ item }}"
+            mode: "0755"
+          loop:
+            - iperf_capacity.py
+            - iperf_runner.py
+
+        - name: Write the endpoints and parameters for the runner
+          ansible.builtin.copy:
+            content: >-
+              {{ {
+                   'runs': capacity_test_runs,
+                   'duration_seconds': capacity_test_duration_seconds,
+                   'streams': capacity_test_parallel_streams,
+                   'retries': capacity_test_retries,
+                   'connect_timeout_seconds': capacity_test_connect_timeout_seconds,
+                   'run_timeout_seconds': capacity_test_run_timeout_seconds,
+                   'endpoints': capacity_test_endpoints,
+                 } | to_json }}
+            dest: /run/august-capacity/config.json
+            mode: "0600"
+
+        - name: Run iperf3 against the Russian endpoints on the node's own path
+          # Measures the existing network path. It changes no routing, no Xray,
+          # no firewall and no sysctl - it only opens outbound iperf3 sessions.
+          # The runner bounds itself with per-run timeouts and an attempt budget.
+          ansible.builtin.command:
+            argv:
+              - python3
+              - /run/august-capacity/iperf_runner.py
+              - --config
+              - /run/august-capacity/config.json
+              - --output
+              - /run/august-capacity/measurements.json
+          register: capacity_run
+          changed_when: false
+
+        - name: Bring the raw measurements back to the controller
+          ansible.builtin.slurp:
+            src: /run/august-capacity/measurements.json
+          register: capacity_measurements_raw
+
+        - name: Remove the staging directory from the node
+          ansible.builtin.file:
+            path: /run/august-capacity
+            state: absent
+
+        - name: Turn the measurements into a rating (controller-side)
+          ansible.builtin.command:
+            argv:
+              - python3
+              - "{{ capacity_repo_root }}/monitoring/iperf_capacity.py"
+              - --measurements
+              - "-"
+              - --node
+              - "{{ node_name }}"
+              - --safety-factor
+              - "{{ capacity_test_safety_factor }}"
+              - --round-down-mbps
+              - "{{ capacity_test_round_down_mbps }}"
+              - --min-valid-cities
+              - "{{ capacity_test_min_valid_cities }}"
+            stdin: "{{ capacity_measurements_raw.content | b64decode }}"
+          delegate_to: localhost
+          become: false
+          register: capacity_analysis
+          changed_when: false
+
+        - name: Read the rating and show how it was reached
+          ansible.builtin.set_fact:
+            capacity_result: "{{ capacity_analysis.stdout | from_json }}"
+
+        - name: Show the per-city summary
+          ansible.builtin.debug:
+            msg: "{{ capacity_analysis.stderr.split('\n') }}"
+
+        # --- Persist a trustworthy result, atomically ------------------------
+        - name: Note a measure-only run that is not being recorded
+          ansible.builtin.debug:
+            msg: >-
+              {{ node_name }}: measured down {{ capacity_result.download_mbps }} /
+              up {{ capacity_result.upload_mbps }} Mbit/s. Not recorded
+              (capacity_test_apply=false); nothing was changed.
+          when:
+            - capacity_result.certain | bool
+            - not (capacity_test_apply | default(true) | bool)
+
+        - name: Record a measured rating
+          when:
+            - capacity_result.certain | bool
+            - capacity_test_apply | default(true) | bool
+          delegate_to: localhost
+          become: true
+          block:
+            - name: Stamp the measurement once
+              ansible.builtin.set_fact:
+                capacity_measured_at: "{{ lookup('pipe', 'date -u +%Y-%m-%dT%H:%M:%SZ') }}"
+
+            - name: Ensure the measured and raw directories exist
+              ansible.builtin.file:
+                path: "{{ item }}"
+                state: directory
+                mode: "0755"
+              loop:
+                - "{{ capacity_measured_dir }}"
+                - "{{ capacity_test_raw_dir }}"
+
+            - name: Write the measured rating (atomic; the previous file is only replaced by a good one)
+              ansible.builtin.copy:
+                content: |
+                  ---
+                  # GENERATED by the capacity auto-test - do not edit.
+                  # Ansible-side source of truth for {{ node_name }}'s measured capacity.
+                  # sync_capacity.yml reads name/pool and the two figures from here; the
+                  # source and timestamp are provenance. No address, no secret.
+                  name: {{ node_name }}
+                  pool: {{ node_capacity_pool }}
+                  download_mbps: {{ capacity_result.download_mbps }}
+                  upload_mbps: {{ capacity_result.upload_mbps }}
+                  certain: true
+                  source: auto_iperf
+                  measured_at: "{{ capacity_measured_at }}"
+                dest: "{{ capacity_node_overlay }}"
+                mode: "0644"
+              register: capacity_overlay_written
+
+            - name: Keep the raw per-run figures for diagnostics
+              ansible.builtin.copy:
+                content: >-
+                  {{ {
+                       'node': node_name,
+                       'measured_at': capacity_measured_at,
+                       'cities': (capacity_measurements_raw.content | b64decode | from_json),
+                       'result': capacity_result,
+                     } | to_nice_json }}
+                dest: "{{ capacity_test_raw_dir }}/{{ node_name }}.json"
+                mode: "0644"
+
+            - name: Say what was recorded
+              ansible.builtin.debug:
+                msg: >-
+                  {{ node_name }}: measured capacity down {{ capacity_result.download_mbps }} /
+                  up {{ capacity_result.upload_mbps }} Mbit/s, capacity_certain=true.
+
+        - name: Explain an inconclusive result without destroying a good one
+          ansible.builtin.debug:
+            msg: >-
+              Capacity auto-test inconclusive for {{ node_name }}
+              (valid cities: download {{ capacity_result.valid_cities.download }},
+              upload {{ capacity_result.valid_cities.upload }}, need {{ capacity_test_min_valid_cities }}).
+              Node installed;
+              {{ 'the previous measured rating was kept.' if capacity_overlay_stat.stat.exists
+                 else 'capacity remains unmeasured - no rating was invented.' }}
+          when: not (capacity_result.certain | bool)

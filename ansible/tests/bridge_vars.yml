@@ -1,0 +1,9 @@
+---
+bridge_spec:
+  enabled: true
+  id: bridge-mock-01
+  user: bridge_mock_01
+  tag: BRIDGE_MOCK_01
+  port: 8388
+  method: 2022-blake3-aes-128-gcm
+  entry_address: 198.51.100.10

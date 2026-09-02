@@ -1,0 +1,7 @@
+[sshd]
+enabled = true
+backend = systemd
+port = ssh
+maxretry = {{ controller_fail2ban_maxretry }}
+bantime = {{ controller_fail2ban_bantime }}
+findtime = 10m

@@ -1,0 +1,41 @@
+#!/bin/sh
+set -eu
+
+# Renewal never stops nginx: HTTP-01 is answered from the webroot that nginx
+# already serves at /.well-known/acme-challenge/, so the decoy site stays up.
+certificate_name={{ certificate_name | quote }}
+fullchain="/etc/letsencrypt/live/${certificate_name}/fullchain.pem"
+renew_before_seconds=$(({{ certificate_renew_before_days | int }} * 86400))
+nginx_container={{ remnawave_nginx_container | quote }}
+webroot={{ certificate_webroot_path | quote }}
+acme_directory={{ remnawave_acme_directory | quote }}
+
+if [ ! -s "${fullchain}" ]; then
+  echo "Certificate ${certificate_name} does not exist" >&2
+  exit 1
+fi
+
+# Stay idle while the certificate is outside the configured renewal window.
+if /usr/bin/openssl x509 -checkend "${renew_before_seconds}" -noout -in "${fullchain}"; then
+  exit 0
+fi
+
+before_hash=$(/usr/bin/sha256sum "${fullchain}" | /usr/bin/cut -d' ' -f1)
+
+{% if certificate_mode == 'http01' %}
+mkdir -p "${webroot}/.well-known/acme-challenge"
+/usr/bin/certbot renew --cert-name "${certificate_name}" --quiet \
+  --server "${acme_directory}" \
+  --webroot --webroot-path "${webroot}"
+{% else %}
+/usr/bin/certbot renew --cert-name "${certificate_name}" --quiet \
+  --server "${acme_directory}"
+{% endif %}
+
+after_hash=$(/usr/bin/sha256sum "${fullchain}" | /usr/bin/cut -d' ' -f1)
+
+if [ "${before_hash}" != "${after_hash}" ]; then
+  if /usr/bin/docker inspect --format='{% raw %}{{.State.Running}}{% endraw %}' "${nginx_container}" 2>/dev/null | /usr/bin/grep -qx true; then
+    /usr/bin/docker exec "${nginx_container}" nginx -s reload
+  fi
+fi

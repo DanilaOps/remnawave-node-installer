@@ -1,0 +1,18 @@
+{% set f = decoy.favicon %}
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img">
+{% if f.shape == 'circle' %}
+  <circle cx="32" cy="32" r="30" fill="hsl({{ f.hue }}, 62%, 46%)"/>
+{% elif f.shape == 'hex' %}
+  <polygon points="32,3 58,18 58,46 32,61 6,46 6,18" fill="hsl({{ f.hue }}, 62%, 46%)"/>
+{% elif f.shape == 'square' %}
+  <rect width="64" height="64" fill="hsl({{ f.hue }}, 62%, 46%)"/>
+{% else %}
+  <rect width="64" height="64" rx="14" fill="hsl({{ f.hue }}, 62%, 46%)"/>
+{% endif %}
+{% if f.show_letter %}
+  <text x="32" y="43" font-family="system-ui, sans-serif" font-size="34" font-weight="700"
+        text-anchor="middle" fill="hsl({{ (f.hue + 180) % 360 }}, 70%, 96%)">{{ f.letter }}</text>
+{% else %}
+  <circle cx="32" cy="32" r="12" fill="hsl({{ (f.hue + 40) % 360 }}, 70%, 92%)"/>
+{% endif %}
+</svg>

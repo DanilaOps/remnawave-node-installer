@@ -1,0 +1,45 @@
+---
+argument_specs:
+  main:
+    short_description: Prepare a Remnawave VPS, Docker and its host firewall
+    options:
+      node_id:
+        type: str
+        required: true
+      node_name:
+        type: str
+        required: true
+      node_public_ip:
+        type: str
+        required: true
+      node_country:
+        type: str
+        required: true
+      selfsteal_domain:
+        type: str
+        required: true
+      remnawave_panel_url:
+        type: str
+        required: true
+      remnawave_panel_token:
+        type: str
+        required: true
+      remnawave_node_port:
+        type: int
+        required: true
+      management_cidrs:
+        type: list
+        elements: str
+        required: true
+      remnawave_panel_cidrs:
+        type: list
+        elements: str
+        required: true
+      bridge_spec:
+        type: dict
+      node_firewall_enabled:
+        type: bool
+      node_hardening_enabled:
+        type: bool
+      node_ssh_allow_root_password:
+        type: bool

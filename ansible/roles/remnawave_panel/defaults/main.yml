@@ -1,0 +1,91 @@
+---
+remnawave_panel_validate_certs: true
+remnawave_api_timeout: 60
+remnawave_api_retries: 3
+remnawave_api_delay: 3
+remnawave_adopt_existing_profile: false
+remnawave_validate_xray_profile: true
+remnawave_secret_key_override: ""
+remnawave_node_env_path: "{{ remnawave_node_dir | default('/opt/remnawave-node/remnanode') }}/.env"
+# Who owns the file that holds the node's SECRET_KEY. root on a node, and the
+# role is written for a node - these exist so that a run against something that
+# is not a node (the mock-panel tests, which reconcile the Panel from an
+# unprivileged account and have no node at all) can own its own scratch copy
+# instead of demanding an ownership it cannot take. Production never sets them.
+remnawave_node_identity_owner: root
+remnawave_node_identity_group: root
+# Directories the whole system shares, which must never become the 0700
+# single-owner identity directory. Only the roots themselves: a directory *under*
+# any of them is a fine place for it.
+remnawave_node_identity_forbidden_dirs:
+  - /
+  - /tmp
+  - /var/tmp
+  - /dev/shm
+  - /run
+  - /home
+  - /root
+  - /etc
+  - /usr
+  - /var
+  - /opt
+remnawave_rotate_node_secret_key: false
+
+# One shared Config Profile carries the Xray JSON (including routing) that every
+# published Host depends on. Nodes add their own inbound to it instead of each
+# node owning a private profile.
+config_profile_mode: shared
+config_profile_create: false
+config_profile_require_routing: true
+inbound_prune_tags: []
+# Inbound protocols the panel strips per node before it pushes a config
+# (MANAGED_CLIENT_PROTOCOLS in the panel), so a node never receives a neighbour's
+# Reality key. An inbound of any other protocol reaches every node in full, so
+# the shared profile refuses to carry one unless its tag is listed here.
+shared_profile_managed_protocols: [vless, trojan, shadowsocks, hysteria]
+shared_profile_allowed_unmanaged_inbound_tags: []
+profile_uuid: ""
+# No default name on purpose. A Config Profile is named after the node that runs
+# it, and only the caller knows that; the role asserts that one of profile_name
+# and profile_uuid is set rather than inventing a name that would create a second
+# profile beside the real one.
+profile_name: ""
+inbound_specs:
+  - tag: "{{ node_name | upper | regex_replace('[^A-Z0-9_]', '_') }}_REALITY"
+    port: 443
+    network: raw
+
+host_specs: []
+# The Xray JSON template a published Host carries: a Subscription Template of
+# type XRAY_JSON (/api/subscription-templates), which is what a client receives -
+# not the Config Profile above, which is what the node runs. Empty means the role
+# does not manage the link and leaves whatever the panel holds.
+xray_json_template_name: ""
+
+internal_squad_uuid: ""
+internal_squad_name: ""
+internal_squad_create: true
+
+reality_private_key: ""
+reality_short_ids: []
+reality_rotate_keys: false
+reality_xver: 1
+reality_fingerprint: firefox
+selfsteal_local_port: 9443
+selfsteal_socket: ""
+xhttp_path: /api/v1/update
+xhttp_extra_params:
+  noSSEHeader: true
+  xPaddingBytes: 100-1000
+  scMaxBufferedPosts: 30
+  scMaxEachPostBytes: 1000000
+  scStreamUpServerSecs: 20-80
+
+bridge_spec:
+  enabled: false
+bridge_secret: ""
+bridge_user_expire_at: "2125-01-01T00:00:00Z"
+
+remnawave_node_image: ghcr.io/remnawave/node:3.3.2
+remnawave_node_port: 2222
+remnawave_profile_validation_path: "/run/remnawave-{{ node_id }}-profile.json"

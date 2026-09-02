@@ -1,0 +1,363 @@
+---
+- name: Render and validate core templates locally
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  become: false
+  vars:
+    node_name: DE-01
+    node_id: de_01
+    selfsteal_domain: node-de-01.example.com
+    selfsteal_local_port: 9443
+    selfsteal_socket: ""
+    reality_xver: 1
+    remnawave_reality_private_key: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+    remnawave_reality_short_ids: ["0011223344556677"]
+    inbound_specs:
+      - tag: DE_01_REALITY
+        port: 443
+        network: raw
+    xhttp_path: /api/v1/update
+    xhttp_extra_params: {}
+    bridge_spec:
+      enabled: false
+    remnawave_install_root: /opt/remnawave-node
+    remnawave_node_dir: /opt/remnawave-node/remnanode
+    remnawave_node_env_path: /opt/remnawave-node/remnanode/.env
+    remnawave_node_image: ghcr.io/remnawave/node:3.3.2
+    remnawave_node_container: remnanode
+    remnawave_nginx_image: nginx:1.29.3-alpine
+    remnawave_nginx_container: nginx-selfsteal
+    remnawave_logs_dir: /var/log/remnanode
+    remnawave_nginx_logs_dir: /var/log/nginx-selfsteal
+    remnawave_nginx_dir: /opt/remnawave-node/nginx
+    remnawave_geodata_dir: /opt/remnawave-node/geodata
+    remnawave_node_secret_key: test-secret
+    remnawave_node_port: 2222
+    xray_binary_path: /opt/remnawave-node/remnanode/xray-core-26.6.27/xray
+    node_plugins: []
+    geodata_enabled: false
+    geodata_files: []
+    certificate_name: node-de-01.example.com
+    certificate_mode: http01
+    certificate_renew_before_days: 30
+    certificate_webroot_path: /opt/remnawave-node/acme-webroot
+    remnawave_acme_directory: https://acme-v02.api.letsencrypt.org/directory
+    node_firewall_table: remnawave_filter_test
+    management_cidrs: [203.0.113.1/32]
+    remnawave_panel_cidrs: [203.0.113.2/32]
+    node_public_tcp_ports: [80, 443]
+    node_public_udp_ports: []
+    selfsteal_virtual_hosts:
+      - name: primary
+        server_names: [node-de-01.example.com]
+        root: /opt/remnawave-node/selfsteal/html/primary
+        title: Cloud Infrastructure
+    certificate_live_dir: /etc/letsencrypt/live/node-de-01.example.com
+    remnawave_nginx_user: nginx
+    remnawave_decoy_seed: de_01||1
+    remnawave_decoy_profiles:
+      primary: "{{ 'de_01||1' | remnawave_decoy_profile('primary') }}"
+  tasks:
+    - name: Make a workspace for the rendered files
+      # Fixed names straight in /tmp collide: two runs by different users on one
+      # machine fight over the same file, and the loser fails on a rename it is
+      # not permitted to make. CI passes render_output_dir explicitly so the
+      # workflow knows where to find the rulesets it validates.
+      ansible.builtin.tempfile:
+        state: directory
+        suffix: remnawave-render
+      register: render_workspace
+      when: render_output_dir | default('') | length == 0
+
+    - name: Remember where the rendered files go
+      ansible.builtin.set_fact:
+        render_dir: "{{ render_output_dir | default(render_workspace.path, true) }}"
+
+    - name: Report the workspace
+      ansible.builtin.debug:
+        msg: "Rendered files: {{ render_dir }}"
+
+    - name: Render Xray profile into a fact
+      ansible.builtin.set_fact:
+        rendered_xray: >-
+          {{ lookup('template', playbook_dir ~ '/../roles/remnawave_panel/templates/xray-config.json.j2') | from_json }}
+      no_log: true
+
+    - name: Validate Xray invariants
+      ansible.builtin.assert:
+        that:
+          - rendered_xray.inbounds[0].port == 443
+          - rendered_xray.inbounds[0].streamSettings.network == 'raw'
+          - rendered_xray.inbounds[0].streamSettings.security == 'reality'
+          - rendered_xray.inbounds[0].streamSettings.realitySettings.target == '127.0.0.1:9443'
+          - rendered_xray.inbounds[0].settings.clients | length == 0
+
+    - name: Render the inbound array for every supported transport
+      ansible.builtin.set_fact:
+        rendered_transports: >-
+          {{ lookup('template', playbook_dir ~ '/../roles/remnawave_panel/templates/inbounds.json.j2')
+             | from_json }}
+      vars:
+        inbound_specs:
+          - tag: DE_01_REALITY
+            port: 443
+            network: raw
+          - tag: DE_01_XHTTP
+            port: 8443
+            network: xhttp
+          - tag: DE_01_GRPC
+            port: 9444
+            network: grpc-tls
+            service_name: grpc
+      no_log: true
+
+    - name: Validate transport-specific invariants
+      ansible.builtin.assert:
+        that:
+          - rendered_transports | length == 3
+          - rendered_transports[0].streamSettings.network == 'raw'
+          - rendered_transports[1].streamSettings.network == 'xhttp'
+          - rendered_transports[1].streamSettings.xhttpSettings.path == '/api/v1/update'
+          - rendered_transports[1].streamSettings.security == 'reality'
+          - rendered_transports[2].streamSettings.network == 'grpc'
+          - rendered_transports[2].streamSettings.security == 'none'
+          - rendered_transports[2].listen == '127.0.0.1'
+
+    - name: Store rendered Xray profile for executable validation
+      ansible.builtin.copy:
+        content: "{{ rendered_xray | to_nice_json }}\n"
+        dest: "{{ render_dir }}/remnawave-xray-test.json"
+        mode: "0600"
+      no_log: true
+
+    - name: Render compose template
+      ansible.builtin.template:
+        src: "{{ playbook_dir }}/../roles/remnawave_node/templates/compose.yml.j2"
+        dest: "{{ render_dir }}/remnawave-compose-test.yml"
+        mode: "0600"
+
+    - name: Render nginx template
+      ansible.builtin.template:
+        src: "{{ playbook_dir }}/../roles/remnawave_node/templates/nginx.conf.j2"
+        dest: "{{ render_dir }}/remnawave-nginx-test.conf"
+        mode: "0600"
+
+    - name: Render certificate renewal helper
+      ansible.builtin.template:
+        src: "{{ playbook_dir }}/../roles/remnawave_node/templates/remnawave-cert-renew.sh.j2"
+        dest: "{{ render_dir }}/remnawave-cert-renew-test.sh"
+        mode: "0700"
+
+    - name: Validate certificate renewal shell syntax
+      ansible.builtin.command:
+        argv: [sh, -n, "{{ render_dir }}/remnawave-cert-renew-test.sh"]
+      changed_when: false
+
+    - name: Read the rendered renewal helper
+      ansible.builtin.slurp:
+        src: "{{ render_dir }}/remnawave-cert-renew-test.sh"
+      register: rendered_renew
+
+    - name: Require renewal to use the webroot and leave nginx running
+      ansible.builtin.assert:
+        that:
+          - "'--webroot --webroot-path' in (rendered_renew.content | b64decode)"
+          - "'/opt/remnawave-node/acme-webroot' in (rendered_renew.content | b64decode)"
+          - "'docker stop' not in (rendered_renew.content | b64decode)"
+        fail_msg: Renewal must answer HTTP-01 from the webroot without stopping nginx.
+
+    - name: Create a scratch document root for the generated decoy
+      ansible.builtin.file:
+        path: "{{ render_dir }}/remnawave-decoy-test"
+        state: directory
+        mode: "0755"
+
+    - name: Render the generated decoy site
+      ansible.builtin.template:
+        src: "{{ playbook_dir }}/../roles/remnawave_node/templates/{{ item.src }}"
+        dest: "{{ render_dir }}/remnawave-decoy-test/{{ item.dest }}"
+        mode: "0644"
+      loop:
+        - src: index.html.j2
+          dest: index.html
+        - src: site.css.j2
+          dest: "{{ remnawave_decoy_profiles.primary.assets.css }}"
+        - src: favicon.svg.j2
+          dest: favicon.svg
+        - src: logo.svg.j2
+          dest: "{{ remnawave_decoy_profiles.primary.assets.logo }}"
+        - src: robots.txt.j2
+          dest: robots.txt
+      loop_control:
+        label: "{{ item.dest }}"
+      vars:
+        decoy: "{{ remnawave_decoy_profiles.primary }}"
+
+    - name: Re-render the decoy index to prove a second run changes nothing
+      ansible.builtin.template:
+        src: "{{ playbook_dir }}/../roles/remnawave_node/templates/index.html.j2"
+        dest: "{{ render_dir }}/remnawave-decoy-test/index.html"
+        mode: "0644"
+      vars:
+        decoy: "{{ remnawave_decoy_profiles.primary }}"
+      register: remnawave_decoy_rerender
+
+    - name: Require the decoy to be stable across runs
+      ansible.builtin.assert:
+        that:
+          - not remnawave_decoy_rerender.changed
+        fail_msg: >-
+          The generated decoy site is not stable for a fixed seed; a second Ansible run
+          would rewrite it and churn every node's masking page.
+
+    - name: Render the decoy for a different node
+      ansible.builtin.template:
+        src: "{{ playbook_dir }}/../roles/remnawave_node/templates/index.html.j2"
+        dest: "{{ render_dir }}/remnawave-decoy-other.html"
+        mode: "0644"
+      vars:
+        decoy: "{{ 'nl_09||1' | remnawave_decoy_profile('primary') }}"
+
+    - name: Read both generated pages
+      ansible.builtin.slurp:
+        src: "{{ item }}"
+      loop:
+        - "{{ render_dir }}/remnawave-decoy-test/index.html"
+        - "{{ render_dir }}/remnawave-decoy-other.html"
+      register: remnawave_decoy_pages
+
+    - name: Require different nodes to serve visibly different pages
+      ansible.builtin.assert:
+        that:
+          - remnawave_decoy_pages.results[0].content != remnawave_decoy_pages.results[1].content
+          - >-
+            (remnawave_decoy_pages.results[0].content | b64decode | length) !=
+            (remnawave_decoy_pages.results[1].content | b64decode | length)
+          - "'<!DOCTYPE html>' in (remnawave_decoy_pages.results[0].content | b64decode)"
+        fail_msg: Two different nodes produced the same masking page.
+
+    - name: Require the nginx configuration to carry the per-node decoy settings
+      ansible.builtin.assert:
+        that:
+          - remnawave_decoy_profiles.primary.headers.referrer_policy in rendered_nginx_text
+          - (certificate_live_dir ~ '/fullchain.pem') in rendered_nginx_text
+          - ('user ' ~ remnawave_nginx_user ~ ';') in rendered_nginx_text
+          - remnawave_decoy_profiles.primary.classes.page not in rendered_nginx_text
+        fail_msg: The rendered nginx configuration lost its per-node decoy settings.
+      vars:
+        rendered_nginx_text: "{{ lookup('file', render_dir ~ '/remnawave-nginx-test.conf') }}"
+
+    - name: Render nftables template
+      ansible.builtin.template:
+        src: "{{ playbook_dir }}/../roles/node_base/templates/remnawave-filter.nft.j2"
+        dest: "{{ render_dir }}/remnawave-filter-test.nft"
+        mode: "0600"
+
+    - name: Render the controller reverse proxy, with and without a certificate
+      ansible.builtin.template:
+        src: "{{ playbook_dir }}/../roles/semaphore_controller/templates/semaphore-nginx.conf.j2"
+        dest: "{{ render_dir }}/remnawave-ui-{{ item.name }}.conf"
+        mode: "0644"
+      vars:
+        semaphore_interface: 127.0.0.1
+        semaphore_port: 3000
+        controller_proxy_domain: web.example.com
+        controller_proxy_webroot: /var/www/remnawave-acme
+        controller_proxy_certificate_dir: >-
+          {{ certificate_live_dir | default(render_dir ~ '/remnawave-ui-tls', true) }}
+        controller_proxy_ssl_stapling: false
+        controller_proxy_http2_directive: "{{ item.http2 }}"
+        controller_proxy_tls_ready: "{{ item.tls }}"
+        controller_proxy_allowed_cidrs: "{{ item.cidrs }}"
+        controller_proxy_basic_auth_users: "{{ item.basic_auth }}"
+        controller_proxy_blocked_paths:
+          - /api/integrations/
+          - /api/terraform/
+          - /api/internal/
+      loop:
+        - name: bootstrap
+          tls: false
+          http2: false
+          cidrs: []
+          basic_auth: []
+        # The validated artifact uses the pre-1.25 HTTP/2 syntax: it is accepted by
+        # every nginx this project supports, and by crossplane, which does not know
+        # the newer 'http2 on' directive. The newer form is asserted below instead.
+        - name: restricted
+          tls: true
+          http2: false
+          cidrs: ["203.0.113.9/32", "2001:db8::/64"]
+          basic_auth: [{user: mate, hash: "$apr1$abcdefgh$0123456789abcdefghijkl"}]
+        - name: public
+          tls: true
+          http2: false
+          cidrs: []
+          basic_auth: []
+        - name: modern
+          tls: true
+          http2: true
+          cidrs: []
+          basic_auth: []
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: Render the WebSocket upgrade map
+      ansible.builtin.template:
+        src: "{{ playbook_dir }}/../roles/semaphore_controller/templates/nginx-upgrade-map.conf.j2"
+        dest: "{{ render_dir }}/remnawave-upgrade-map.conf"
+        mode: "0644"
+
+    - name: Require the published proxy to hide what Semaphore serves unauthenticated
+      ansible.builtin.assert:
+        that:
+          - rendered_restricted is search('location \^~ /api/integrations/')
+          - rendered_restricted is search('location \^~ /api/terraform/')
+          - rendered_restricted is search('location \^~ /api/internal/')
+          - rendered_restricted is search('allow 203.0.113.9/32;')
+          - rendered_restricted is search('deny all;')
+          - rendered_restricted is search('auth_basic_user_file')
+          - rendered_restricted is search('proxy_set_header Connection \$connection_upgrade;')
+          - rendered_restricted is search('proxy_pass http://127.0.0.1:3000;')
+          - rendered_restricted is not search('listen 3000')
+          - rendered_public is not search('deny all;')
+          - rendered_public is not search('auth_basic')
+          - rendered_bootstrap is not search('ssl_certificate ')
+          - rendered_bootstrap is search('acme-challenge')
+          - rendered_modern is search('http2 on;')
+          - rendered_restricted is search('listen 443 ssl http2;')
+        fail_msg: The rendered reverse proxy does not match what the role promises.
+      vars:
+        rendered_restricted: "{{ lookup('file', render_dir ~ '/remnawave-ui-restricted.conf') }}"
+        rendered_public: "{{ lookup('file', render_dir ~ '/remnawave-ui-public.conf') }}"
+        rendered_bootstrap: "{{ lookup('file', render_dir ~ '/remnawave-ui-bootstrap.conf') }}"
+        rendered_modern: "{{ lookup('file', render_dir ~ '/remnawave-ui-modern.conf') }}"
+
+    - name: Render the controller nftables template
+      ansible.builtin.template:
+        src: "{{ playbook_dir }}/../roles/semaphore_controller/templates/remnawave-controller.nft.j2"
+        dest: "{{ render_dir }}/remnawave-controller-test.nft"
+        mode: "0600"
+      vars:
+        controller_firewall_table: remnawave_controller
+        controller_ssh_effective_cidrs:
+          - 203.0.113.9/32
+          - "2001:db8::1/128"
+
+    - name: Read rendered compose file
+      ansible.builtin.slurp:
+        src: "{{ render_dir }}/remnawave-compose-test.yml"
+      register: rendered_compose
+
+    - name: Parse rendered compose as YAML
+      ansible.builtin.set_fact:
+        rendered_compose_data: "{{ rendered_compose.content | b64decode | from_yaml }}"
+
+    - name: Require both application services and host networking
+      ansible.builtin.assert:
+        that:
+          - rendered_compose_data.services.remnanode.network_mode == 'host'
+          - rendered_compose_data.services['nginx-selfsteal'].network_mode == 'host'
+          - >-
+            '/var/log/remnanode:/var/log/xray' in rendered_compose_data.services.remnanode.volumes
+          - rendered_compose_data.services.remnanode.healthcheck.test | length > 0

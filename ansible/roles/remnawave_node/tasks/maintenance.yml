@@ -1,0 +1,106 @@
+---
+- name: Install logrotate policy
+  ansible.builtin.template:
+    src: remnawave.logrotate.j2
+    dest: /etc/logrotate.d/remnawave-node
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Install certificate renewal units
+  ansible.builtin.template:
+    src: "{{ item.src }}"
+    dest: "{{ item.dest }}"
+    owner: root
+    group: root
+    mode: "{{ item.mode }}"
+  loop:
+    - src: remnawave-cert-renew.sh.j2
+      dest: /usr/local/sbin/remnawave-cert-renew
+      mode: "0755"
+    - src: remnawave-cert-renew.service.j2
+      dest: /etc/systemd/system/remnawave-cert-renew.service
+      mode: "0644"
+    - src: remnawave-cert-renew.timer.j2
+      dest: /etc/systemd/system/remnawave-cert-renew.timer
+      mode: "0644"
+  notify: Reload systemd
+  when: certificate_enabled | bool
+
+- name: Install disk-space monitor
+  ansible.builtin.template:
+    src: "{{ item.src }}"
+    dest: "{{ item.dest }}"
+    owner: root
+    group: root
+    mode: "{{ item.mode }}"
+  loop:
+    - src: remnawave-disk-check.sh.j2
+      dest: /usr/local/sbin/remnawave-disk-check
+      mode: "0755"
+    - src: remnawave-disk-check.service.j2
+      dest: /etc/systemd/system/remnawave-disk-check.service
+      mode: "0644"
+    - src: remnawave-disk-check.timer.j2
+      dest: /etc/systemd/system/remnawave-disk-check.timer
+      mode: "0644"
+  notify: Reload systemd
+
+- name: Install optional geodata updater
+  ansible.builtin.template:
+    src: "{{ item.src }}"
+    dest: "{{ item.dest }}"
+    owner: root
+    group: root
+    mode: "{{ item.mode }}"
+  loop:
+    - src: remnawave-geodata-update.sh.j2
+      dest: /usr/local/sbin/remnawave-geodata-update
+      mode: "0755"
+    - src: remnawave-geodata-update.service.j2
+      dest: /etc/systemd/system/remnawave-geodata-update.service
+      mode: "0644"
+    - src: remnawave-geodata-update.timer.j2
+      dest: /etc/systemd/system/remnawave-geodata-update.timer
+      mode: "0644"
+  notify: Reload systemd
+  when:
+    - geodata_enabled | bool
+    - geodata_update_enabled | bool
+
+- name: Install management CLI wrapper
+  ansible.builtin.template:
+    src: remnawave-node-cli.sh.j2
+    dest: /usr/local/sbin/remnawave-node
+    owner: root
+    group: root
+    mode: "0755"
+  when: remnawave_management_cli_enabled | bool
+
+- name: Flush systemd unit changes
+  ansible.builtin.meta: flush_handlers
+
+- name: Enable maintenance timers
+  ansible.builtin.systemd_service:
+    name: "{{ item }}"
+    state: started
+    enabled: true
+  loop: >-
+    {{ ['remnawave-disk-check.timer']
+       + (['remnawave-cert-renew.timer'] if certificate_enabled | bool else [])
+       + (['remnawave-geodata-update.timer'] if geodata_enabled | bool and geodata_update_enabled | bool else []) }}
+  # The timer units are written by this run, so in a dry-run systemd does not know
+  # the ones that are not on the host yet. Those that exist are still checked.
+  when: not ansible_check_mode or item in (node_base_systemd_units | default(''))
+
+- name: Report the maintenance timers a dry-run would enable
+  ansible.builtin.debug:
+    msg: >-
+      Would install and enable {{ item }} - systemd does not know that unit yet.
+  loop: >-
+    {{ ['remnawave-disk-check.timer']
+       + (['remnawave-cert-renew.timer'] if certificate_enabled | bool else [])
+       + (['remnawave-geodata-update.timer'] if geodata_enabled | bool and geodata_update_enabled | bool else []) }}
+  when:
+    - ansible_check_mode
+    - item not in (node_base_systemd_units | default(''))

@@ -23,8 +23,29 @@ state/
 ssl/
 keys/
 *.zip
+ansible/.venv/
+ansible/.cache/
+.ansible/
+.molecule/
+__pycache__/
+*.py[cod]
 
 # Session working notes — contain real IPs/keys/domains, not for publication
 PROJECT-STATE.md
 
 # Local audit SSH keypair — private key, never publish
+
+# Inventory data with real addresses - never publish
+ansible/inventories/test/
+ansible/inventories/local/
+ansible/inventories/production/hosts.yml
+
+# Real values of this deployment and its secrets - never publish.
+# Examples for both live in ansible/examples/.
+ansible/playbooks/group_vars/all/vault.yml
+ansible/playbooks/group_vars/remnawave_nodes/zz-local.yml
+# Real values now live on the controller in /etc/remnawave/; these two remain
+# ignored so an older checkout cannot publish them by accident.
+
+# Collections installed into the checkout by ./setup-controller
+ansible/collections/ansible_collections/

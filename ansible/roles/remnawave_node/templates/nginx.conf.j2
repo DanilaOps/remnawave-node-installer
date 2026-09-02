@@ -1,0 +1,82 @@
+user {{ remnawave_nginx_user }};
+worker_processes auto;
+error_log /var/log/nginx/error.log warn;
+pid /var/run/nginx.pid;
+
+events {
+  worker_connections 4096;
+}
+
+http {
+  include /etc/nginx/mime.types;
+  default_type application/octet-stream;
+  access_log /var/log/nginx/access.log;
+  sendfile on;
+  server_tokens off;
+  keepalive_timeout 65;
+
+  server {
+    listen 127.0.0.1:9080;
+    location = /healthz { access_log off; return 204; }
+  }
+
+{% for site in selfsteal_virtual_hosts %}
+{% set decoy = remnawave_decoy_profiles[site.name] %}
+  server {
+    listen 80;
+    listen [::]:80;
+    server_name {{ site.server_names | join(' ') }};
+    location ^~ /.well-known/acme-challenge/ { root /var/www/acme; }
+    location / { return 301 https://$host$request_uri; }
+  }
+
+  server {
+    listen 127.0.0.1:{{ selfsteal_local_port }} ssl{% if reality_xver | int > 0 %} proxy_protocol{% endif %}{% if loop.first %} default_server{% endif %};
+    server_name {{ site.server_names | join(' ') }};
+    ssl_certificate {{ certificate_live_dir }}/fullchain.pem;
+    ssl_certificate_key {{ certificate_live_dir }}/privkey.pem;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_session_cache shared:SSL:10m;
+{% if reality_xver | int > 0 %}
+    set_real_ip_from 127.0.0.1;
+    real_ip_header proxy_protocol;
+{% endif %}
+    root /var/www/selfsteal/html/{{ site.name }};
+    index index.html;
+    etag {{ 'on' if decoy.headers.etag else 'off' }};
+{% if decoy.headers.content_type_options %}
+    add_header X-Content-Type-Options nosniff;
+{% endif %}
+{% if decoy.headers.frame_options %}
+    add_header X-Frame-Options SAMEORIGIN;
+{% endif %}
+    add_header Referrer-Policy {{ decoy.headers.referrer_policy }};
+    location / {
+      add_header Cache-Control "public, max-age={{ decoy.headers.cache_max_age }}";
+      try_files $uri $uri/ /index.html;
+    }
+    location ~* \.(css|js|svg)$ {
+      add_header Cache-Control "public, max-age={{ decoy.headers.asset_max_age }}";
+      try_files $uri =404;
+    }
+    location = /robots.txt { access_log off; try_files $uri =404; }
+  }
+{% endfor %}
+
+{% for inbound in inbound_specs if inbound.network | default('raw') == 'grpc-tls' %}
+  server {
+    listen 443 ssl http2;
+    listen [::]:443 ssl http2;
+    server_name {{ inbound.server_names | default([selfsteal_domain]) | join(' ') }};
+    ssl_certificate {{ certificate_live_dir }}/fullchain.pem;
+    ssl_certificate_key {{ certificate_live_dir }}/privkey.pem;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    location /{{ inbound.service_name | default('grpc') }} {
+      grpc_pass grpc://127.0.0.1:{{ inbound.port }};
+      grpc_set_header Host $host;
+      grpc_set_header X-Real-IP $remote_addr;
+    }
+    location / { root /var/www/selfsteal/html/{{ selfsteal_virtual_hosts[0].name }}; try_files $uri /index.html; }
+  }
+{% endfor %}
+}

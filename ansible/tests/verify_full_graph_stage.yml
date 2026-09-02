@@ -1,0 +1,57 @@
+---
+# Stages the node side of a fresh acceptance run: the generated decoy site the
+# public check fetches, the persisted Xray log, and the certificate the local
+# check reads. It renders the role's real templates with the role's real decoy
+# filter, so the page acceptance is judged against is the page the node would
+# actually serve.
+- name: Stage the node-side artefacts acceptance reads
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  become: false
+  vars:
+    remnawave_decoy_profiles:
+      primary: "{{ stage_decoy_seed | remnawave_decoy_profile('primary') }}"
+    selfsteal_virtual_hosts:
+      - name: primary
+        server_names: ["{{ stage_selfsteal_domain }}"]
+        root: "{{ stage_webroot }}"
+        title: Cloud Infrastructure
+  tasks:
+    - name: Create the document root and the log directory
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        mode: "0755"
+      loop:
+        - "{{ stage_webroot }}"
+        - "{{ stage_logs_dir }}"
+
+    - name: Render the generated decoy site from the role's own templates
+      ansible.builtin.template:
+        src: "{{ playbook_dir }}/../roles/remnawave_node/templates/{{ item.src }}"
+        dest: "{{ stage_webroot }}/{{ item.dest }}"
+        mode: "0644"
+      loop:
+        - {src: index.html.j2, dest: index.html}
+        - {src: site.css.j2, dest: "{{ remnawave_decoy_profiles.primary.assets.css }}"}
+        - {src: favicon.svg.j2, dest: favicon.svg}
+        - {src: robots.txt.j2, dest: robots.txt}
+      vars:
+        site: primary
+        decoy: "{{ remnawave_decoy_profiles.primary }}"
+
+    - name: Write a persisted Xray log the local checks require
+      ansible.builtin.copy:
+        content: |
+          {{ '%Y/%m/%d %H:%M:%S' | strftime }} [Info] Xray {{ stage_xray_version }} started
+          {{ '%Y/%m/%d %H:%M:%S' | strftime }} [Info] tcp:127.0.0.1:0 accepted
+        dest: "{{ stage_logs_dir }}/current"
+        mode: "0644"
+
+    - name: Report what was staged
+      ansible.builtin.debug:
+        msg: >-
+          decoy brand={{ remnawave_decoy_profiles.primary.brand }},
+          css={{ remnawave_decoy_profiles.primary.assets.css }},
+          page class={{ remnawave_decoy_profiles.primary.classes.page }}

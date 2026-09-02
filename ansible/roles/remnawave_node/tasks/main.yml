@@ -1,0 +1,49 @@
+---
+- name: Validate application role inputs from the Panel role
+  ansible.builtin.assert:
+    that:
+      - remnawave_node_secret_key | length > 0
+      - "'\n' not in remnawave_node_secret_key"
+      - remnawave_node_uuid | length > 0
+      - remnawave_desired_xray_config is mapping
+      - selfsteal_virtual_hosts | length > 0
+      - ansible_facts.architecture in xray_assets
+      - ansible_facts.architecture in xray_checksums
+      - node_plugins | length <= 1
+    fail_msg: remnawave_panel must complete before remnawave_node and all pinned artifacts must be declared.
+  no_log: true
+
+- name: Install the pinned Xray core
+  ansible.builtin.import_tasks: xray.yml
+  tags: [xray]
+
+- name: Issue or reuse selfsteal certificate
+  ansible.builtin.import_tasks: certificate.yml
+  when: certificate_enabled | bool
+  tags: [certificate]
+
+- name: Configure nginx selfsteal and virtual hosts
+  ansible.builtin.import_tasks: selfsteal.yml
+  tags: [selfsteal, nginx]
+
+- name: Install geodata files
+  ansible.builtin.import_tasks: geodata.yml
+  when: geodata_enabled | bool
+  tags: [geodata]
+
+- name: Configure and start RemnaNode
+  ansible.builtin.import_tasks: remnanode.yml
+  tags: [remnanode]
+
+- name: Flush application handlers before API plugins and verification
+  ansible.builtin.meta: flush_handlers
+
+- name: Configure Remnawave Node Plugins
+  ansible.builtin.import_tasks: plugins.yml
+  when: node_plugins | length > 0
+  tags: [plugins]
+
+- name: Install node maintenance
+  ansible.builtin.import_tasks: maintenance.yml
+  when: remnawave_maintenance_enabled | bool
+  tags: [maintenance]

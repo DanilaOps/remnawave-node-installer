@@ -1,0 +1,17 @@
+# blackbox_exporter modules for the August VPN fleet.
+#
+# NOT installed by Ansible. Copy it to the monitoring server yourself -
+# see monitoring/README.ru.md.
+#
+# One module. A TCP connect proves the port answers, which is the question
+# monitoring can honestly ask from outside: a TLS handshake against a Reality
+# listener from something that is not a real client is not a failure of the
+# node, and alerting on it would be alerting on Reality working.
+---
+modules:
+  tcp_connect:
+    prober: tcp
+    timeout: 5s
+    tcp:
+      preferred_ip_protocol: ip4
+      ip_protocol_fallback: false

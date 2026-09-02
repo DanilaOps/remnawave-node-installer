@@ -1,0 +1,78 @@
+# Alertmanager configuration for the August VPN monitoring server.
+#
+# NOT installed by Ansible. Copy it to /etc/alertmanager/alertmanager.yml and
+# replace every <PLACEHOLDER>. The bot token is a file, not a value: put it in
+# /etc/alertmanager/telegram.token with mode 0600. Nothing in this repository
+# contains a token or a chat id, and nothing should.
+#
+#
+# ONE ROUTING RULE, AND IT IS THE WHOLE DESIGN
+#
+#   Telegram receives severity="critical". Nothing else leaves this machine.
+#
+# Everything at warning or info is still evaluated, still visible in Prometheus
+# and on the Grafana dashboard, and deliberately silent on the phone. That is
+# what makes the warning tier usable: it can be generous, because it costs
+# nobody an interruption. The critical tier is small on purpose, and adding a
+# rule to it is a decision to wake somebody up.
+#
+# What that means today - the complete set of things that can reach Telegram:
+#
+#   AugustNodeCpuCritical               CPU    > 90%          for 5m
+#   AugustNodeMemoryCritical            memory > 95%          for 5m
+#   AugustNodeBandwidthCritical         node   < 200 Mbit/s   for 5m
+#   AugustPoolBandwidthCritical         pool   < 200 Mbit/s   for 5m
+#   AugustBridgeBandwidthCritical       bridge < 200 Mbit/s   for 5m
+#
+# And what is deliberately NOT here, because this fleet already alerts on it
+# through a different system: a server down for any reason, a node added,
+# edited or removed, user changes, the torrent blocker, the CRM, and the shared
+# critical channel. Prometheus publishes those as metrics for the dashboard and
+# raises no alert for them at all - see the header of prometheus/alert-rules.yml.
+route:
+  group_by: [alertname]
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 4h
+  # Anything that does not match the route below ends here and goes nowhere.
+  # A receiver with no integrations is how Alertmanager is told "record this,
+  # notify nobody"; it is not a misconfiguration.
+  receiver: dashboard-only
+  routes:
+    # The only route with an integration behind it.
+    - matchers: ['severity = "critical"']
+      receiver: telegram-critical
+      # Grouped so that one pool filling up in both directions is one message
+      # naming both, rather than two messages thirty seconds apart.
+      group_by: [alertname, node, pool, name, direction]
+      group_wait: 30s
+      group_interval: 5m
+      repeat_interval: 4h
+
+inhibit_rules:
+  # A node already critical on bandwidth does not also need its warning.
+  - source_matchers: ['severity = "critical"']
+    target_matchers: ['severity = "warning"']
+    equal: [alertname, node, direction]
+  # A pool that is critical explains its members; do not page for both.
+  - source_matchers: ['alertname = "AugustPoolBandwidthCritical"']
+    target_matchers: ['alertname = "AugustNodeBandwidthCritical"']
+    equal: [pool, direction]
+
+receivers:
+  # Reached by every warning and every informational alert. No integrations on
+  # purpose: they are for Prometheus and Grafana to show, not for Telegram.
+  - name: dashboard-only
+
+  - name: telegram-critical
+    telegram_configs:
+      - api_url: https://api.telegram.org
+        bot_token_file: /etc/alertmanager/telegram.token
+        chat_id: <TELEGRAM_CHAT_ID>
+        parse_mode: ""
+        send_resolved: true
+        message: |
+          {{ range .Alerts }}{{ .Annotations.summary }}
+
+          {{ .Annotations.description }}
+          {{ end }}

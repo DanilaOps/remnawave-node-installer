@@ -1,0 +1,232 @@
+---
+- name: Read the installed Semaphore version
+  ansible.builtin.command:
+    argv: ["{{ semaphore_binary_path }}", version]
+  register: semaphore_installed_version
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: Download the release checksums when no hash is pinned
+  ansible.builtin.get_url:
+    url: "{{ semaphore_release_base }}/v{{ semaphore_version }}/semaphore_{{ semaphore_version }}_checksums.txt"
+    dest: "{{ semaphore_tmp_path }}/semaphore_{{ semaphore_version }}_checksums.txt"
+    owner: root
+    group: root
+    mode: "0600"
+  when:
+    - semaphore_sha256 | length == 0
+    - semaphore_version not in (semaphore_installed_version.stdout | default(''))
+    - not ansible_check_mode
+
+- name: Take the archive's hash from the checksums file
+  ansible.builtin.set_fact:
+    semaphore_expected_sha256: >-
+      {{ lookup('file', semaphore_tmp_path ~ '/semaphore_' ~ semaphore_version ~ '_checksums.txt')
+         | regex_search('([0-9a-f]{64})\s+' ~ (semaphore_archive | regex_escape), '\1') | first }}
+  when:
+    - semaphore_sha256 | length == 0
+    - semaphore_version not in (semaphore_installed_version.stdout | default(''))
+    - not ansible_check_mode
+
+- name: Download the pinned Semaphore release
+  ansible.builtin.get_url:
+    url: "{{ semaphore_release_base }}/v{{ semaphore_version }}/{{ semaphore_archive }}"
+    dest: "{{ semaphore_tmp_path }}/{{ semaphore_archive }}"
+    checksum: "sha256:{{ semaphore_sha256 if semaphore_sha256 | length > 0 else semaphore_expected_sha256 }}"
+    owner: root
+    group: root
+    mode: "0600"
+  when:
+    - semaphore_version not in (semaphore_installed_version.stdout | default(''))
+    - not ansible_check_mode
+
+- name: Unpack the Semaphore binary
+  ansible.builtin.unarchive:
+    src: "{{ semaphore_tmp_path }}/{{ semaphore_archive }}"
+    dest: /usr/local/bin
+    remote_src: true
+    include: [semaphore]
+    owner: root
+    group: root
+    mode: "0755"
+  when:
+    - semaphore_version not in (semaphore_installed_version.stdout | default(''))
+    - not ansible_check_mode
+  notify: Restart Semaphore
+
+- name: Report the binary a dry-run would install
+  # Downloading and unpacking cannot be simulated, so a dry-run says exactly what
+  # it would fetch and against which hash instead of pretending it checked.
+  ansible.builtin.debug:
+    msg: >-
+      Would download {{ semaphore_archive }} for {{ semaphore_version }} and verify it against
+      {{ 'the pinned sha256' if semaphore_sha256 | length > 0 else "the release's own checksums file" }};
+      installed now: '{{ semaphore_installed_version.stdout | default('nothing') | trim }}'.
+  when:
+    - ansible_check_mode
+    - semaphore_version not in (semaphore_installed_version.stdout | default(''))
+
+- name: Look for the installed Semaphore binary
+  ansible.builtin.stat:
+    path: "{{ semaphore_binary_path }}"
+  register: semaphore_binary_present
+  check_mode: false
+
+- name: Confirm the pinned version is what is installed
+  ansible.builtin.command:
+    argv: ["{{ semaphore_binary_path }}", version]
+  register: semaphore_final_version
+  changed_when: false
+  check_mode: false
+  when: semaphore_binary_present.stat.exists
+
+- name: Say that the installed version could not be confirmed yet
+  ansible.builtin.debug:
+    msg: >-
+      {{ semaphore_binary_path }} does not exist yet, so its version was not confirmed. A normal run
+      installs {{ semaphore_version }} and confirms it.
+  when: semaphore_final_version is skipped
+
+- name: Require the installed binary to be the pinned version
+  ansible.builtin.assert:
+    that:
+      - semaphore_version in semaphore_final_version.stdout
+    fail_msg: >-
+      {{ semaphore_binary_path }} reports '{{ semaphore_final_version.stdout | default('') | trim }}'
+      but semaphore_version is {{ semaphore_version }}. The controller has to be rebuildable, so the
+      running binary and the pinned version may not drift.
+  when: semaphore_final_version is not skipped
+
+- name: Generate encryption keys for a first installation
+  # These three keys encrypt the Key Store. Regenerating them on an existing
+  # instance makes every stored SSH key and secret undecryptable, so they are
+  # generated exactly once and read back from the configuration afterwards.
+  ansible.builtin.command:
+    argv: [openssl, rand, -base64, "32"]
+  register: semaphore_generated_keys
+  loop: [cookie_hash, cookie_encryption, access_key_encryption]
+  loop_control:
+    label: "{{ item }}"
+  changed_when: true
+  no_log: true
+  when: semaphore_existing_config[item] | default('') | length == 0
+
+- name: Assemble the Semaphore configuration
+  # Three sources, in this order: a visible placeholder, then whatever the
+  # existing configuration already holds, then whatever was generated now. In
+  # check mode nothing can be generated, so the placeholder survives and the
+  # dry-run can still show the rest of the configuration; the assert below makes
+  # sure a placeholder is never written for real.
+  ansible.builtin.set_fact:
+    semaphore_effective_keys: >-
+      {{ {'cookie_hash': semaphore_key_placeholder,
+          'cookie_encryption': semaphore_key_placeholder,
+          'access_key_encryption': semaphore_key_placeholder} |
+         combine(semaphore_existing_config | dict2items |
+                 selectattr('key', 'in', ['cookie_hash', 'cookie_encryption', 'access_key_encryption']) |
+                 selectattr('value', 'truthy') | items2dict) |
+         combine(dict((semaphore_generated_keys.results | default([]) | rejectattr('skipped', 'defined') |
+                       map(attribute='item') | list) |
+                      zip(semaphore_generated_keys.results | default([]) |
+                          rejectattr('skipped', 'defined') | map(attribute='stdout') | map('trim') | list))) }}
+  no_log: true
+
+- name: Never write a placeholder key on a real run
+  ansible.builtin.assert:
+    that:
+      - semaphore_key_placeholder not in (semaphore_effective_keys.values() | list)
+    fail_msg: >-
+      An encryption key is still the placeholder, which means it was neither found in
+      {{ semaphore_config_path }} nor generated. Writing it would make the Key Store unreadable.
+  when: not ansible_check_mode
+
+- name: Report the configuration change without printing its secrets
+  # The write below hides its diff and output on purpose - the file holds the
+  # three keys that decrypt the Key Store. This is the part an operator has to
+  # see before approving a run: where the keys came from, and what changes.
+  ansible.builtin.debug:
+    msg: >-
+      {{ semaphore_config_path }}:
+      dialect {{ semaphore_db_dialect }},
+      listen {{ semaphore_interface }}:{{ semaphore_port }},
+      web_host '{{ semaphore_existing_config.web_host | default('(none)') }}'
+      -> '{{ semaphore_web_host | trim }}';
+      encryption keys: {{ semaphore_keys_reused }} reused from the existing file,
+      {{ semaphore_keys_generated }} generated now
+      {{ '(none generated - nothing to lose)' if semaphore_keys_generated | int == 0 else
+         '(a generated key is new; the Key Store can only be read with it)' }}
+  vars:
+    semaphore_keys_reused: >-
+      {{ ['cookie_hash', 'cookie_encryption', 'access_key_encryption']
+         | select('in', semaphore_existing_config)
+         | map('extract', semaphore_existing_config) | select('truthy') | list | length }}
+    semaphore_keys_generated: >-
+      {{ semaphore_generated_keys.results | default([]) | rejectattr('skipped', 'defined') | list | length }}
+
+- name: Write the Semaphore configuration
+  ansible.builtin.template:
+    src: semaphore-config.json.j2
+    dest: "{{ semaphore_config_path }}"
+    owner: root
+    group: "{{ semaphore_group }}"
+    mode: "0640"
+  no_log: true
+  diff: false
+  notify: Restart Semaphore
+
+- name: Install the Semaphore unit
+  ansible.builtin.template:
+    src: semaphore.service.j2
+    dest: /etc/systemd/system/semaphore.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify:
+    - Reload systemd
+    - Restart Semaphore
+
+- name: Enable and start Semaphore
+  ansible.builtin.systemd_service:
+    name: semaphore.service
+    state: started
+    enabled: true
+    daemon_reload: true
+  # The unit above is written by this very run, so in a dry-run it does not exist
+  # and systemd would be asked about a unit that is not there. Where it already
+  # exists the state is still checked for real.
+  when: not ansible_check_mode or 'semaphore.service' in controller_systemd_units
+
+- name: Report the Semaphore unit a dry-run would start
+  ansible.builtin.debug:
+    msg: >-
+      Would reload systemd, then enable and start semaphore.service - the unit file is written by
+      this run and systemd does not know it yet.
+  when:
+    - ansible_check_mode
+    - "'semaphore.service' not in controller_systemd_units"
+
+- name: Wait for the UI to answer on loopback
+  ansible.builtin.wait_for:
+    host: "{{ semaphore_interface }}"
+    port: "{{ semaphore_port }}"
+    state: started
+    connect_timeout: 2
+    timeout: 60
+
+- name: Confirm nothing outside this host can reach the UI
+  ansible.builtin.command:
+    argv: [ss, -H, -lnt]
+  register: semaphore_listeners
+  changed_when: false
+  check_mode: false
+  failed_when: false
+
+- name: Require the UI listener to be loopback only
+  ansible.builtin.assert:
+    that:
+      - semaphore_listeners.stdout is not regex('(?m)(^|\s)(0\.0\.0\.0|\[::\]|\*):' ~ semaphore_port ~ '\s')
+    fail_msg: >-
+      Something is listening on {{ semaphore_port }} on all interfaces. The UI has no TLS and no
+      authenticating proxy in front of it; it must be reachable only through an SSH tunnel.
+  when: semaphore_listeners.rc | default(1) == 0

@@ -14,7 +14,7 @@ host in the Remnawave panel over the HTTP API — no manual clicking in the UI.
   bind-mounted over the core bundled in the node image).
 - `/api/keygen`: native Remnawave 3.x `response.secretKey`, with a fallback to the
   older `response.pubKey` response.
-- Installer version: **3.3.2-rw2**.
+- Installer version: **3.3.2-rw3**.
 
 Unlike wrapper scripts that `curl | bash` several third-party installers, this script
 inlines everything it controls (node container, nginx selfsteal, TLS certificate,
@@ -25,7 +25,7 @@ Xray Reality config). The only external component is the optional firewall step
 
 The script installs its own dependencies (Docker, jq, openssl, socat, cron), so a
 fresh Debian/Ubuntu server needs nothing but `curl`. For reproducible installs,
-the download URL is pinned to release tag `v3.3.2-rw2` instead of the moving
+the download URL is pinned to release tag `v3.3.2-rw3` instead of the moving
 `main` branch.
 
 ```bash
@@ -33,7 +33,7 @@ apt-get update -qq && apt-get install -y -qq curl
 
 # Recommended: download, syntax-check, then run.
 curl -fsSLo /root/remnawave-node.sh \
-  https://raw.githubusercontent.com/DanilaOps/remnawave-node-installer/v3.3.2-rw2/remnawave-node.sh
+  https://raw.githubusercontent.com/DanilaOps/remnawave-node-installer/v3.3.2-rw3/remnawave-node.sh
 chmod 700 /root/remnawave-node.sh
 bash -n /root/remnawave-node.sh
 sudo bash /root/remnawave-node.sh
@@ -95,7 +95,8 @@ sudo bash /root/remnawave-node.sh -y \
    `NODE_PORT` + `SECRET_KEY` from the panel.
 6. Creates in the panel via API (after validating the generated config with
    `xray -test`): **config-profile** (VLESS inbound(s)), **node** (linked to the
-   profile), and **host** (subscription entry). Optionally adds the inbound to an
+   profile), a dedicated **Node Plugin** with the native Torrent Blocker, and
+   **host** (subscription entry). Optionally adds the inbound to an
    **Internal Squad** (`--squad-name`/`--squad-uuid`) so users receive it — else it
    warns with the manual step.
 7. Runs `node-accelerator` for the firewall (strict nftables), unless skipped.
@@ -118,7 +119,9 @@ to re-type. Any CLI/env flag you pass on the resume run still overrides the file
 
 ## Requirements
 
-- Fresh Debian/Ubuntu server, run as root.
+- Fresh Debian/Ubuntu server, run as root. The native Torrent Blocker requires a
+  running Linux kernel **5.7+** and `nftables`; the installer installs nftables,
+  checks the kernel, and gives the node container `cap_add: NET_ADMIN`.
 - DNS **A record** for the selfsteal domain pointing at the server (grey cloud / DNS-only
   if the zone is on Cloudflare — never proxied).
 - Remnawave panel URL and an **API token** with permissions for every endpoint the
@@ -127,9 +130,10 @@ to re-type. Any CLI/env flag you pass on the resume run still overrides the file
   | Permission | Endpoint | Why |
   |---|---|---|
   | **Keygen** | `GET /api/keygen` | `response.secretKey` → the node's `SECRET_KEY` |
-  | **Nodes** (create + read) | `POST/GET /api/nodes` | register/verify the node |
+  | **Nodes** (create + read + update) | `POST/GET/PATCH /api/nodes` | register/verify the node and attach its plugin profile |
   | **Config Profiles** (create + read + update) | `POST/GET/PATCH /api/config-profiles` | Xray config + inbound UUIDs |
-  | **Hosts** (create + update) | `POST/PATCH /api/hosts` | subscription host |
+  | **Hosts** (create + read + update) | `POST/GET/PATCH /api/hosts` | subscription host |
+  | **Node Plugins** (create + read + update) | `POST/GET/PATCH /api/node-plugins` | create and update Torrent Blocker settings |
 
   The common gotcha: a token with Nodes/Hosts/Config-Profiles but **no Keygen**
   returns `403` on `GET /api/keygen`. Either enable that scope, or bypass it with
@@ -140,10 +144,10 @@ to re-type. Any CLI/env flag you pass on the resume run still overrides the file
 
   ```bash
   T='<token>'; P='https://panel.example.com'
-  for ep in keygen nodes hosts config-profiles; do
+  for ep in keygen nodes hosts config-profiles node-plugins; do
     printf '%-16s -> ' "$ep"
     curl -sS -o /dev/null -w '%{http_code}\n' -H "Authorization: Bearer $T" "$P/api/$ep"
-  done   # all four should print 200
+  done   # all five should print 200
   ```
 - For `cf-dns`: a Cloudflare API token with `Zone:DNS:Edit` for the zone.
 
@@ -230,6 +234,12 @@ sudo bash remnawave-node.sh --resume -y \
 | `--node-name` | auto | override the panel node name |
 | `--node-port` | `2222` | panel ↔ node control port |
 | `--node-image` | `ghcr.io/remnawave/node:3.3.2` | pinned RemnaNode image; override with `REMNANODE_IMAGE` |
+| `--torrent-blocker` / `--no-torrent-blocker` | on | enable (default) or disable Remnawave's native Torrent Blocker |
+| `--torrent-block-duration` | `3600` | source-IP block time in seconds; `0` lasts until nftables reset/restart |
+| `--torrent-ignore-ips` | — | comma-separated concrete IPv4/IPv6 addresses; CIDR is unsupported here |
+| `--torrent-ignore-users` | — | comma-separated numeric Remnawave user IDs |
+| `--torrent-rule-tags` | — | additional comma-separated Xray `ruleTag` values whose matches also block the source IP |
+| `--node-plugin-name` | auto | dedicated plugin profile name (2-30 letters/numbers/`_`/`-`/space); derived stably from the node name by default |
 | `--mask` | `reality` | `reality` (Xray owns 443, XTLS-Reality) \| `grpc-tls` (nginx owns 443 with a real cert, VLESS+gRPC behind it — CDN/Cloudflare-frontable) |
 | `--grpc-port` | `11443` | loopback port of the gRPC inbound (`grpc-tls`) |
 | `--grpc-service` | `grpc` | gRPC serviceName; nginx routes `/<name>/Tun` to Xray (`grpc-tls`) |
@@ -458,6 +468,25 @@ user only receives the inbound once it is enabled in an **Internal Squad**:
 - Otherwise the installer **warns loudly** with the manual step: in the panel open
   *Internal Squads → edit/create a squad → enable the inbound → save*, then attach
   the squad to your subscription/users.
+
+## Native Torrent Blocker
+
+By default, the installer creates a dedicated `TB-<namespace>` plugin profile for
+each node, enables `torrentBlocker` for 3600 seconds, and assigns its UUID as the
+node's `activePluginUuid`. Reruns update the same profile. If an existing node
+already uses another plugin profile, its configuration is copied first so shared
+filter settings on other nodes are not modified.
+
+Every generated inbound already has the required sniffing enabled with
+`destOverride: ["http", "tls", "quic"]`. Remnawave Node injects the webhook rule
+ahead of the other routing rules, adds a detected source IP to nftables, and drops
+its connections; do not add the webhook manually to the Xray JSON. Signature
+detection does not identify every BitTorrent packet, so the IP block begins after
+the first packet Xray recognizes. Reports are available in the panel and through
+the `torrent_blocker.report` event.
+
+See the [official Node Plugins documentation](https://docs.rw/learn/node-plugins/)
+for the mechanism and limitations.
 
 ## Management CLI (`remnanode`)
 

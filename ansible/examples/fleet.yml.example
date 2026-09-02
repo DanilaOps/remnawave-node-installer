@@ -1,0 +1,117 @@
+---
+# Real values of this deployment. Copy to /etc/remnawave/fleet.yml on the
+# controller (root:semaphore, 0640).
+#
+# Why an absolute path outside the repository instead of a git-ignored file
+# inside it: Semaphore clones the repository fresh for every job, so nothing that
+# is not committed ever reaches a run started from the UI. This file is loaded as
+# `-e @/etc/remnawave/fleet.yml` - by the template's own arguments in the UI and
+# automatically by ./provision-node on the command line - so the UI and the CLI
+# read exactly the same values from exactly one place. The path is a default:
+# REMNAWAVE_FLEET_VARS overrides it for the CLI, and the template arguments name
+# it explicitly for the UI.
+#
+# It holds fleet-wide values only. Anything node-specific belongs in the
+# inventory: these values arrive as extra vars, which outrank every file and
+# every host, so a node_id or a selfsteal_domain here would be applied to the
+# whole fleet at once. Preflight refuses a run whose identity did not come from
+# the inventory hostname, which is what catches that mistake.
+
+remnawave_panel_url: https://panel.your-domain.tld
+# The panel's own address, allowed to reach NODE_PORT on every node.
+remnawave_panel_cidrs:
+  - 198.51.100.20/32
+
+# Three different panel objects. They are matched by their exact API name, which
+# is not always what the UI shows, so read them back from the panel rather than
+# from the screen:
+#
+#   curl -sH "Authorization: Bearer $TOKEN" $PANEL/api/config-profiles       | jq -r '.response.configProfiles[].name'
+#   curl -sH "Authorization: Bearer $TOKEN" $PANEL/api/subscription-templates | jq -r '.response.templates[] | select(.templateType=="XRAY_JSON") | .name'
+#   curl -sH "Authorization: Bearer $TOKEN" $PANEL/api/internal-squads       | jq -r '.response.internalSquads[].name'
+#
+# profile_name            the Config Profile: the Xray JSON the NODE runs, and the
+#                         profile whose inbound each Host is bound to. NOT SET HERE:
+#                         it is derived per node as the node's own name, so node
+#                         TR-01 uses Config Profile TR-01 and the two can never
+#                         drift apart. Set it here only for a fleet that shares one
+#                         profile across every node, together with
+#                         config_profile_create: false.
+# xray_json_template_name the Subscription Template of type XRAY_JSON: the JSON a
+#                         CLIENT receives. A Host carries it in xrayJsonTemplateUuid.
+#                         Empty leaves the link as the panel has it.
+# internal_squad_name     the Internal Squad: which inbounds a user may use.
+xray_json_template_name: August Default
+internal_squad_name: Default-Squad
+
+node_domain_zone: your-domain.tld
+acme_email: ops@your-domain.tld
+
+# --- Adding a node -----------------------------------------------------------
+# A node is one line of inventory, and its name is the only thing that has to be
+# decided. Ask for it instead of counting by hand:
+#
+#     ./provision-node --next TR
+#         country            = TR (Turkey)
+#         TR numbers in use  = 1, 2
+#         next node name     = TR-03
+#         inventory hostname = tr03
+#
+# Then add that hostname to the inventory with the VPS address and install it:
+#
+#     tr03:
+#       ansible_host: 203.0.113.10
+#     ./provision-node tr03 --first-run
+#
+# From then on the number lives in the inventory hostname. tr03 always means
+# TR-03: node name, Config Profile name, inbound tag TR_03_REALITY and the domain
+# tr03.{{ node_domain_zone }} all follow from it, and re-running the node
+# reconciles TR-03 rather than allocating a new number.
+
+# --- Your own SSH access -----------------------------------------------------
+# THIS IS THE ONE FIELD THAT DECIDES WHETHER YOU CAN STILL LOG IN DIRECTLY.
+#
+# The node's firewall input chain drops by default. TCP/22 is opened for the
+# controller - whose address is discovered from the live SSH connection, so it
+# is never maintained by hand - and for every address listed here, and for
+# nothing else. Leave this empty and the only way into a node is through
+# Semaphore.
+#
+# Put your own public address here, as a /32 (or /128 for IPv6), together with
+# any jump or rescue host. It has to be here rather than in a Semaphore survey:
+# a survey value lives for one job, and the next "02 - Install / Reconcile Node"
+# would render the ruleset without it. This file is loaded by every template, so
+# the permission survives every re-run.
+#
+# The address below is a documentation address (RFC 5737) and is never routed.
+# Controller-side preflight refuses it on purpose: copying this file without
+# editing this field should fail loudly at template 01, not quietly leave you
+# locked out of your own node.
+management_cidrs_extra:
+  - 203.0.113.9/32
+
+# Registrar automation, once the credentials are in secrets.yml.
+dns_provider: regru
+
+# End-to-end probe: the username of the panel user whose VLESS UUID is in
+# secrets.yml as vault_verify_probe_vless_uuid.
+verify_probe_username: probe
+verify_probe_xray_binary: /usr/local/bin/xray
+
+# --- Monitoring (node side only) ----------------------------------------------
+# Ansible manages the agent that runs ON EACH NODE and nothing else. Prometheus,
+# Grafana, Alertmanager and the exporters that read the panel live on a separate
+# monitoring server that you install by hand - monitoring/README.ru.md is the
+# instruction for that, and none of its settings belong in this file.
+#
+# Off until the monitoring server exists. Turning it on does two things on the
+# next ordinary install run of each node: node_base appends one
+# source-restricted nftables rule for the exporter port, and node_monitoring
+# installs node_exporter and the session collector. Nothing else on the node
+# changes.
+node_monitoring_enabled: false
+# The monitoring server, and only it, may reach :9100 on every node.
+# node_exporter has no authentication of its own, so this list is the access
+# control: an empty list with monitoring on is refused, and so is a /0.
+monitoring_scrape_cidrs:
+  - 198.51.100.20/32

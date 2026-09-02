@@ -1,0 +1,10 @@
+{{ remnawave_logs_dir }}/current {{ remnawave_nginx_logs_dir }}/*.log {
+  daily
+  rotate {{ remnawave_logrotate_retention }}
+  missingok
+  notifempty
+  compress
+  delaycompress
+  copytruncate
+  su root root
+}

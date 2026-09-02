@@ -1,0 +1,70 @@
+---
+argument_specs:
+  main:
+    short_description: Install Xray, RemnaNode, nginx selfsteal and node maintenance
+    options:
+      remnawave_node_image:
+        type: str
+        required: true
+      remnawave_node_port:
+        type: int
+        required: true
+      remnawave_node_env_path:
+        type: path
+      selfsteal_domain:
+        type: str
+        required: true
+      selfsteal_virtual_hosts:
+        type: list
+        elements: dict
+        required: true
+      xray_version:
+        type: str
+        required: true
+      xray_checksums:
+        type: dict
+        required: true
+      selfsteal_decoy_seed:
+        type: str
+        description: Stable per-node seed for the generated decoy site.
+      selfsteal_decoy_salt:
+        type: str
+        description: Extra seed input to reroll one node's site without changing node_id.
+      selfsteal_decoy_generation:
+        type: int
+        description: Bump to reroll the generated site across the whole fleet.
+      selfsteal_refresh_content:
+        type: bool
+        description: Overwrite generated site files; a no-op unless the seed changed.
+      certificate_live_dir:
+        type: path
+        description: Directory nginx reads the certificate from.
+      remnawave_nginx_user:
+        type: str
+        description: User the pinned nginx image runs as.
+      certificate_enabled:
+        type: bool
+      certificate_mode:
+        type: str
+        choices: [http01, cloudflare_dns]
+      certificate_acme_environment:
+        type: str
+        choices: [auto, staging, production]
+        description: >-
+          auto issues a staging certificate first on a node that has none, then the production one.
+          staging and production force a single environment.
+      certificate_acme_directory:
+        type: str
+        description: Explicit ACME directory URL; overrides certificate_acme_environment.
+      certificate_webroot_path:
+        type: path
+        description: Directory nginx serves at /.well-known/acme-challenge/ for HTTP-01.
+      certificate_force_reissue:
+        type: bool
+        description: One-run switch that re-issues a certificate that is still valid.
+      geodata_files:
+        type: list
+        elements: dict
+      node_plugins:
+        type: list
+        elements: dict

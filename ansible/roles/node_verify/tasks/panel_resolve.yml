@@ -1,0 +1,240 @@
+---
+# Standalone acceptance. "03 - Verify Node" is its own Ansible run, so nothing
+# the reconciler published with set_fact exists any more - facts are not a
+# contract between runs. Everything acceptance needs is therefore resolved here
+# again, read-only, from the same stable identities the reconciler uses: the
+# node name, the profile name, the Host identity chain, the template name.
+# GET, resolve, assert, set_fact - nothing in this file may write to the Panel,
+# and a resource that does not exist is a clear failure, never a creation.
+- name: Derive the Panel API base from the fleet configuration
+  ansible.builtin.set_fact:
+    remnawave_api_base: "{{ remnawave_panel_url | regex_replace('/+$', '') }}/api"
+
+- name: Read Nodes, Config Profiles, Hosts and Internal Squads
+  ansible.builtin.uri:
+    url: "{{ remnawave_api_base }}/{{ item }}"
+    method: GET
+    headers:
+      Authorization: "Bearer {{ remnawave_panel_token }}"
+    return_content: true
+    status_code: 200
+    timeout: "{{ remnawave_api_timeout }}"
+    validate_certs: "{{ remnawave_panel_validate_certs }}"
+  register: node_verify_resolve_reads
+  loop: [nodes, config-profiles, hosts, internal-squads]
+  delegate_to: localhost
+  become: false
+  no_log: true
+  changed_when: false
+  # Read-only: it runs in check mode too, so a dry-run sees real state.
+  check_mode: false
+
+- name: Match the Panel resources this node owns
+  ansible.builtin.set_fact:
+    node_verify_resolve_nodes: >-
+      {{ node_verify_resolve_reads.results[0].json | remnawave_response_items
+         | selectattr('name', 'equalto', node_name) | list }}
+    node_verify_resolve_profiles: >-
+      {{ (node_verify_resolve_reads.results[1].json | remnawave_response_items('configProfiles')
+          | selectattr('uuid', 'equalto', profile_uuid) | list)
+         if profile_uuid | default('') | length > 0 else
+         (node_verify_resolve_reads.results[1].json | remnawave_response_items('configProfiles')
+          | selectattr('name', 'equalto', profile_name) | list) }}
+    node_verify_resolve_hosts: "{{ node_verify_resolve_reads.results[2].json | remnawave_response_items }}"
+    node_verify_resolve_squads: >-
+      {{ (node_verify_resolve_reads.results[3].json | remnawave_response_items('internalSquads')
+          | selectattr('uuid', 'equalto', internal_squad_uuid) | list)
+         if internal_squad_uuid | default('') | length > 0 else
+         (node_verify_resolve_reads.results[3].json | remnawave_response_items('internalSquads')
+          | selectattr('name', 'equalto', internal_squad_name) | list) }}
+
+- name: Require the reconciled resources to exist before verifying them
+  ansible.builtin.assert:
+    that:
+      - node_verify_resolve_nodes | length == 1
+      - node_verify_resolve_profiles | length == 1
+      - node_verify_resolve_squads | length == 1
+    fail_msg: >-
+      The Panel does not hold exactly one Node '{{ node_name }}'
+      ({{ node_verify_resolve_nodes | length }} found), Config Profile
+      '{{ profile_uuid | default(profile_name, true) }}'
+      ({{ node_verify_resolve_profiles | length }} found) and Internal Squad
+      '{{ internal_squad_uuid | default(internal_squad_name, true) }}'
+      ({{ node_verify_resolve_squads | length }} found). Acceptance verifies the
+      reconciled state and never creates it - run "02 - Install / Reconcile Node"
+      for this host first.
+
+- name: Store the resolved Node, Config Profile and Internal Squad
+  ansible.builtin.set_fact:
+    remnawave_node_uuid: "{{ node_verify_resolve_nodes[0].uuid }}"
+    remnawave_config_profile_uuid: "{{ node_verify_resolve_profiles[0].uuid }}"
+    remnawave_internal_squad_uuid: "{{ node_verify_resolve_squads[0].uuid }}"
+
+- name: Read the Config Profile this node runs
+  # The list endpoint identifies the profile; the profile itself carries the
+  # Xray configuration and the panel's inbound index. This is the same read the
+  # reconciler makes, so acceptance sees exactly what it published.
+  ansible.builtin.uri:
+    url: "{{ remnawave_api_base }}/config-profiles/{{ remnawave_config_profile_uuid }}"
+    method: GET
+    headers:
+      Authorization: "Bearer {{ remnawave_panel_token }}"
+    return_content: true
+    status_code: 200
+    timeout: "{{ remnawave_api_timeout }}"
+    validate_certs: "{{ remnawave_panel_validate_certs }}"
+  register: node_verify_resolve_profile
+  delegate_to: localhost
+  become: false
+  no_log: true
+  changed_when: false
+  # Read-only: it runs in check mode too, so a dry-run sees real state.
+  check_mode: false
+
+- name: Normalize the profile's two inbound representations
+  ansible.builtin.set_fact:
+    # A Config Profile describes its inbounds twice. "config.inbounds" is the
+    # Xray JSON the node runs, with streamSettings at the top level and no
+    # panel identity. "inbounds" is the panel's own index: it carries the uuid
+    # every Host and Node binds to, and nests the same Xray payload under
+    # rawInbound. Identity comes from the index, Reality settings from either -
+    # normalized here once so no task below has to know the difference.
+    node_verify_resolve_index: >-
+      {{ node_verify_resolve_profile.json.response.inbounds
+         | default(node_verify_resolve_profile.json.response.config.inbounds, true) }}
+    node_verify_resolve_reality: >-
+      {{ {'inbounds': (node_verify_resolve_profile.json.response.config.inbounds | default([], true))
+                      + (node_verify_resolve_profile.json.response.inbounds | default([], true))}
+         | remnawave_reality_settings(inbound_specs | map(attribute='tag') | list) }}
+  no_log: true
+
+- name: Build the inbound UUID map
+  ansible.builtin.set_fact:
+    remnawave_inbound_uuid_map: >-
+      {{ remnawave_inbound_uuid_map | default({})
+         | combine({item.tag: item.uuid}) }}
+  loop: "{{ node_verify_resolve_index }}"
+  loop_control:
+    label: "{{ item.tag }}"
+  when: item.uuid | default('') | length > 0
+  no_log: true
+
+- name: Require the profile to carry every inbound this node declares
+  ansible.builtin.assert:
+    that:
+      - >-
+        inbound_specs | map(attribute='tag')
+        | reject('in', remnawave_inbound_uuid_map | default({})) | list | length == 0
+    fail_msg: >-
+      Config Profile '{{ profile_name }}' does not carry
+      {{ inbound_specs | map(attribute='tag')
+         | reject('in', remnawave_inbound_uuid_map | default({})) | list | join(', ') }}
+      with a panel inbound uuid. Acceptance never adds an inbound - run
+      "02 - Install / Reconcile Node" first.
+
+- name: Store the managed inbound UUIDs and this node's Reality settings
+  ansible.builtin.set_fact:
+    remnawave_managed_inbound_uuids: >-
+      {{ inbound_specs | map(attribute='tag') | select('in', remnawave_inbound_uuid_map)
+         | map('extract', remnawave_inbound_uuid_map) | list }}
+    remnawave_reality_private_key: "{{ node_verify_resolve_reality.privateKey | default('') }}"
+    remnawave_reality_short_ids: "{{ node_verify_resolve_reality.shortIds | default([]) }}"
+  no_log: true
+
+- name: Require the Reality settings the end-to-end probe needs
+  # The probe derives its public key from the private key and presents one of
+  # the short IDs. Failing here names the missing field; without this the run
+  # failed several tasks later on "Reality private key must be a non-empty
+  # string", which says nothing about where the key was supposed to come from.
+  ansible.builtin.assert:
+    that:
+      - remnawave_reality_private_key | length > 0
+      - remnawave_reality_short_ids | length > 0
+    fail_msg: >-
+      Config Profile '{{ profile_name }}' carries no Reality privateKey/shortIds for
+      inbound '{{ inbound_specs[0].tag }}' (checked both config.inbounds[].streamSettings
+      and inbounds[].rawInbound.streamSettings). Acceptance reads them and never
+      generates them - run "02 - Install / Reconcile Node" first.
+
+- name: Require each declared Host to exist exactly once
+  ansible.builtin.assert:
+    that:
+      - node_verify_resolve_matches | length == 1
+    fail_msg: >-
+      The Panel holds {{ node_verify_resolve_matches | length }} Hosts matching
+      '{{ item.remark }}' at {{ item.address }} (inbound {{ item.inbound_tag }}).
+      Acceptance never creates or repairs a Host - run "02 - Install / Reconcile
+      Node" first.
+  loop: "{{ host_specs }}"
+  loop_control:
+    label: "{{ item.remark }}"
+  vars:
+    node_verify_resolve_matches: "{{ node_verify_resolve_hosts | node_verify_host_matches(item, remnawave_inbound_uuid_map) }}"
+
+- name: Store the resolved Host UUIDs
+  ansible.builtin.set_fact:
+    remnawave_host_uuids: >-
+      {{ (remnawave_host_uuids | default([]))
+         + [(node_verify_resolve_hosts
+             | node_verify_host_matches(item, remnawave_inbound_uuid_map))[0].uuid] }}
+  loop: "{{ host_specs }}"
+  loop_control:
+    label: "{{ item.remark }}"
+
+- name: Read the Xray JSON subscription templates
+  ansible.builtin.uri:
+    url: "{{ remnawave_api_base }}/subscription-templates"
+    method: GET
+    headers:
+      Authorization: "Bearer {{ remnawave_panel_token }}"
+    return_content: true
+    status_code: 200
+    timeout: "{{ remnawave_api_timeout }}"
+    validate_certs: "{{ remnawave_panel_validate_certs }}"
+  register: node_verify_resolve_templates
+  delegate_to: localhost
+  become: false
+  no_log: true
+  changed_when: false
+  # Read-only: it runs in check mode too, so a dry-run sees real state.
+  check_mode: false
+  when: xray_json_template_name | default('') | length > 0
+
+- name: Resolve the Xray JSON template by its name
+  ansible.builtin.set_fact:
+    node_verify_resolve_template_matches: >-
+      {{ node_verify_resolve_templates.json | remnawave_response_items('templates')
+         | selectattr('templateType', 'equalto', 'XRAY_JSON')
+         | selectattr('name', 'equalto', xray_json_template_name) | list }}
+  when: xray_json_template_name | default('') | length > 0
+
+- name: Require the declared Xray JSON template to exist
+  ansible.builtin.assert:
+    that:
+      - node_verify_resolve_template_matches | length == 1
+    fail_msg: >-
+      The Panel holds {{ node_verify_resolve_template_matches | length }} XRAY_JSON
+      subscription templates called '{{ xray_json_template_name }}'. Acceptance
+      never creates one - it has to exist already.
+  when: xray_json_template_name | default('') | length > 0
+
+- name: Store the resolved Xray JSON template UUID
+  ansible.builtin.set_fact:
+    remnawave_xray_json_template_uuid: "{{ node_verify_resolve_template_matches[0].uuid }}"
+  when: xray_json_template_name | default('') | length > 0
+
+- name: Report that a standalone run cannot know whether subscriptions changed
+  ansible.builtin.set_fact:
+    # The reconciler sets this when it changed a Host. A standalone acceptance
+    # run changed nothing, so the honest value is false.
+    subscription_refresh_required: false
+  when: subscription_refresh_required is not defined
+
+- name: Rebuild the deterministic decoy profiles for the selfsteal check
+  ansible.builtin.set_fact:
+    remnawave_decoy_profiles: >-
+      {{ remnawave_decoy_profiles | default({}) |
+         combine({item.name: remnawave_decoy_seed | trim | remnawave_decoy_profile(item.name)}) }}
+  loop: "{{ selfsteal_virtual_hosts }}"
+  loop_control:
+    label: "{{ item.name }}"

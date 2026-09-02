@@ -1,0 +1,136 @@
+---
+# Three plays, in the only order that is safe:
+#
+#   1. controller-side preflight - reads the inventory and the panel, changes
+#      nothing anywhere, so a conflict stops the run before the registrar and the
+#      server have been touched. This is also the Semaphore "Preflight" template
+#      (--tags preflight --check).
+#   2. DNS - the record has to exist and resolve before ACME and before the node
+#      resolves its own selfsteal name.
+#   3. the node itself - node-side preflight, then installation and verification.
+#
+# One node per run: play 3 writes this node's inbound into one shared Config
+# Profile, and that write is a read-modify-write. node_allow_bulk exists for a
+# deliberate fleet-wide reconcile, which then still runs strictly one at a time.
+
+- name: Check the inventory and the panel before anything changes
+  hosts: remnawave_nodes
+  # No connection to the node is made here on purpose: the panel and the
+  # inventory can be validated before the VPS even exists.
+  connection: local
+  gather_facts: false
+  become: false
+  any_errors_fatal: true
+  vars:
+    # This play runs on the controller, so say which Python it uses instead of
+    # letting interpreter discovery work it out. Discovery caches its answer on
+    # the inventory host for the whole run, and the answer here is the
+    # controller's interpreter - which the next play would then try to execute
+    # on the node over SSH.
+    ansible_python_interpreter: "{{ ansible_playbook_python }}"
+
+  tasks:
+    - name: Refuse a fleet-wide run that was not asked for
+      ansible.builtin.assert:
+        that:
+          - ansible_play_hosts_all | length == 1 or node_allow_bulk | bool
+        fail_msg: >-
+          This run resolved to {{ ansible_play_hosts_all | length }} hosts
+          ({{ ansible_play_hosts_all | join(', ') }}). install_node.yml writes into one shared Config
+          Profile, so it reconciles one node at a time - pass --limit <host>, or set
+          node_allow_bulk=true for a deliberate fleet-wide reconcile.
+      run_once: true
+
+    - name: Run controller-side preflight
+      ansible.builtin.import_role:
+        name: node_base
+        tasks_from: preflight_controller.yml
+      tags: [preflight]
+
+- name: Reconcile the node's DNS record
+  hosts: remnawave_nodes
+  connection: local
+  gather_facts: false
+  become: false
+  serial: 1
+  any_errors_fatal: true
+  vars:
+    # This play runs on the controller, so say which Python it uses instead of
+    # letting interpreter discovery work it out. Discovery caches its answer on
+    # the inventory host for the whole run, and the answer here is the
+    # controller's interpreter - which the next play would then try to execute
+    # on the node over SSH.
+    ansible_python_interpreter: "{{ ansible_playbook_python }}"
+
+  roles:
+    - role: dns
+      tags: [dns]
+      when: dns_provider | default('none') != 'none'
+
+- name: Install and verify the node
+  hosts: remnawave_nodes
+  become: true
+  # Deliberately not gather_facts: true - see the same comment in bootstrap.yml.
+  # Facts come from the explicit task below, which carries "always" because
+  # node-side preflight carries it too and reads facts. Both sit behind the
+  # guard, so a controller-side preflight run ends this play before either of
+  # them reaches for a node that may not be reachable yet.
+  gather_facts: false
+  # The shared Config Profile is reconciled with a read-modify-write, so even a
+  # deliberate fleet-wide run touches it one node at a time.
+  serial: 1
+  any_errors_fatal: true
+
+  pre_tasks:
+    - name: Leave the node alone on a controller-side preflight run
+      ansible.builtin.meta: end_play
+      when: remnawave_preflight_only | bool
+      tags: [always]
+
+    - name: Gather facts from the node
+      ansible.builtin.setup:
+        gather_subset: [all]
+      tags: [always]
+
+  roles:
+    - role: node_base
+      tags: [node_base]
+    - role: remnawave_panel
+      tags: [remnawave_panel]
+    - role: remnawave_node
+      tags: [remnawave_node]
+    # Additive and off by default. It runs here rather than in a playbook of its
+    # own because the firewall rule that makes the exporter reachable is
+    # rendered by node_base above: installing the listener in a separate run
+    # would leave a window where it is reachable from anywhere.
+    #
+    # Ansible manages the node-side agent only. Prometheus, Grafana,
+    # Alertmanager and the exporters that read the panel live on a monitoring
+    # server that is installed by hand - see monitoring/README.ru.md.
+    #
+    # The second condition is what makes a rollback reachable: removing the
+    # agent means running this role with node_monitoring_state=absent, and by
+    # then node_monitoring_enabled is usually already false.
+    - role: node_monitoring
+      tags: [node_monitoring]
+      when: >-
+        node_monitoring_enabled | default(false) | bool
+        or node_monitoring_state | default('present') == 'absent'
+    # Measure the node's capacity now that its network path is up and stable, but
+    # before node_verify and the capacity sync. Off unless the host sets
+    # capacity_auto_test; a node already measured is reused, not retested. It
+    # changes no routing, Xray, firewall or sysctl - it only runs iperf3.
+    - role: node_capacity_test
+      tags: [node_capacity_test]
+      when: capacity_auto_test | default(false) | bool
+    - role: node_verify
+      tags: [node_verify]
+
+# Fold this node's inventory-declared capacity into the monitoring capacity
+# inventory, so a standard node's throughput is written once - on its host - and
+# never again by hand. Controller-side and additive: it rewrites one file under
+# /etc/august-monitoring and contacts no node. It is a no-op on a controller that
+# has no monitoring stack, and can be disabled with capacity_sync_enabled=false.
+# See playbooks/sync_capacity.yml and monitoring/sync_capacity.py.
+- name: Sync the monitoring capacity inventory from the Ansible inventory
+  import_playbook: sync_capacity.yml

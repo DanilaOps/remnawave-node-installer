@@ -1,0 +1,549 @@
+# promtool unit tests for what may and may not page somebody, run against the
+# real PromQL engine. RULE_DIR is replaced by monitoring/tests/test_alert_thresholds.sh
+# with the directory holding the rules this repository ships.
+#
+# The question these answer: does a threshold written as "200 Mbit/s free" hold
+# for a 5 Gbit/s link and a 1 Gbit/s link alike? A percentage cannot - 20% of
+# the first is a gigabit still free and 20% of the second is the emergency -
+# which is why the alerting model counts Mbit/s and why the first test below is
+# a node sitting at exactly 20% free and expected to be silent.
+rule_files:
+  - RULE_DIR/recording-rules.yml
+  - RULE_DIR/alert-rules.yml
+
+evaluation_interval: 30s
+
+tests:
+  # ---------------------------------------------------------------- bandwidth
+  # One fixture, five nodes, each rated and loaded differently. Traffic is fed
+  # as the real counters so the whole chain runs: counter -> rate -> uuid->name
+  # join -> used_bps -> free_mbps -> alert.
+  #
+  #   BIG-GREEN   5000 rated, 4000 used  -> 1000 free, exactly 20%: silent
+  #   BIG-WARN    5000 rated, 4600 used  ->  400 free: warning only
+  #   BIG-CRIT    5000 rated, 4850 used  ->  150 free: critical
+  #   SMALL-CRIT  1000 rated,  850 used  ->  150 free: critical, same floor
+  #   SPLIT       5000 rated, download 3000 free / upload 150 free
+  - interval: 30s
+    name: bandwidth thresholds are absolute, not a percentage
+    input_series:
+      # 1 Gbit/s = 125e6 bytes/s = 3.75e9 bytes per 30s step.
+      # BIG-GREEN: 4 Gbit/s in both directions.
+      - series: 'remnawave_node_inbound_download_bytes{node_uuid="u-green"}'
+        values: "0+15000000000x80"
+      - series: 'remnawave_node_inbound_upload_bytes{node_uuid="u-green"}'
+        values: "0+15000000000x80"
+      # BIG-WARN: 4.6 Gbit/s.
+      - series: 'remnawave_node_inbound_download_bytes{node_uuid="u-warn"}'
+        values: "0+17250000000x80"
+      - series: 'remnawave_node_inbound_upload_bytes{node_uuid="u-warn"}'
+        values: "0+17250000000x80"
+      # BIG-CRIT: 4.85 Gbit/s.
+      - series: 'remnawave_node_inbound_download_bytes{node_uuid="u-crit"}'
+        values: "0+18187500000x80"
+      - series: 'remnawave_node_inbound_upload_bytes{node_uuid="u-crit"}'
+        values: "0+18187500000x80"
+      # SMALL-CRIT: 0.85 Gbit/s against a 1 Gbit/s rating.
+      - series: 'remnawave_node_inbound_download_bytes{node_uuid="u-small"}'
+        values: "0+3187500000x80"
+      - series: 'remnawave_node_inbound_upload_bytes{node_uuid="u-small"}'
+        values: "0+3187500000x80"
+      # SPLIT: download 2 Gbit/s used (3000 free), upload 4.85 Gbit/s used (150 free).
+      - series: 'remnawave_node_inbound_download_bytes{node_uuid="u-split"}'
+        values: "0+7500000000x80"
+      - series: 'remnawave_node_inbound_upload_bytes{node_uuid="u-split"}'
+        values: "0+18187500000x80"
+      # UNMEASURED carries real traffic and has no rating at all.
+      - series: 'remnawave_node_inbound_download_bytes{node_uuid="u-unmeasured"}'
+        values: "0+18187500000x80"
+      - series: 'remnawave_node_inbound_upload_bytes{node_uuid="u-unmeasured"}'
+        values: "0+18187500000x80"
+
+      # Identity, membership and state.
+      - series: 'august_node_identity{node="BIG-GREEN",node_uuid="u-green",pool="P5"}'
+        values: "1x80"
+      - series: 'august_node_identity{node="BIG-WARN",node_uuid="u-warn",pool="P5"}'
+        values: "1x80"
+      - series: 'august_node_identity{node="BIG-CRIT",node_uuid="u-crit",pool="P5"}'
+        values: "1x80"
+      - series: 'august_node_identity{node="SMALL-CRIT",node_uuid="u-small",pool="P1"}'
+        values: "1x80"
+      - series: 'august_node_identity{node="SPLIT",node_uuid="u-split",pool="P5"}'
+        values: "1x80"
+      - series: 'august_node_identity{node="UNMEASURED",node_uuid="u-unmeasured",pool="PU"}'
+        values: "1x80"
+
+      - series: 'august_node_active{node="BIG-GREEN",pool="P5"}'
+        values: "1x80"
+      - series: 'august_node_active{node="BIG-WARN",pool="P5"}'
+        values: "1x80"
+      - series: 'august_node_active{node="BIG-CRIT",pool="P5"}'
+        values: "1x80"
+      - series: 'august_node_active{node="SMALL-CRIT",pool="P1"}'
+        values: "1x80"
+      - series: 'august_node_active{node="SPLIT",pool="P5"}'
+        values: "1x80"
+      - series: 'august_node_active{node="UNMEASURED",pool="PU"}'
+        values: "1x80"
+
+      - series: 'august_node_enabled{node="BIG-GREEN",pool="P5"}'
+        values: "1x80"
+      - series: 'august_node_enabled{node="BIG-WARN",pool="P5"}'
+        values: "1x80"
+      - series: 'august_node_enabled{node="BIG-CRIT",pool="P5"}'
+        values: "1x80"
+      - series: 'august_node_enabled{node="SMALL-CRIT",pool="P1"}'
+        values: "1x80"
+      - series: 'august_node_enabled{node="SPLIT",pool="P5"}'
+        values: "1x80"
+      - series: 'august_node_enabled{node="UNMEASURED",pool="PU"}'
+        values: "1x80"
+
+      # Ratings. UNMEASURED deliberately has none.
+      - series: 'august_capacity_mbps{scope="node",node="BIG-GREEN",name="BIG-GREEN",direction="download"}'
+        values: "5000x80"
+      - series: 'august_capacity_mbps{scope="node",node="BIG-GREEN",name="BIG-GREEN",direction="upload"}'
+        values: "5000x80"
+      - series: 'august_capacity_mbps{scope="node",node="BIG-WARN",name="BIG-WARN",direction="download"}'
+        values: "5000x80"
+      - series: 'august_capacity_mbps{scope="node",node="BIG-WARN",name="BIG-WARN",direction="upload"}'
+        values: "5000x80"
+      - series: 'august_capacity_mbps{scope="node",node="BIG-CRIT",name="BIG-CRIT",direction="download"}'
+        values: "5000x80"
+      - series: 'august_capacity_mbps{scope="node",node="BIG-CRIT",name="BIG-CRIT",direction="upload"}'
+        values: "5000x80"
+      - series: 'august_capacity_mbps{scope="node",node="SMALL-CRIT",name="SMALL-CRIT",direction="download"}'
+        values: "1000x80"
+      - series: 'august_capacity_mbps{scope="node",node="SMALL-CRIT",name="SMALL-CRIT",direction="upload"}'
+        values: "1000x80"
+      - series: 'august_capacity_mbps{scope="node",node="SPLIT",name="SPLIT",direction="download"}'
+        values: "5000x80"
+      - series: 'august_capacity_mbps{scope="node",node="SPLIT",name="SPLIT",direction="upload"}'
+        values: "5000x80"
+
+    promql_expr_test:
+      # The headroom the alerts read, in Mbit/s.
+      - expr: round(august:alert_node_free_mbps{node="BIG-GREEN",direction="download"})
+        eval_time: 20m
+        exp_samples:
+          - labels: '{node="BIG-GREEN", direction="download", pool="P5"}'
+            value: 1000
+      - expr: round(august:alert_node_free_mbps{node="BIG-WARN",direction="download"})
+        eval_time: 20m
+        exp_samples:
+          - labels: '{node="BIG-WARN", direction="download", pool="P5"}'
+            value: 400
+      - expr: round(august:alert_node_free_mbps{node="BIG-CRIT",direction="download"})
+        eval_time: 20m
+        exp_samples:
+          - labels: '{node="BIG-CRIT", direction="download", pool="P5"}'
+            value: 150
+      - expr: round(august:alert_node_free_mbps{node="SMALL-CRIT",direction="download"})
+        eval_time: 20m
+        exp_samples:
+          - labels: '{node="SMALL-CRIT", direction="download", pool="P1"}'
+            value: 150
+      # Exactly 20% free on a 5 Gbit/s link is 1000 Mbit/s, and 1000 is not below 500.
+      - expr: august:alert_node_free_mbps{node="BIG-GREEN"} < 500
+        eval_time: 20m
+        exp_samples: []
+      # An unmeasured node produces no headroom series at all, so no threshold
+      # can be applied to it and no alert can be invented for it.
+      - expr: august:alert_node_free_mbps{node="UNMEASURED"}
+        eval_time: 20m
+        exp_samples: []
+
+    alert_rule_test:
+      # 1000 Mbit/s free: silent, although it is exactly 20%.
+      - eval_time: 20m
+        alertname: AugustNodeBandwidthLow
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              class: capacity
+              node: BIG-WARN
+              pool: P5
+              direction: download
+            exp_annotations:
+              summary: "🟡 Bandwidth low — BIG-WARN (download)"
+              description: "400 Mbit/s free on download, below the 500 Mbit/s warning floor for 5 minutes. Node BIG-WARN, pool P5. Bottleneck: download. Used and total are on the dashboard, row 4. Not paged."
+          - exp_labels:
+              severity: warning
+              class: capacity
+              node: BIG-WARN
+              pool: P5
+              direction: upload
+            exp_annotations:
+              summary: "🟡 Bandwidth low — BIG-WARN (upload)"
+              description: "400 Mbit/s free on upload, below the 500 Mbit/s warning floor for 5 minutes. Node BIG-WARN, pool P5. Bottleneck: upload. Used and total are on the dashboard, row 4. Not paged."
+          - exp_labels:
+              severity: warning
+              class: capacity
+              node: BIG-CRIT
+              pool: P5
+              direction: download
+            exp_annotations:
+              summary: "🟡 Bandwidth low — BIG-CRIT (download)"
+              description: "150 Mbit/s free on download, below the 500 Mbit/s warning floor for 5 minutes. Node BIG-CRIT, pool P5. Bottleneck: download. Used and total are on the dashboard, row 4. Not paged."
+          - exp_labels:
+              severity: warning
+              class: capacity
+              node: BIG-CRIT
+              pool: P5
+              direction: upload
+            exp_annotations:
+              summary: "🟡 Bandwidth low — BIG-CRIT (upload)"
+              description: "150 Mbit/s free on upload, below the 500 Mbit/s warning floor for 5 minutes. Node BIG-CRIT, pool P5. Bottleneck: upload. Used and total are on the dashboard, row 4. Not paged."
+          - exp_labels:
+              severity: warning
+              class: capacity
+              node: SMALL-CRIT
+              pool: P1
+              direction: download
+            exp_annotations:
+              summary: "🟡 Bandwidth low — SMALL-CRIT (download)"
+              description: "150 Mbit/s free on download, below the 500 Mbit/s warning floor for 5 minutes. Node SMALL-CRIT, pool P1. Bottleneck: download. Used and total are on the dashboard, row 4. Not paged."
+          - exp_labels:
+              severity: warning
+              class: capacity
+              node: SMALL-CRIT
+              pool: P1
+              direction: upload
+            exp_annotations:
+              summary: "🟡 Bandwidth low — SMALL-CRIT (upload)"
+              description: "150 Mbit/s free on upload, below the 500 Mbit/s warning floor for 5 minutes. Node SMALL-CRIT, pool P1. Bottleneck: upload. Used and total are on the dashboard, row 4. Not paged."
+          # SPLIT is below 500 only on upload. Download has 3000 free.
+          - exp_labels:
+              severity: warning
+              class: capacity
+              node: SPLIT
+              pool: P5
+              direction: upload
+            exp_annotations:
+              summary: "🟡 Bandwidth low — SPLIT (upload)"
+              description: "150 Mbit/s free on upload, below the 500 Mbit/s warning floor for 5 minutes. Node SPLIT, pool P5. Bottleneck: upload. Used and total are on the dashboard, row 4. Not paged."
+
+      # The critical set: 150 Mbit/s free, on a 5 Gbit link and a 1 Gbit link
+      # alike, and on the one direction that is short.
+      - eval_time: 20m
+        alertname: AugustNodeBandwidthCritical
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              class: capacity
+              node: BIG-CRIT
+              pool: P5
+              direction: download
+            exp_annotations:
+              summary: "🔴 Bandwidth critical — BIG-CRIT (download)"
+              description: "Only 150 Mbit/s free on download for 5 minutes, below the 200 Mbit/s floor. Node BIG-CRIT, pool P5. Bottleneck: download - the other direction is not what fired this. Used and total: dashboard row 4."
+          - exp_labels:
+              severity: critical
+              class: capacity
+              node: BIG-CRIT
+              pool: P5
+              direction: upload
+            exp_annotations:
+              summary: "🔴 Bandwidth critical — BIG-CRIT (upload)"
+              description: "Only 150 Mbit/s free on upload for 5 minutes, below the 200 Mbit/s floor. Node BIG-CRIT, pool P5. Bottleneck: upload - the other direction is not what fired this. Used and total: dashboard row 4."
+          - exp_labels:
+              severity: critical
+              class: capacity
+              node: SMALL-CRIT
+              pool: P1
+              direction: download
+            exp_annotations:
+              summary: "🔴 Bandwidth critical — SMALL-CRIT (download)"
+              description: "Only 150 Mbit/s free on download for 5 minutes, below the 200 Mbit/s floor. Node SMALL-CRIT, pool P1. Bottleneck: download - the other direction is not what fired this. Used and total: dashboard row 4."
+          - exp_labels:
+              severity: critical
+              class: capacity
+              node: SMALL-CRIT
+              pool: P1
+              direction: upload
+            exp_annotations:
+              summary: "🔴 Bandwidth critical — SMALL-CRIT (upload)"
+              description: "Only 150 Mbit/s free on upload for 5 minutes, below the 200 Mbit/s floor. Node SMALL-CRIT, pool P1. Bottleneck: upload - the other direction is not what fired this. Used and total: dashboard row 4."
+          # The bottleneck case: upload is critical, download has 3 Gbit/s spare
+          # and raises nothing. Exactly one alert, and it names upload.
+          - exp_labels:
+              severity: critical
+              class: capacity
+              node: SPLIT
+              pool: P5
+              direction: upload
+            exp_annotations:
+              summary: "🔴 Bandwidth critical — SPLIT (upload)"
+              description: "Only 150 Mbit/s free on upload for 5 minutes, below the 200 Mbit/s floor. Node SPLIT, pool P5. Bottleneck: upload - the other direction is not what fired this. Used and total: dashboard row 4."
+
+  # ------------------------------------------------------------ pool headroom
+  - interval: 30s
+    name: a pool whose figure is an upper bound raises nothing
+    input_series:
+      # CERTAIN: rated 2000, 1900 used -> 100 free, well under the floor.
+      - series: 'august_pool_capacity_mbps{pool="CERTAIN",direction="download"}'
+        values: "2000x80"
+      - series: 'august_pool_capacity_certain{pool="CERTAIN",direction="download"}'
+        values: "1x80"
+      # UNCERTAIN: identical numbers, but a member has left so the figure is an
+      # upper bound. Alerting on it would be inventing capacity.
+      - series: 'august_pool_capacity_mbps{pool="UNCERTAIN",direction="download"}'
+        values: "2000x80"
+      - series: 'august_pool_capacity_certain{pool="UNCERTAIN",direction="download"}'
+        values: "0x80"
+      - series: 'remnawave_node_inbound_download_bytes{node_uuid="u-pc"}'
+        values: "0+7125000000x80"
+      - series: 'remnawave_node_inbound_download_bytes{node_uuid="u-pu"}'
+        values: "0+7125000000x80"
+      - series: 'august_node_identity{node="PC-01",node_uuid="u-pc",pool="CERTAIN"}'
+        values: "1x80"
+      - series: 'august_node_identity{node="PU-01",node_uuid="u-pu",pool="UNCERTAIN"}'
+        values: "1x80"
+      # august:pool_used_bps only counts members that are active, so without
+      # these the pool has traffic and no usage.
+      - series: 'august_node_active{node="PC-01",pool="CERTAIN"}'
+        values: "1x80"
+      - series: 'august_node_active{node="PU-01",pool="UNCERTAIN"}'
+        values: "1x80"
+    promql_expr_test:
+      - expr: round(august:alert_pool_free_mbps{pool="CERTAIN",direction="download"})
+        eval_time: 20m
+        exp_samples:
+          - labels: '{pool="CERTAIN", direction="download"}'
+            value: 100
+      # Present in august:pool_free_mbps, absent from the alertable view.
+      - expr: august:alert_pool_free_mbps{pool="UNCERTAIN"}
+        eval_time: 20m
+        exp_samples: []
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: AugustPoolBandwidthCritical
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              class: capacity
+              pool: CERTAIN
+              direction: download
+            exp_annotations:
+              summary: "🔴 Pool bandwidth critical — CERTAIN (download)"
+              description: "Only 100 Mbit/s free on download across pool CERTAIN, below the 200 Mbit/s floor for 5 minutes. Bottleneck: download. The whole location is close to full, not one machine."
+
+  # ------------------------------------------------------------------ CPU
+  # Boundaries and the "for" delays. idle rate r means busy = 1 - r.
+  - interval: 30s
+    name: CPU boundaries and delays
+    input_series:
+      - series: 'node_cpu_seconds_total{node="CPU-79",cpu="0",mode="idle"}'
+        values: "0+6.3x80"     # 0.21 idle -> 79% busy
+      - series: 'node_cpu_seconds_total{node="CPU-81",cpu="0",mode="idle"}'
+        values: "0+5.7x80"     # 0.19 idle -> 81% busy
+      - series: 'node_cpu_seconds_total{node="CPU-89",cpu="0",mode="idle"}'
+        values: "0+3.3x80"     # 0.11 idle -> 89% busy
+      - series: 'node_cpu_seconds_total{node="CPU-91",cpu="0",mode="idle"}'
+        values: "0+2.7x80"     # 0.09 idle -> 91% busy
+    promql_expr_test:
+      - expr: round(august:node_cpu_busy_ratio * 100)
+        eval_time: 20m
+        exp_samples:
+          - labels: '{node="CPU-79"}'
+            value: 79
+          - labels: '{node="CPU-81"}'
+            value: 81
+          - labels: '{node="CPU-89"}'
+            value: 89
+          - labels: '{node="CPU-91"}'
+            value: 91
+    alert_rule_test:
+      # Nine minutes in: 81% and 89% are over the line but the 10m delay has not
+      # elapsed, so nothing has fired yet.
+      - eval_time: 9m
+        alertname: AugustNodeCpuHigh
+        exp_alerts: []
+      # Past 10m: 81, 89 and 91 are all above 80. 79 is not.
+      - eval_time: 20m
+        alertname: AugustNodeCpuHigh
+        exp_alerts:
+          - exp_labels: {severity: warning, class: resource, node: CPU-81}
+            exp_annotations:
+              summary: "🟡 CPU high — CPU-81"
+              description: "CPU has been above 80% for 10 minutes, now 81%. Node CPU-81. Not paged; watch it on the dashboard, row 9."
+          - exp_labels: {severity: warning, class: resource, node: CPU-89}
+            exp_annotations:
+              summary: "🟡 CPU high — CPU-89"
+              description: "CPU has been above 80% for 10 minutes, now 89%. Node CPU-89. Not paged; watch it on the dashboard, row 9."
+          - exp_labels: {severity: warning, class: resource, node: CPU-91}
+            exp_annotations:
+              summary: "🟡 CPU high — CPU-91"
+              description: "CPU has been above 80% for 10 minutes, now 91%. Node CPU-91. Not paged; watch it on the dashboard, row 9."
+      # Four minutes in: 91% is over 90 but the 5m delay has not elapsed.
+      - eval_time: 4m
+        alertname: AugustNodeCpuCritical
+        exp_alerts: []
+      # Past 5m: only 91 pages. 89 is below the critical line.
+      - eval_time: 20m
+        alertname: AugustNodeCpuCritical
+        exp_alerts:
+          - exp_labels: {severity: critical, class: resource, node: CPU-91}
+            exp_annotations:
+              summary: "🔴 CPU critical — CPU-91"
+              description: "CPU 91%, above 90% for 5 minutes. Node CPU-91. Sustained, not a spike: the 5 minute delay has already passed."
+
+  # ------------------------------------------------------------------ memory
+  - interval: 30s
+    name: memory boundaries and delays
+    input_series:
+      - series: 'node_memory_MemTotal_bytes{node="MEM-84"}'
+        values: "100x80"
+      - series: 'node_memory_MemAvailable_bytes{node="MEM-84"}'
+        values: "16x80"
+      - series: 'node_memory_MemTotal_bytes{node="MEM-86"}'
+        values: "100x80"
+      - series: 'node_memory_MemAvailable_bytes{node="MEM-86"}'
+        values: "14x80"
+      - series: 'node_memory_MemTotal_bytes{node="MEM-94"}'
+        values: "100x80"
+      - series: 'node_memory_MemAvailable_bytes{node="MEM-94"}'
+        values: "6x80"
+      - series: 'node_memory_MemTotal_bytes{node="MEM-96"}'
+        values: "100x80"
+      - series: 'node_memory_MemAvailable_bytes{node="MEM-96"}'
+        values: "4x80"
+    promql_expr_test:
+      - expr: round(august:node_memory_used_ratio * 100)
+        eval_time: 20m
+        exp_samples:
+          - labels: '{node="MEM-84"}'
+            value: 84
+          - labels: '{node="MEM-86"}'
+            value: 86
+          - labels: '{node="MEM-94"}'
+            value: 94
+          - labels: '{node="MEM-96"}'
+            value: 96
+    alert_rule_test:
+      - eval_time: 9m
+        alertname: AugustNodeMemoryHigh
+        exp_alerts: []
+      - eval_time: 20m
+        alertname: AugustNodeMemoryHigh
+        exp_alerts:
+          - exp_labels: {severity: warning, class: resource, node: MEM-86}
+            exp_annotations:
+              summary: "🟡 Memory high — MEM-86"
+              description: "Memory in use 86% for 10 minutes on MEM-86, measured against MemAvailable rather than MemFree, so page cache is not counted as used. Not paged."
+          - exp_labels: {severity: warning, class: resource, node: MEM-94}
+            exp_annotations:
+              summary: "🟡 Memory high — MEM-94"
+              description: "Memory in use 94% for 10 minutes on MEM-94, measured against MemAvailable rather than MemFree, so page cache is not counted as used. Not paged."
+          - exp_labels: {severity: warning, class: resource, node: MEM-96}
+            exp_annotations:
+              summary: "🟡 Memory high — MEM-96"
+              description: "Memory in use 96% for 10 minutes on MEM-96, measured against MemAvailable rather than MemFree, so page cache is not counted as used. Not paged."
+      - eval_time: 4m
+        alertname: AugustNodeMemoryCritical
+        exp_alerts: []
+      - eval_time: 20m
+        alertname: AugustNodeMemoryCritical
+        exp_alerts:
+          - exp_labels: {severity: critical, class: resource, node: MEM-96}
+            exp_annotations:
+              summary: "🔴 Memory critical — MEM-96"
+              description: "Memory in use 96% on MEM-96, above 95% for 5 minutes. Under 5% of total is available for a new allocation; the OOM killer is the next event."
+
+  # ------------------------------------------------- the duplicates are gone
+  # A node that is down, disabled, unknown to the panel or newly added must
+  # raise nothing here: the fleet's existing alerting system owns all of it.
+  # The metrics stay, which is the point - this test asserts both halves.
+  - interval: 30s
+    name: no alert duplicates the existing alerting system
+    input_series:
+      - series: 'august_node_enabled{node="DOWN-01",pool="P1"}'
+        values: "1x80"
+      - series: 'august_node_connected{node="DOWN-01",pool="P1"}'
+        values: "0x80"
+      - series: 'august_node_active{node="DOWN-01",pool="P1"}'
+        values: "0x80"
+      - series: 'august_node_administratively_disabled{node="OFF-01",pool="P1"}'
+        values: "1x80"
+      - series: 'august_node_known_to_panel{node="GHOST-01",pool="P1"}'
+        values: "0x80"
+      - series: 'august_topology_drift{kind="missing_from_panel"}'
+        values: "3x80"
+      - series: 'august_capacity_unrated{scope="node",node="UNRATED-01",direction="download"}'
+        values: "1x80"
+      - series: 'up{job="august_node_exporter",node="DOWN-01"}'
+        values: "0x80"
+    promql_expr_test:
+      # The metrics are still published - a dashboard can still show all of it.
+      - expr: august_node_connected{node="DOWN-01"}
+        eval_time: 20m
+        exp_samples:
+          - labels: '{__name__="august_node_connected", node="DOWN-01", pool="P1"}'
+            value: 0
+      - expr: august_topology_drift{kind="missing_from_panel"}
+        eval_time: 20m
+        exp_samples:
+          - labels: '{__name__="august_topology_drift", kind="missing_from_panel"}'
+            value: 3
+      - expr: august_capacity_unrated{node="UNRATED-01"}
+        eval_time: 20m
+        exp_samples:
+          - labels: '{__name__="august_capacity_unrated", scope="node", node="UNRATED-01", direction="download"}'
+            value: 1
+    alert_rule_test:
+      # And not one of them is an alert any more.
+      - eval_time: 30m
+        alertname: AugustNodeOffline
+        exp_alerts: []
+      - eval_time: 30m
+        alertname: AugustNodeUnhealthy
+        exp_alerts: []
+      - eval_time: 30m
+        alertname: AugustNodeUnknownToPanel
+        exp_alerts: []
+      - eval_time: 30m
+        alertname: AugustNodeAdministrativelyDisabled
+        exp_alerts: []
+      - eval_time: 30m
+        alertname: AugustTopologyDrift
+        exp_alerts: []
+      - eval_time: 30m
+        alertname: AugustCapacityUnrated
+        exp_alerts: []
+      - eval_time: 30m
+        alertname: AugustScrapeTargetDown
+        exp_alerts: []
+      - eval_time: 30m
+        alertname: AugustPoolSingleNodeRemaining
+        exp_alerts: []
+      - eval_time: 30m
+        alertname: AugustSemaphoreExporterDegraded
+        exp_alerts: []
+      - eval_time: 30m
+        alertname: AugustCapacityRed
+        exp_alerts: []
+      - eval_time: 30m
+        alertname: AugustCapacityYellow
+        exp_alerts: []
+      - eval_time: 30m
+        alertname: AugustServiceCapacityRed
+        exp_alerts: []
+
+  # --------------------------------------- a staged rollout must stay quiet
+  # A series that has never arrived on this fleet is not a fault: it is a node
+  # whose agent is not installed yet. Only a series that arrived and stopped is.
+  - interval: 30s
+    name: missing series during a staged rollout raises nothing
+    input_series:
+      # Never present at all.
+      - series: 'august:required_series_present{series="remnawave_inbound_download"}'
+        values: "0x120"
+      - series: 'august:bridge_metric_missing{name="NEVER-SEEN"}'
+        values: "1x120"
+    alert_rule_test:
+      - eval_time: 55m
+        alertname: AugustRequiredSeriesMissing
+        exp_alerts: []
+      - eval_time: 55m
+        alertname: AugustBridgeMetricMissing
+        exp_alerts: []

@@ -1,0 +1,44 @@
+---
+- name: Validate geodata declarations
+  ansible.builtin.assert:
+    that:
+      - geodata_files | length > 0
+      - item.name in ['geoip.dat', 'geosite.dat'] or item.name is match('^[A-Za-z0-9._-]+\.dat$')
+      - item.url is match('^https://')
+      - item.checksum is match('^sha256:[0-9a-fA-F]{64}$')
+    fail_msg: Every geodata file requires a safe name, HTTPS URL and pinned SHA-256 checksum.
+  loop: "{{ geodata_files }}"
+  loop_control:
+    label: "{{ item.name | default('invalid') }}"
+
+- name: Require remote checksum metadata for scheduled geodata updates
+  ansible.builtin.assert:
+    that:
+      - item.checksum_url | default('') is match('^https://')
+    fail_msg: Scheduled geodata updates require checksum_url for every file.
+  loop: "{{ geodata_files }}"
+  loop_control:
+    label: "{{ item.name }}"
+  when: geodata_update_enabled | bool
+
+- name: Create geodata directory
+  ansible.builtin.file:
+    path: "{{ remnawave_geodata_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Download verified geodata atomically
+  ansible.builtin.get_url:
+    url: "{{ item.url }}"
+    dest: "{{ remnawave_geodata_dir }}/{{ item.name }}"
+    checksum: "{{ item.checksum }}"
+    owner: root
+    group: root
+    mode: "0644"
+    timeout: 180
+  loop: "{{ geodata_files }}"
+  loop_control:
+    label: "{{ item.name }}"
+  notify: Restart RemnaNode

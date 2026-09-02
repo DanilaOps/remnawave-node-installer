@@ -1,0 +1,75 @@
+---
+# Everything about a node that can be derived from the two facts declared in the
+# inventory: its name and its address. "ee01" yields node_id ee_01, node_name
+# EE-01, country EE, the domain ee01.<node_domain_zone>, the inbound tag
+# EE_01_REALITY and the published Host. A standard node therefore needs no
+# variables at all. Any of these can be overridden for one host that does not
+# follow the pattern; preflight rejects a name it cannot parse and a country code
+# that is missing from group_vars/all/countries.yml.
+
+# The inventory hostname is the whole identity, and it is deliberately the only
+# place a node's number is written down. Deriving it here rather than allocating
+# it at run time is what makes a re-run of tr01 reconcile TR-01 instead of
+# deciding that TR-02 is next: an allocator that reads the panel would move the
+# identity of a node that already exists. The number is allocated once, by
+# ansible/playbooks/next_node_name.yml, and then lives in the inventory.
+node_country_code: "{{ inventory_hostname | regex_replace('^([A-Za-z]+).*$', '\\1') | upper }}"
+node_sequence: "{{ inventory_hostname | regex_replace('^[A-Za-z]+[-_]?', '') }}"
+node_id: "{{ (node_country_code | lower) ~ '_' ~ node_sequence }}"
+node_name: "{{ node_country_code ~ '-' ~ node_sequence }}"
+node_country: "{{ node_country_code }}"
+node_public_ip: "{{ ansible_host }}"
+
+selfsteal_domain: "{{ inventory_hostname }}.{{ node_domain_zone }}"
+
+# --- Config Profile ----------------------------------------------------------
+# A node's Xray JSON lives in the Config Profile of the same name: node TR-01 -
+# Config Profile TR-01. Derived, so the operator never types it and the two can
+# never drift apart. A deployment where the whole fleet shares one profile sets
+# profile_name (and config_profile_create: false) in /etc/remnawave/fleet.yml,
+# which outranks this.
+#
+# The mode stays 'shared' on purpose even though the profile belongs to one node:
+# it is the read-modify-write path, which merges this node's inbound into
+# whatever the profile already holds and proves afterwards that nothing else
+# disappeared. 'per_node' renders the profile from the role template instead and
+# therefore replaces anything a person put there by hand.
+profile_name: "{{ node_name }}"
+# Creating it is safe here because the name is derived from the inventory
+# hostname: there is no typo that could invent a second profile beside the real
+# one, which is what this guard exists to prevent for a shared fleet profile.
+config_profile_create: true
+
+# Node and Config Profile names this fleet accepts: two-letter country code, a
+# dash and a zero-padded ordinal. Preflight refuses anything else rather than
+# publishing a node whose name nobody can allocate the next number after.
+node_name_pattern: '^[A-Z]{2}-[0-9]{2,}$'
+
+# --- Panel resources ---------------------------------------------------------
+inbound_specs:
+  - tag: "{{ node_name | upper | regex_replace('[^A-Z0-9_]', '_') }}_REALITY"
+    port: 443
+    network: raw
+
+# Label users see in the client. Comes from the country table, so a new node in a
+# known country needs nothing; set node_host_remark on the host to override.
+node_host_remark: "{{ node_country_remarks[node_country_code] | default('') }}"
+node_host_tags:
+  - "{{ node_country | upper }}"
+  - DIRECT
+
+host_specs:
+  - remark: "{{ node_host_remark }}"
+    # Two different things: address is where the client CONNECTS (the node's
+    # IP), sni is the TLS name it PRESENTS (the selfsteal domain). Publishing
+    # the domain as the address made every client resolve it first and tied
+    # reachability to DNS; the panel's own Node entry already uses the IP.
+    address: "{{ node_public_ip }}"
+    inbound_tag: "{{ inbound_specs[0].tag }}"
+    port: 443
+    sni: "{{ selfsteal_domain }}"
+    fingerprint: firefox
+    security_layer: DEFAULT
+    is_hidden: false
+    is_disabled: false
+    tags: "{{ node_host_tags }}"

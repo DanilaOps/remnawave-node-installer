@@ -1,0 +1,33 @@
+---
+- name: Require an entry-host or external bridge probe
+  ansible.builtin.assert:
+    that:
+      - bridge_spec.entry_inventory_host | default('') | length > 0 or verify_bridge_probe_command | length > 0
+    fail_msg: Bridge acceptance requires bridge_spec.entry_inventory_host or verify_bridge_probe_command.
+
+- name: Check bridge port from the managed entry node
+  ansible.builtin.wait_for:
+    host: "{{ node_public_ip }}"
+    port: "{{ bridge_spec.port }}"
+    state: started
+    connect_timeout: 5
+    timeout: "{{ verify_external_timeout }}"
+  # The default never delegates anywhere: the condition below skips this task
+  # whenever entry_inventory_host is absent. It exists because delegate_to is
+  # templated before the condition is evaluated, so the expression itself must
+  # survive a bridge_spec that carries no entry host (external-probe bridges).
+  delegate_to: "{{ bridge_spec.entry_inventory_host | default(omit) }}"
+  become: false
+  when: bridge_spec.entry_inventory_host | default('') | length > 0
+
+- name: Execute bridge end-to-end probe
+  ansible.builtin.command:
+    argv: "{{ verify_bridge_probe_command }}"
+  delegate_to: >-
+    {{ bridge_spec.entry_inventory_host
+       if bridge_spec.entry_inventory_host | default('') | length > 0 else 'localhost' }}
+  become: false
+  changed_when: false
+  no_log: "{{ verify_bridge_probe_no_log }}"
+  when: verify_bridge_probe_command | length > 0
+

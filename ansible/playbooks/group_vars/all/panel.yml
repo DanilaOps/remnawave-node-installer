@@ -1,0 +1,59 @@
+---
+# Panel-wide values: one Remnawave panel serves the whole fleet, so these are
+# declared once instead of per node.
+#
+# Everything here is a documentation value, and preflight refuses to run against
+# them. The real values live on the controller in /etc/remnawave/fleet.yml and are
+# loaded as an extra-vars file - automatically by ./provision-node and by name in
+# every Semaphore template's argument list. They are not committed because this
+# repository is public, and not kept inside the checkout because Semaphore clones
+# the repository fresh for every job. See ansible/examples/fleet.yml.example.
+
+remnawave_panel_url: https://panel.example.com
+remnawave_panel_token: "{{ vault_remnawave_panel_token }}"
+
+# The Config Profile is the Xray JSON a node runs, and its name is not declared
+# here: it is derived per node as the node's own name, so node TR-01 uses Config
+# Profile TR-01 (see group_vars/remnawave_nodes/identity.yml). A deployment where
+# the whole fleet shares one profile sets profile_name and config_profile_create
+# in /etc/remnawave/fleet.yml, which outranks both.
+#
+# The mode is 'shared' in the sense of the write path, not of the object: the
+# profile is read, this node's inbound is merged into it and the result is
+# written back, so nothing else the profile holds is lost. 'per_node' renders the
+# whole profile from the role template and replaces whatever was there.
+config_profile_mode: shared
+config_profile_require_routing: true
+
+# The Xray JSON template every published Host carries. A third, separate entity:
+# the panel calls it a Subscription Template (/api/subscription-templates) of type
+# XRAY_JSON, and it is the JSON a *client* receives - routing, dns and outbound
+# skeleton - while the Config Profile above is the Xray JSON the *node* runs. A Host
+# links to it through xrayJsonTemplateUuid; a Node has no template field at all.
+# Empty means the role does not manage the link and leaves what the panel holds.
+xray_json_template_name: ""
+
+# Inbound protocols the panel strips per node before it pushes the config
+# (MANAGED_CLIENT_PROTOCOLS in the panel). An inbound outside this set is sent to
+# every node with its settings, so the shared profile refuses to carry one unless
+# its tag is listed here on purpose.
+shared_profile_allowed_unmanaged_inbound_tags: []
+
+# Source addresses allowed to reach a node. The controller's own address is
+# discovered from the live SSH connection, so it is never maintained by hand and a
+# controller with a changing address cannot lock itself out. Put the addresses
+# that must keep SSH access even when nobody runs from them - a workstation, a
+# jump or rescue host - in management_cidrs_extra in /etc/remnawave/fleet.yml
+# rather than here. Setting management_cidrs explicitly opts out of the discovery entirely.
+management_cidrs_extra: []
+# The panel's address, allowed to reach NODE_PORT. Keep it explicit: resolving it
+# from the panel URL would silently point at a CDN if the panel ever moves behind
+# one, which would leave the node unreachable for the panel itself.
+remnawave_panel_cidrs:
+  - 198.51.100.20/32
+
+# All node domains live in this zone; selfsteal_domain is derived from it.
+node_domain_zone: example.com
+
+acme_email: ops@example.com
+internal_squad_name: Default

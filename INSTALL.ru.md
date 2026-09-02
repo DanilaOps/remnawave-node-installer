@@ -1,6 +1,6 @@
 # Пошаговая установка Remnawave Node 3.3.2
 
-Эта инструкция относится к установщику **3.3.2-rw2**:
+Эта инструкция относится к установщику **3.3.2-rw3**:
 
 - Remnawave Panel/Node: `3.3.2`;
 - Xray-core: строго `26.6.27`;
@@ -76,13 +76,13 @@ unset RW_TOKEN
 test -s /root/panel.token && echo TOKEN_FILE_OK
 ```
 
-Токен должен иметь права API на `Keygen`, `Nodes`, `Hosts` и
-`Config Profiles`.
+Токен должен иметь права API на `Keygen`, `Nodes`, `Hosts`, `Config Profiles` и
+`Node Plugins` (read/create/update).
 
 ## 5. Скачать установщик
 
 ```bash
-curl -fsSLo /root/remnawave-node.sh https://raw.githubusercontent.com/DanilaOps/remnawave-node-installer/v3.3.2-rw2/remnawave-node.sh
+curl -fsSLo /root/remnawave-node.sh https://raw.githubusercontent.com/DanilaOps/remnawave-node-installer/v3.3.2-rw3/remnawave-node.sh
 ```
 
 ```bash
@@ -118,6 +118,8 @@ bash /root/remnawave-node.sh --panel-token-file /root/panel.token
 | `Selfsteal port` | `9443` |
 | `Renewal port` | `8443` |
 | `SSH port` | реальный SSH-порт сервера, обычно `22` |
+| `Enable native Remnawave Torrent Blocker` | `Y` |
+| `Torrent source-IP block duration` | `3600` |
 | `Cascade bridge` | `N` для обычной самостоятельной ноды |
 | `Masking model` | `reality` |
 | `Transport` | `tcp` |
@@ -132,7 +134,7 @@ https://panel.example.com
 Для whitelist указывается IP панели, а не IP устанавливаемой ноды. Пример:
 
 ```text
-159.195.109.14
+198.51.100.20
 ```
 
 На финальном экране проверьте домен, IP, страну, `NODE_PORT`, профиль и whitelist.
@@ -161,6 +163,12 @@ Xray 26.6.27
 grep '/usr/local/bin/xray:ro' /opt/remnanode/docker-compose.yml
 ```
 
+Проверить обязательную capability Torrent Blocker:
+
+```bash
+grep -A2 'cap_add' /opt/remnanode/docker-compose.yml
+```
+
 Проверить контейнеры:
 
 ```bash
@@ -171,6 +179,18 @@ docker ps --format 'table {{.Names}}\t{{.Status}}'
 
 ```bash
 remnanode status
+```
+
+Проверить созданные nftables-таблицы плагина после запуска ноды:
+
+```bash
+nft list table ip remnanode
+```
+
+Если таблица ещё не появилась, проверьте привязку plugin-профиля в панели и логи:
+
+```bash
+docker logs remnanode --tail 200 | grep -iE 'torrent|plugin|nft'
 ```
 
 Проверить слушающие порты:
@@ -201,7 +221,7 @@ bash /root/remnawave-node.sh --resume -y --panel-token-file /root/panel.token
 Сначала скачайте новый установщик:
 
 ```bash
-curl -fsSLo /root/remnawave-node.sh https://raw.githubusercontent.com/DanilaOps/remnawave-node-installer/v3.3.2-rw2/remnawave-node.sh
+curl -fsSLo /root/remnawave-node.sh https://raw.githubusercontent.com/DanilaOps/remnawave-node-installer/v3.3.2-rw3/remnawave-node.sh
 ```
 
 ```bash
@@ -260,5 +280,8 @@ docker exec remnanode /usr/local/bin/rw-core version
 - Не включайте Cloudflare Proxy для Reality/selfsteal-домена.
 - Не создавайте в панели настройку custom core для этой ноды: установщик намеренно
   проверяет, что реально запущен закреплённый `rw-core 26.6.27`.
+- Torrent Blocker включён по умолчанию. Для осознанного отключения используйте
+  `--no-torrent-blocker`; обычный Xray blackhole не заменяет source-IP блокировку
+  штатного plugin через webhook + nftables.
 - Порт `443/tcp` должен быть доступен клиентам; `80/tcp` нужен для выпуска
   сертификата; `NODE_PORT` должен быть доступен только серверу панели.
