@@ -8,7 +8,17 @@
       - inbound_specs | map(attribute='port') | map('int') | select('ge', 1) | list | length == inbound_specs | length
       - internal_squad_uuid | length > 0 or internal_squad_name | length > 0
       - not (selfsteal_domain | lower is search('apple|icloud'))
-    fail_msg: Panel inputs must contain unique inbounds, at least one Host and an Internal Squad identity.
+      # A transport the template cannot render is worse than a hard stop: the
+      # else-branch would emit the unknown name straight into streamSettings.network
+      # and the node would take a config Xray refuses to load, after the profile
+      # in the panel had already been rewritten.
+      - >-
+        inbound_specs | map(attribute='network', default=inbound_network_default)
+        | reject('in', inbound_network_choices) | list | length == 0
+    fail_msg: >-
+      Panel inputs must contain unique inbounds, at least one Host and an Internal Squad
+      identity, and every inbound must name a transport out of
+      {{ inbound_network_choices | join(', ') }}.
 
 - name: Authenticate to Remnawave Panel and obtain the node key
   ansible.builtin.import_tasks: authenticate.yml

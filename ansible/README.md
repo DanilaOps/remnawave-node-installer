@@ -69,10 +69,20 @@ Everything else about a node is derived from the inventory hostname:
 | `node_public_ip` | `ansible_host` |
 | `selfsteal_domain` (`ee01.<zone>`) | hostname plus `node_domain_zone` |
 | `inbound_specs[0].tag` (`EE_01_REALITY`) | `node_name` |
+| `inbound_specs[0].network` (`grpc`) | `inbound_network_default` |
 | `host_specs[0]` | `node_name`, `selfsteal_domain`, `node_country` |
 | `selfsteal_virtual_hosts` | `selfsteal_domain` |
 | the entire decoy site | `node_id` |
 | `management_cidrs` | the live SSH connection (see below) |
+
+The transport is derived rather than written into `inbound_specs` because every
+run of "02 - Install / Reconcile Node" rewrites this node's inbound in its Config
+Profile: a literal there outranks what the fleet actually runs, and a reconcile
+that quietly changed the transport of a live node failed invisibly — the TCP
+handshake still completes and Reality falls through to the selfsteal, so only a
+tunnelled request shows it. The fleet standard is VLESS + gRPC + Reality with no
+`flow`; `raw`, `xhttp` and `grpc-tls` are rendered too, and a node that runs one
+of them sets `inbound_network_default` for that host alone.
 
 A host that does not follow the `ee01` pattern declares what it needs — usually
 just `selfsteal_domain` — in its own block; preflight rejects a hostname it

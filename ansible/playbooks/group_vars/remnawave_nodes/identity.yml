@@ -46,10 +46,21 @@ config_profile_create: true
 node_name_pattern: '^[A-Z]{2}-[0-9]{2,}$'
 
 # --- Panel resources ---------------------------------------------------------
+# The fleet transport: VLESS + gRPC + Reality, no flow. Declared as a variable
+# and not as a literal inside inbound_specs because every run of "02 - Install /
+# Reconcile Node" rewrites this node's inbound in the Config Profile, so a
+# literal here outranks whatever the fleet actually runs. When the literal said
+# raw, a reconcile silently downgraded the transport of a gRPC node and the
+# failure was invisible from outside: the TCP handshake still completes and
+# Reality just falls through to the selfsteal, so only a tunnelled request shows
+# it. A node that genuinely runs another transport overrides this one variable
+# for that host; the templates render grpc, raw, xhttp and grpc-tls.
+inbound_network_default: grpc
+
 inbound_specs:
   - tag: "{{ node_name | upper | regex_replace('[^A-Z0-9_]', '_') }}_REALITY"
     port: 443
-    network: raw
+    network: "{{ inbound_network_default }}"
 
 # Label users see in the client. Comes from the country table, so a new node in a
 # known country needs nothing; set node_host_remark on the host to override.

@@ -53,7 +53,7 @@ profile_name: ""
 inbound_specs:
   - tag: "{{ node_name | upper | regex_replace('[^A-Z0-9_]', '_') }}_REALITY"
     port: 443
-    network: raw
+    network: "{{ inbound_network_default }}"
 
 host_specs: []
 # The Xray JSON template a published Host carries: a Subscription Template of
@@ -65,6 +65,27 @@ xray_json_template_name: ""
 internal_squad_uuid: ""
 internal_squad_name: ""
 internal_squad_create: true
+
+# Transport of an inbound that names none: the fleet standard, VLESS + gRPC +
+# Reality with no flow. This is the role's standalone fallback - a run against
+# the fleet inventory takes the same value from
+# playbooks/group_vars/remnawave_nodes/identity.yml, which explains why it is a
+# variable and not a literal in inbound_specs.
+inbound_network_default: grpc
+# Transports the templates know how to render. Preflight rejects anything else
+# rather than emitting a streamSettings block Xray will refuse to load.
+inbound_network_choices: [grpc, raw, xhttp, grpc-tls]
+
+# gRPC transport. serviceName is the HTTP/2 path prefix the client calls and is
+# part of how the inbound looks like ordinary traffic, so it is a plausible name
+# rather than "grpc". The three keepalive fields are what keeps a phone's tunnel
+# from dying silently behind a carrier NAT; the reasoning, and the reason
+# idle_timeout must stay below the client's ping interval, is in
+# templates/inbounds.json.j2.
+grpc_service_name: livestreamcontent
+grpc_idle_timeout: 30
+grpc_health_check_timeout: 20
+grpc_permit_without_stream: true
 
 reality_private_key: ""
 reality_short_ids: []

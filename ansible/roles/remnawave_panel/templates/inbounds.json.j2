@@ -1,21 +1,50 @@
 [
 {% for inbound in inbound_specs %}
+{# The fleet standard is VLESS + gRPC + Reality, so an inbound that names no
+   transport gets that one. 'raw' and 'xhttp' are the other two Reality
+   transports; 'grpc-tls' is the odd one out - nginx terminates a real
+   certificate and grpc_pass'es to a loopback inbound, so it carries no Reality
+   at all and is the only value that turns the Reality block off. #}
+{% set network = inbound.network | default(inbound_network_default) %}
   {
     "tag": {{ inbound.tag | to_json }},
     "port": {{ inbound.port | int }},
-    "listen": {{ (inbound.listen | default('127.0.0.1' if inbound.network | default('raw') == 'grpc-tls' else '0.0.0.0')) | to_json }},
+    "listen": {{ (inbound.listen | default('127.0.0.1' if network == 'grpc-tls' else '0.0.0.0')) | to_json }},
     "protocol": "vless",
     "settings": {"clients": [], "decryption": "none"},
     "sniffing": {"enabled": true, "destOverride": ["http", "tls", "quic"], "routeOnly": true},
     "streamSettings": {
-{% if inbound.network | default('raw') == 'grpc-tls' %}
+{% if network == 'grpc-tls' %}
       "network": "grpc",
       "security": "none",
+      {# Its own default, not grpc_service_name: nginx.conf.j2 routes
+         location /<service_name> for this variant and falls back to the same
+         literal, so the two would disagree the moment one of them moved. #}
       "grpcSettings": {"serviceName": {{ inbound.service_name | default('grpc') | to_json }}, "multiMode": false},
 {% else %}
-      "network": {{ inbound.network | default('raw') | to_json }},
+      "network": {{ network | to_json }},
       "security": "reality",
-{% if inbound.network | default('raw') == 'xhttp' %}
+{% if network == 'grpc' %}
+      {# gRPC multiplexes every session onto one long-lived HTTP/2 connection, so
+         a carrier NAT that drops the idle connection leaves the client opening
+         streams on a corpse forever. Xray's gRPC health check only exists once
+         idle_timeout and health_check_timeout are set, which is what turns that
+         silent death into a re-dial.
+
+         permit_without_stream is not optional here: without it grpc-go refuses
+         pings that arrive with no open stream and answers GOAWAY
+         ENHANCE_YOUR_CALM "too_many_pings". idle_timeout doubles as the server's
+         enforcement MinTime, so it must stay BELOW the client's ping interval
+         (30 here against the client's 60) or a well-behaved client gets the same
+         GOAWAY. Do not raise it without re-checking the client side. #}
+      "grpcSettings": {
+        "serviceName": {{ inbound.service_name | default(grpc_service_name) | to_json }},
+        "idle_timeout": {{ inbound.grpc_idle_timeout | default(grpc_idle_timeout) | int }},
+        "health_check_timeout": {{ inbound.grpc_health_check_timeout | default(grpc_health_check_timeout) | int }},
+        "permit_without_stream": {{ (inbound.grpc_permit_without_stream | default(grpc_permit_without_stream)) | bool | to_json }}
+      },
+{% endif %}
+{% if network == 'xhttp' %}
       "xhttpSettings": {
         "mode": "packet-up",
         "path": {{ inbound.path | default(xhttp_path) | to_json }},

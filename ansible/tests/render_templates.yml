@@ -13,10 +13,16 @@
     reality_xver: 1
     remnawave_reality_private_key: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
     remnawave_reality_short_ids: ["0011223344556677"]
+    inbound_network_default: grpc
+    inbound_network_choices: [grpc, raw, xhttp, grpc-tls]
+    grpc_service_name: livestreamcontent
+    grpc_idle_timeout: 30
+    grpc_health_check_timeout: 20
+    grpc_permit_without_stream: true
     inbound_specs:
       - tag: DE_01_REALITY
         port: 443
-        network: raw
+        network: grpc
     xhttp_path: /api/v1/update
     xhttp_extra_params: {}
     bridge_spec:
@@ -88,9 +94,10 @@
       ansible.builtin.assert:
         that:
           - rendered_xray.inbounds[0].port == 443
-          - rendered_xray.inbounds[0].streamSettings.network == 'raw'
+          - rendered_xray.inbounds[0].streamSettings.network == 'grpc'
           - rendered_xray.inbounds[0].streamSettings.security == 'reality'
           - rendered_xray.inbounds[0].streamSettings.realitySettings.target == '127.0.0.1:9443'
+          - rendered_xray.inbounds[0].streamSettings.grpcSettings.serviceName == 'livestreamcontent'
           - rendered_xray.inbounds[0].settings.clients | length == 0
 
     - name: Render the inbound array for every supported transport
@@ -110,19 +117,45 @@
             port: 9444
             network: grpc-tls
             service_name: grpc
+          - tag: DE_01_GRPC_REALITY
+            port: 9445
+            network: grpc
+          - tag: DE_01_DEFAULT
+            port: 9446
       no_log: true
 
     - name: Validate transport-specific invariants
       ansible.builtin.assert:
         that:
-          - rendered_transports | length == 3
+          - rendered_transports | length == 5
           - rendered_transports[0].streamSettings.network == 'raw'
+          - rendered_transports[0].streamSettings.grpcSettings is not defined
           - rendered_transports[1].streamSettings.network == 'xhttp'
           - rendered_transports[1].streamSettings.xhttpSettings.path == '/api/v1/update'
           - rendered_transports[1].streamSettings.security == 'reality'
+          # nginx terminates a real certificate for this one and grpc_pass'es to
+          # a loopback inbound, so it is the only transport without Reality.
           - rendered_transports[2].streamSettings.network == 'grpc'
           - rendered_transports[2].streamSettings.security == 'none'
+          - rendered_transports[2].streamSettings.realitySettings is not defined
           - rendered_transports[2].listen == '127.0.0.1'
+          # The fleet standard: grpcSettings and Reality in the same inbound,
+          # published on 0.0.0.0. Rendering one without the other is the
+          # regression this asserts against.
+          - rendered_transports[3].streamSettings.network == 'grpc'
+          - rendered_transports[3].streamSettings.security == 'reality'
+          - rendered_transports[3].listen == '0.0.0.0'
+          - rendered_transports[3].streamSettings.realitySettings.target == '127.0.0.1:9443'
+          - rendered_transports[3].streamSettings.grpcSettings.serviceName == 'livestreamcontent'
+          - rendered_transports[3].streamSettings.grpcSettings.permit_without_stream
+          # idle_timeout is the server's ping-enforcement MinTime and must stay
+          # below the client's ping interval, which the acceptance probe sets to 60.
+          - rendered_transports[3].streamSettings.grpcSettings.idle_timeout == 30
+          - rendered_transports[3].streamSettings.grpcSettings.idle_timeout < 60
+          - rendered_transports[3].streamSettings.grpcSettings.health_check_timeout == 20
+          # An inbound that names no transport gets the fleet standard, not raw.
+          - rendered_transports[4].streamSettings.network == 'grpc'
+          - rendered_transports[4].streamSettings.security == 'reality'
 
     - name: Store rendered Xray profile for executable validation
       ansible.builtin.copy:
@@ -343,6 +376,55 @@
         controller_ssh_effective_cidrs:
           - 203.0.113.9/32
           - "2001:db8::1/128"
+
+    - name: Render the acceptance probe for each Reality transport
+      # The probe has to dial the node the way a real client does. Rendering it
+      # per transport is the only way to catch a probe that quietly assumes one:
+      # such a probe fails on every node running the other, and - worse - passes
+      # on a node a reconcile has just downgraded, which is the regression
+      # acceptance exists to catch.
+      ansible.builtin.template:
+        src: "{{ playbook_dir }}/../roles/node_verify/templates/probe-client.json.j2"
+        dest: "{{ render_dir }}/remnawave-probe-{{ item }}.json"
+        mode: "0600"
+      loop: [grpc, raw]
+      vars:
+        reality_fingerprint: firefox
+        verify_probe_socks_port: 10808
+        verify_probe_vless_uuid: 11111111-2222-3333-4444-555555555555
+        node_verify_probe_public_key: 4qzKvhE2VLR1FrGF1FMEUlYVvcdvdrfLFVBEwbYCGXo
+        inbound_specs:
+          - tag: DE_01_REALITY
+            port: 443
+            network: "{{ item }}"
+        host_specs:
+          - address: 203.0.113.10
+            port: 443
+            inbound_tag: DE_01_REALITY
+            sni: node-de-01.example.com
+            fingerprint: firefox
+      no_log: true
+
+    - name: Require each probe to dial the transport its inbound publishes
+      ansible.builtin.assert:
+        that:
+          - grpc_probe.outbounds[0].streamSettings.network == 'grpc'
+          - grpc_probe.outbounds[0].streamSettings.security == 'reality'
+          - grpc_probe.outbounds[0].streamSettings.grpcSettings.serviceName == 'livestreamcontent'
+          # Above the inbound's idle_timeout of 30, which grpc-go enforces as its
+          # MinTime: a client that pings faster is answered with GOAWAY
+          # ENHANCE_YOUR_CALM "too_many_pings" and the probe fails for a reason
+          # that has nothing to do with the node.
+          - grpc_probe.outbounds[0].streamSettings.grpcSettings.idle_timeout == 60
+          - grpc_probe.outbounds[0].streamSettings.grpcSettings.health_check_timeout == 5
+          # Vision needs raw; a gRPC outbound carries no flow at all.
+          - "'flow' not in grpc_probe.outbounds[0].settings.vnext[0].users[0]"
+          - raw_probe.outbounds[0].streamSettings.network == 'raw'
+          - raw_probe.outbounds[0].settings.vnext[0].users[0].flow == 'xtls-rprx-vision'
+          - raw_probe.outbounds[0].streamSettings.grpcSettings is not defined
+      vars:
+        grpc_probe: "{{ lookup('file', render_dir ~ '/remnawave-probe-grpc.json') | from_json }}"
+        raw_probe: "{{ lookup('file', render_dir ~ '/remnawave-probe-raw.json') | from_json }}"
 
     - name: Read rendered compose file
       ansible.builtin.slurp:

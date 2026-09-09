@@ -1356,6 +1356,57 @@ class NodeIdentityTests(unittest.TestCase):
         preflight = " ".join(self.read("roles/node_base/tasks/preflight_controller.yml").split())
         self.assertIn("carries this node's name but another node's traffic", preflight)
 
+    def test_the_inbound_transport_is_never_a_literal(self) -> None:
+        """identity.yml outranks the role, so a transport written there wins.
+
+        The failure this prevents: identity.yml said ``network: raw`` while the
+        fleet ran gRPC, so every reconcile silently rewrote a working node's
+        inbound to another transport - and the damage was invisible from
+        outside, because the TCP handshake still completes and Reality just
+        falls through to the selfsteal. Only a tunnelled request showed it.
+        """
+        identity = yaml.safe_load(self.read("playbooks/group_vars/remnawave_nodes/identity.yml"))
+        network = identity["inbound_specs"][0]["network"]
+        self.assertIn("inbound_network_default", network)
+        self.assertEqual("grpc", identity["inbound_network_default"])
+
+    def test_the_grpc_inbound_carries_reality_and_keepalive(self) -> None:
+        """gRPC and Reality belong to the same inbound on this fleet.
+
+        The failure this prevents: a template whose gRPC branch could not
+        reproduce the fleet standard at all - it emitted grpcSettings only for
+        the nginx-terminated 'grpc-tls' variant, which turns Reality off.
+        """
+        template = self.read("roles/remnawave_panel/templates/inbounds.json.j2")
+        self.assertIn("{% if network == 'grpc' %}", template)
+        for field in ("serviceName", "idle_timeout", "health_check_timeout",
+                      "permit_without_stream"):
+            with self.subTest(field=field):
+                self.assertIn(field, template)
+        defaults = yaml.safe_load(self.read("roles/remnawave_panel/defaults/main.yml"))
+        # idle_timeout is the server's ping-enforcement MinTime. A client that
+        # pings faster than this gets GOAWAY ENHANCE_YOUR_CALM "too_many_pings",
+        # so it has to stay below the interval the fleet's clients use.
+        self.assertLess(defaults["grpc_idle_timeout"], 60)
+        self.assertTrue(defaults["grpc_permit_without_stream"])
+
+    def test_the_acceptance_probe_follows_the_inbound_transport(self) -> None:
+        """A probe that assumes one transport proves nothing about the other.
+
+        The failure this prevents: the probe dialled raw + Vision unconditionally,
+        so it failed on every gRPC node - and would have passed on a node a
+        reconcile had just downgraded to raw, which is the regression acceptance
+        exists to catch.
+        """
+        probe = self.read("roles/node_verify/templates/probe-client.json.j2")
+        self.assertIn("probe_network", probe)
+        self.assertIn("{% if probe_network == 'raw' %}", probe)
+        self.assertIn("{% if probe_network == 'grpc' %}", probe)
+        # Vision needs raw; gRPC carries no flow at all.
+        flow = probe.index("xtls-rprx-vision")
+        raw_branch = probe.index("{% if probe_network == 'raw' %}")
+        self.assertLess(raw_branch, flow)
+
 
 class NoProfileTemplateConfusionTests(unittest.TestCase):
     """The two names must never be able to change places again.
