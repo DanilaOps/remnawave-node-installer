@@ -438,7 +438,11 @@ class OperatorWorkflowTests(unittest.TestCase):
         # The panel checks are their own play, before the play that reconciles
         # DNS and before the play that touches the server: a conflict has to stop
         # the run while the registrar and the node are both untouched.
-        self.assertEqual(3, len(plays))
+        #
+        # Four top-level entries, but only three of them are plays: the fourth is
+        # the controller-side capacity sync, imported last. Asserted below, so a
+        # new play cannot be slipped in ahead of the preflight unnoticed.
+        self.assertEqual(4, len(plays))
         self.assertIn("preflight_controller.yml", self.read("playbooks/install_node.yml"))
         self.assertLess(
             self.read("playbooks/install_node.yml").index("preflight_controller.yml"),
@@ -447,6 +451,11 @@ class OperatorWorkflowTests(unittest.TestCase):
         self.assertEqual("local", plays[0]["connection"])
         self.assertEqual("local", plays[1]["connection"])
         self.assertNotIn("connection", plays[2])
+        # The capacity sync is an import_playbook, not a play, and it comes last:
+        # it reads the inventory and rewrites one file on the controller, so it
+        # must not sit anywhere ahead of the checks.
+        self.assertEqual("sync_capacity.yml", plays[3]["import_playbook"])
+        self.assertNotIn("hosts", plays[3])
         # One node per run, and a fleet-wide reconcile still one at a time.
         self.assertEqual(1, plays[1]["serial"])
         self.assertEqual(1, plays[2]["serial"])

@@ -266,9 +266,18 @@ python3 - "$root/tools/semaphore_bootstrap.py" <<'PY'
 import re, sys
 source = open(sys.argv[1]).read()
 names = set(re.findall(r'"name":\s*"([a-z_0-9]+)"', source))
-survey_only = {"bootstrap_ssh_password", "bootstrap_trust_new_host_keys"}
+survey_only = {"bootstrap_trust_new_host_keys"}
 leaked = {n for n in names if "cidr" in n or "management" in n}
 assert not leaked, f"a Semaphore survey collects {sorted(leaked)}; it must live in fleet.yml"
+# bootstrap_ssh_password was a survey field once and was removed on purpose:
+# Semaphore hands every survey answer to ansible-playbook as --extra-vars, so it
+# lands in argv, which is world-readable through /proc/<pid>/cmdline for the
+# whole run. No survey field may be a secret. The root password of a fresh VPS
+# travels as NODE_ROOT_PASSWORD or as vault_node_root_password instead.
+assert "bootstrap_ssh_password" not in names, (
+    "bootstrap_ssh_password is a Semaphore survey field again; a survey answer "
+    "reaches ansible-playbook through argv and is world-readable in /proc"
+)
 assert survey_only <= names, "the expected survey fields are gone; re-check this assertion"
 print(f"survey fields: {sorted(survey_only)}")
 PY
