@@ -1,12 +1,20 @@
 ---
 - name: Validate geodata declarations
+  # Проверка обязательна, но зашивать сумму в переменные необязательно: набор
+  # правил у источника меняется почти каждый день, и прибитый sha256 превращает
+  # следующий прогон роли в падение. Поэтому либо pinned checksum, либо
+  # checksum_url - тогда сумма берётся у источника в момент прогона, ровно так
+  # же, как это делает ночной скрипт обновления.
   ansible.builtin.assert:
     that:
       - geodata_files | length > 0
       - item.name in ['geoip.dat', 'geosite.dat'] or item.name is match('^[A-Za-z0-9._-]+\.dat$')
       - item.url is match('^https://')
-      - item.checksum is match('^sha256:[0-9a-fA-F]{64}$')
-    fail_msg: Every geodata file requires a safe name, HTTPS URL and pinned SHA-256 checksum.
+      - item.checksum | default('') is match('^sha256:[0-9a-fA-F]{64}$')
+        or item.checksum_url | default('') is match('^https://')
+    fail_msg: >-
+      Every geodata file requires a safe name, an HTTPS URL and either a pinned SHA-256
+      checksum or an HTTPS checksum_url to read one from.
   loop: "{{ geodata_files }}"
   loop_control:
     label: "{{ item.name | default('invalid') }}"
@@ -29,11 +37,29 @@
     group: root
     mode: "0755"
 
+- name: Read the published checksum for files that do not pin one
+  ansible.builtin.uri:
+    url: "{{ item.checksum_url }}"
+    return_content: true
+    timeout: 60
+  loop: "{{ geodata_files | rejectattr('checksum', 'defined') | list }}"
+  loop_control:
+    label: "{{ item.name }}"
+  register: remnawave_geodata_published
+  changed_when: false
+  check_mode: false
+
 - name: Download verified geodata atomically
+  # Один шаг на оба случая: сумма берётся из переменной, если она задана, иначе
+  # из только что прочитанного файла у источника. get_url сверяет её сам и не
+  # перекачивает файл, который уже совпадает.
   ansible.builtin.get_url:
     url: "{{ item.url }}"
     dest: "{{ remnawave_geodata_dir }}/{{ item.name }}"
-    checksum: "{{ item.checksum }}"
+    checksum: >-
+      {{ item.checksum | default('sha256:' ~ ((remnawave_geodata_published.results
+         | selectattr('item.name', 'equalto', item.name) | first).content
+         | default('') | trim | regex_replace('\s.*$', ''))) }}
     owner: root
     group: root
     mode: "0644"

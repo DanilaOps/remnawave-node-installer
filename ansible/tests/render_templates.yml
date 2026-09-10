@@ -459,6 +459,40 @@
         grpc_probe: "{{ lookup('file', render_dir ~ '/remnawave-probe-grpc.json') | from_json }}"
         raw_probe: "{{ lookup('file', render_dir ~ '/remnawave-probe-raw.json') | from_json }}"
 
+    - name: Render compose for a node that carries geodata
+      # Тома геоданных рендерятся только при geodata_enabled. Без него прогон
+      # роли снимает монтирование, нода возвращается на дефолтную геодату из
+      # образа - другой датасет, без категорий, на которые ссылаются правила, -
+      # и увидеть это можно только по маршрутизации, а не по статусу ноды.
+      ansible.builtin.template:
+        src: "{{ playbook_dir }}/../roles/remnawave_node/templates/compose.yml.j2"
+        dest: "{{ render_dir }}/remnawave-compose-geodata.yml"
+        mode: "0600"
+      vars:
+        geodata_enabled: true
+        geodata_files:
+          - name: geosite.dat
+            url: https://example.com/geosite.dat
+            checksum_url: https://example.com/geosite.dat.sha256sum
+          - name: geoip.dat
+            url: https://example.com/geoip.dat
+            checksum_url: https://example.com/geoip.dat.sha256sum
+
+    - name: Require the geodata files to be mounted into the container
+      ansible.builtin.assert:
+        that:
+          - geodata_compose.services.remnanode.volumes
+            is search('geodata/geosite.dat:/usr/local/share/xray/geosite.dat:ro')
+          - geodata_compose.services.remnanode.volumes
+            is search('geodata/geoip.dat:/usr/local/share/xray/geoip.dat:ro')
+          # Нода без объявленных файлов не получает лишних томов.
+          - not (plain_compose.services.remnanode.volumes is search('geodata'))
+      vars:
+        geodata_compose: >-
+          {{ lookup('file', render_dir ~ '/remnawave-compose-geodata.yml') | from_yaml }}
+        plain_compose: >-
+          {{ lookup('file', render_dir ~ '/remnawave-compose-test.yml') | from_yaml }}
+
     - name: Read rendered compose file
       ansible.builtin.slurp:
         src: "{{ render_dir }}/remnawave-compose-test.yml"
