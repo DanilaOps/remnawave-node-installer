@@ -1,0 +1,144 @@
+---
+# Реестр нод: публичный срез.
+#
+# ЗДЕСЬ НЕТ СЕКРЕТОВ. Ни адресов, ни доменов, ни провайдеров, ни тарифов -
+# всё, что сопоставляет имя машине или называет её домен, живёт в
+# /etc/remnawave/registry.yml на контроллере. Правило то же, что у
+# monitoring/capacity/capacity.yml, и по той же причине: репозиторий публичный.
+#
+# Файл собирается из панели: роль и пара выводятся из исходящих-мостов,
+# срок сертификата - из TLS-хендшейка. Руками не правится.
+#
+# family - непрозрачная метка доменного семейства. Сколько их и как по ним
+# разложены ноды - видно; какие это домены - нет. Сейчас семейство одно на
+# весь парк, и это исходная точка для пункта 1 ТЗ.
+version: 1
+generated_at: 2026-09-10T10:00:31+00:00
+
+nodes:
+  CZ-01:
+    role: "выход"
+    family: family-1
+    certificate_authority: "Let's Encrypt"
+    certificate_expires: 2026-11-24
+    enabled: true
+  DE-01:
+    role: "выход"
+    family: family-1
+    certificate_authority: "Let's Encrypt"
+    certificate_expires: 2026-11-21
+    enabled: true
+  DE-02:
+    role: "выход"
+    family: family-1
+    certificate_authority: "Let's Encrypt"
+    certificate_expires: 2026-11-25
+    enabled: true
+  DE-03:
+    role: "выход"
+    family: family-1
+    certificate_authority: "Let's Encrypt"
+    certificate_expires: 2026-11-29
+    enabled: true
+  EE-01:
+    role: "выход"
+    family: family-1
+    certificate_authority: "Let's Encrypt"
+    certificate_expires: 2026-11-25
+    enabled: true
+  FL-01:
+    role: "выход"
+    family: family-1
+    certificate_authority: "Let's Encrypt"
+    certificate_expires: 2026-11-22
+    enabled: true
+  FR-01:
+    role: "выход"
+    family: family-1
+    certificate_authority: "Let's Encrypt"
+    certificate_expires: 2026-11-24
+    enabled: true
+  LV-01:
+    role: "выход"
+    family: family-1
+    certificate_authority: "Let's Encrypt"
+    certificate_expires: 2026-11-23
+    enabled: true
+  NL-01:
+    role: "выход"
+    family: family-1
+    certificate_authority: "Let's Encrypt"
+    certificate_expires: 2026-11-26
+    enabled: true
+  PL-01:
+    role: "выход"
+    family: family-1
+    certificate_authority: "Let's Encrypt"
+    certificate_expires: 2026-11-24
+    enabled: true
+  RU-01:
+    role: "вход"
+    pair_exit: DE-01
+    family: family-1
+    certificate_authority: "Let's Encrypt"
+    certificate_expires: 2026-12-02
+    enabled: true
+  RU-02:
+    role: "вход"
+    pair_exit: FL-01
+    family: family-1
+    certificate_authority: "Let's Encrypt"
+    certificate_expires: 2026-11-22
+    enabled: true
+  RU-03:
+    role: "вход"
+    pair_exit: LV-01
+    family: family-1
+    certificate_authority: "Let's Encrypt"
+    certificate_expires: 2026-11-24
+    enabled: true
+  RU-04:
+    role: "вход"
+    pair_exit: US-01
+    family: family-1
+    certificate_authority: "Let's Encrypt"
+    certificate_expires: 2026-11-26
+    enabled: true
+  RU-05:
+    role: "выход"
+    family: family-1
+    certificate_authority: "Let's Encrypt"
+    certificate_expires: 2026-11-29
+    enabled: true
+  RU-06:
+    role: "вход"
+    pair_exit: RU-07
+    family: family-1
+    certificate_authority: "Let's Encrypt"
+    certificate_expires: 2026-11-29
+    enabled: true
+  RU-07:
+    role: "транзит"
+    pair_exit: DE-01
+    family: family-1
+    certificate_authority: "Let's Encrypt"
+    certificate_expires: 2026-12-02
+    enabled: true
+  SW-01:
+    role: "выход"
+    family: family-1
+    certificate_authority: "Let's Encrypt"
+    certificate_expires: 2026-11-23
+    enabled: true
+  TR-01:
+    role: "выход"
+    family: family-1
+    certificate_authority: "Let's Encrypt"
+    certificate_expires: 2026-11-27
+    enabled: true
+  US-01:
+    role: "выход"
+    family: family-1
+    certificate_authority: "Let's Encrypt"
+    certificate_expires: 2026-11-24
+    enabled: true
