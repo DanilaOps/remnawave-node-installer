@@ -109,3 +109,8 @@ remnawave_management_cli_enabled: true
 remnawave_disk_warning_percent: 85
 remnawave_disk_check_calendar: hourly
 remnawave_logrotate_retention: 14
+
+# Потолок открытых дескрипторов у контейнера с Xray. Стоковый докеровский 1024
+# ограничивает ноду примерно пятьюстами одновременных соединений. Значение
+# совпадает с тем, что уже стоит на нодах, настроенных вручную.
+remnawave_node_nofile: 1048576

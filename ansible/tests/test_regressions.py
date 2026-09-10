@@ -1365,6 +1365,37 @@ class NodeIdentityTests(unittest.TestCase):
         preflight = " ".join(self.read("roles/node_base/tasks/preflight_controller.yml").split())
         self.assertIn("carries this node's name but another node's traffic", preflight)
 
+    def test_the_node_container_gets_an_explicit_descriptor_ceiling(self) -> None:
+        """Стоковые 1024 дескриптора - это около пятисот соединений на ноду.
+
+        Отказ, который это предотвращает: нода перестаёт принимать соединения
+        на пятистах одновременных, ничего об этом не сообщая. Каждая сессия
+        стоит минимум один дескриптор, обычно два - входящий и исходящий, - и
+        предел достигается задолго до того, как кончится процессор или канал.
+        """
+        compose = self.read("roles/remnawave_node/templates/compose.yml.j2")
+        self.assertIn("ulimits:", compose)
+        self.assertIn("remnawave_node_nofile", compose)
+        defaults = yaml.safe_load(self.read("roles/remnawave_node/defaults/main.yml"))
+        self.assertGreaterEqual(int(defaults["remnawave_node_nofile"]), 65536)
+
+    def test_the_idle_congestion_window_is_not_reset(self) -> None:
+        """Профиль парка задаёт это, а роль его отменяла.
+
+        Отказ, который это предотвращает: одно gRPC-соединение несёт все сессии
+        клиента и простаивает между передачами. Со сбросом окна каждая
+        следующая передача начинается с медленного старта, и на глаз это
+        выглядит как «медленный интернет», а не как настройка ядра.
+        """
+        sysctl = yaml.safe_load(self.read("roles/node_base/defaults/main.yml"))["node_sysctl"]
+        self.assertEqual(0, int(sysctl["net.ipv4.tcp_slow_start_after_idle"]))
+        # Пять суток на установленное соединение - стоковое значение ядра, и
+        # таблица conntrack заполняется мусором, а не трафиком.
+        self.assertLessEqual(
+            int(sysctl["net.netfilter.nf_conntrack_tcp_timeout_established"]), 86400)
+        self.assertGreaterEqual(int(sysctl["net.core.somaxconn"]), 4096)
+        self.assertGreaterEqual(int(sysctl["net.ipv4.tcp_max_syn_backlog"]), 4096)
+
     def test_the_inbound_transport_is_never_a_literal(self) -> None:
         """identity.yml outranks the role, so a transport written there wins.
 

@@ -20,6 +20,15 @@ services:
 {% for geodata in geodata_files if geodata_enabled | bool %}
       - {{ remnawave_geodata_dir }}/{{ geodata.name }}:/usr/local/share/xray/{{ geodata.name }}:ro
 {% endfor %}
+    # Каждое клиентское соединение это минимум один дескриптор, обычно два:
+    # входящее плюс исходящее. Со стоковыми 1024 Xray упирается в потолок около
+    # пятисот одновременных соединений, и упирается молча - соединения просто
+    # перестают устанавливаться. На нодах, где лимит уже поднят вручную, стоит
+    # 1048576; здесь то же самое значение, заданное декларативно.
+    ulimits:
+      nofile:
+        soft: {{ remnawave_node_nofile | int }}
+        hard: {{ remnawave_node_nofile | int }}
     healthcheck:
       test: ["CMD-SHELL", "/command/s6-svstat /run/service/xray | grep -q '^up'"]
       interval: 30s

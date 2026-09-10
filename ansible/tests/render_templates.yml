@@ -31,6 +31,7 @@
     remnawave_node_dir: /opt/remnawave-node/remnanode
     remnawave_node_env_path: /opt/remnawave-node/remnanode/.env
     remnawave_node_image: ghcr.io/remnawave/node:3.3.2
+    remnawave_node_nofile: 1048576
     remnawave_node_container: remnanode
     remnawave_nginx_image: nginx:1.29.3-alpine
     remnawave_nginx_container: nginx-selfsteal
@@ -510,3 +511,10 @@
           - >-
             '/var/log/remnanode:/var/log/xray' in rendered_compose_data.services.remnanode.volumes
           - rendered_compose_data.services.remnanode.healthcheck.test | length > 0
+          # Потолок дескрипторов задан явно и не оставлен докеровским: со
+          # стоковыми 1024 нода упирается примерно в пятьсот одновременных
+          # соединений, и упирается молча.
+          - rendered_compose_data.services.remnanode.ulimits.nofile.soft | int >= 65536
+          - >-
+            rendered_compose_data.services.remnanode.ulimits.nofile.soft
+            == rendered_compose_data.services.remnanode.ulimits.nofile.hard
