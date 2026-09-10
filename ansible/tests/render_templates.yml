@@ -377,6 +377,39 @@
           - 203.0.113.9/32
           - "2001:db8::1/128"
 
+    - name: Render the controller nftables template for a host that also runs the cluster
+      ansible.builtin.template:
+        src: "{{ playbook_dir }}/../roles/semaphore_controller/templates/remnawave-controller.nft.j2"
+        dest: "{{ render_dir }}/remnawave-controller-cluster.nft"
+        mode: "0600"
+      vars:
+        controller_firewall_table: remnawave_controller
+        controller_ssh_effective_cidrs: [203.0.113.9/32]
+        controller_cluster_interfaces: [cni0, flannel.1]
+
+    - name: Require both hooks to admit the cluster network
+      # Пустая цепочка forward с policy drop роняет общение подов между собой,
+      # а список публичных портов не содержит 6443, на который поды ходят к
+      # API-серверу. Пока conntrack полон, ни то ни другое не видно - вскрывается
+      # ровно на перезагрузке, и тогда встаёт весь кластер разом.
+      ansible.builtin.assert:
+        that:
+          - cluster_nft is search('chain input')
+          - >-
+            cluster_nft.split('chain input')[1].split('chain forward')[0]
+            is search('iifname \{ "cni0", "flannel.1" \} accept')
+          - >-
+            cluster_nft.split('chain forward')[1]
+            is search('iifname \{ "cni0", "flannel.1" \} accept')
+          - >-
+            cluster_nft.split('chain forward')[1]
+            is search('oifname \{ "cni0", "flannel.1" \} accept')
+          # Обычный контроллер кластера не несёт и лишних правил не получает.
+          - not (plain_nft is search('cni0'))
+      vars:
+        cluster_nft: "{{ lookup('file', render_dir ~ '/remnawave-controller-cluster.nft') }}"
+        plain_nft: "{{ lookup('file', render_dir ~ '/remnawave-controller-test.nft') }}"
+
     - name: Render the acceptance probe for each Reality transport
       # The probe has to dial the node the way a real client does. Rendering it
       # per transport is the only way to catch a probe that quietly assumes one:

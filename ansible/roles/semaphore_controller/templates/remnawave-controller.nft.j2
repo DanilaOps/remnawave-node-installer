@@ -9,6 +9,15 @@ table inet {{ controller_firewall_table }} {
     ct state established,related accept
     ct state invalid drop
 
+{% if controller_cluster_interfaces | default([]) | length > 0 %}
+    # Интерфейсы контейнерной сети, если на этом хосте живёт кластер. Поды ходят
+    # к API-серверу на 6443, которого нет в списке публичных портов, поэтому без
+    # этой строки всё, что говорит с API - CoreDNS, metrics-server, панель, -
+    # не поднимается. Пока conntrack наполнен, поломка не видна: спасает
+    # ct state established. Она вскрывается ровно на первой перезагрузке.
+    iifname { {{ controller_cluster_interfaces | map('to_json') | join(', ') }} } accept
+{% endif %}
+
     ip protocol icmp icmp type { echo-request, destination-unreachable, time-exceeded } accept
     ip6 nexthdr icmpv6 accept
 
@@ -44,6 +53,14 @@ table inet {{ controller_firewall_table }} {
 
   chain forward {
     type filter hook forward priority 0; policy drop;
+{% if controller_cluster_interfaces | default([]) | length > 0 %}
+
+    # Трафик между подами идёт через forward, а не input: приложение обращается
+    # к базе по имени сервиса. Пустая цепочка с policy drop роняет всё общение
+    # внутри кластера.
+    iifname { {{ controller_cluster_interfaces | map('to_json') | join(', ') }} } accept
+    oifname { {{ controller_cluster_interfaces | map('to_json') | join(', ') }} } accept
+{% endif %}
   }
 
   chain output {

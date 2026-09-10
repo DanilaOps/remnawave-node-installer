@@ -178,3 +178,11 @@ controller_backup_rsync_options: "-e ssh -a --chmod=F600"
 # human-readable export of the project and its inventory.
 controller_backup_api_token_path: "{{ semaphore_config_dir }}/backup-api-token"
 controller_backup_api_base: "http://{{ semaphore_interface }}:{{ semaphore_port }}/api"
+
+# Интерфейсы контейнерной сети на этом хосте. Пусто по умолчанию: обычный
+# контроллер кластера не несёт. Там, где на одной машине живут и контроллер, и
+# k3s - как на хосте панели, - без них таблица с policy drop не пропускает ни
+# трафик подов к API-серверу (hook input, порт 6443), ни трафик между подами
+# (hook forward). Поломка не проявляется, пока conntrack хранит установленные
+# соединения, и вскрывается на первой же перезагрузке.
+controller_cluster_interfaces: []
