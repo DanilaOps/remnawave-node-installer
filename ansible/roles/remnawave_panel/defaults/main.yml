@@ -82,7 +82,12 @@ inbound_network_choices: [grpc, raw, xhttp, grpc-tls]
 # from dying silently behind a carrier NAT; the reasoning, and the reason
 # idle_timeout must stay below the client's ping interval, is in
 # templates/inbounds.json.j2.
-grpc_service_name: livestreamcontent
+# Документационное значение, как panel.example.com рядом. Настоящее имя лежит
+# в /etc/remnawave/fleet.yml на контроллере и приезжает файлом extra-vars;
+# префлайт отказывается работать с этой заглушкой. Причина та же, по которой
+# репозиторий не содержит доменов парка: serviceName - это префикс пути, по
+# которому активная проба отличает наш инбаунд от обычного HTTP/2.
+grpc_service_name: grpc.example
 grpc_idle_timeout: 30
 grpc_health_check_timeout: 20
 grpc_permit_without_stream: true

@@ -115,3 +115,8 @@ node_monitoring_enabled: false
 # control: an empty list with monitoring on is refused, and so is a /0.
 monitoring_scrape_cidrs:
   - 198.51.100.20/32
+
+# Имя gRPC-сервиса, общее для всего парка: префикс пути, по которому клиент
+# обращается к инбаунду. Держится здесь, а не в репозитории, потому что это
+# часть того, чем инбаунд похож на обычный HTTP/2-трафик.
+grpc_service_name: pick-a-plausible-name

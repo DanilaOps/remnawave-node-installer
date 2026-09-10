@@ -85,6 +85,7 @@
       - remnawave_panel_url != 'https://panel.example.com'
       - node_domain_zone != 'example.com'
       - acme_email != 'ops@example.com'
+      - grpc_service_name | default('') != 'grpc.example'
     fail_msg: >-
       This run is still using the documentation values from the repository
       (panel {{ remnawave_panel_url }}, zone {{ node_domain_zone }}). The real values live in
@@ -224,10 +225,12 @@
       - capacity_download_mbps is not defined or (capacity_download_mbps is number and capacity_download_mbps >= 0)
       - capacity_upload_mbps is not defined or (capacity_upload_mbps is number and capacity_upload_mbps >= 0)
       - capacity_certain is not defined or (capacity_certain | string | lower) in ['true', 'false']
+      - capacity_test_full_rounds is not defined or (capacity_test_full_rounds is number and capacity_test_full_rounds | int >= 1)
     fail_msg: >-
       Capacity on {{ inventory_hostname }} is malformed. capacity_download_mbps and
-      capacity_upload_mbps must be bare non-negative numbers (1000, not "1000"), and
-      capacity_certain must be true or false. See group_vars/remnawave_nodes/capacity.yml.
+      capacity_upload_mbps must be bare non-negative numbers (1000, not "1000"),
+      capacity_certain must be true or false, and capacity_test_full_rounds (if set)
+      must be a whole number >= 1. See group_vars/remnawave_nodes/capacity.yml.
 
 - name: Refuse manual and auto capacity on the same node
   # Two sources of truth for one figure is ambiguous, so it is refused rather
