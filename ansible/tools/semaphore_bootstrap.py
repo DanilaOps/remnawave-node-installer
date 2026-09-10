@@ -33,6 +33,9 @@ REPOSITORY = "remnawave-node-installer"
 INVENTORY = "Production nodes"
 ENVIRONMENT = "Production"
 PLAYBOOK = "ansible/playbooks/provision_node.yml"
+# Единственный шаблон, который ходит не в provision_node.yml: drain работает
+# только с панелью и на саму ноду не заходит.
+DRAIN_PLAYBOOK = "ansible/playbooks/drain_node.yml"
 
 # Semaphore clones the repository fresh for every job, so nothing that is not
 # committed reaches a run started from the UI - and this repository is public, so
@@ -89,6 +92,33 @@ TEMPLATES = [
                     {"name": "Yes - fresh VPS", "value": "true"},
                 ],
                 "default_value": "false",
+            },
+        ],
+    },
+    {
+        "name": "04 - Drain / Return Node",
+        "playbook": DRAIN_PLAYBOOK,
+        "description": (
+            "Takes a node out of balancing, waits for its users to leave, and puts it "
+            "back. Run it around maintenance: a restart without a drain is a dropped "
+            "connection for everybody on the node. Put the node name in Limit. It "
+            "refuses to empty a pool - a node that is the last one serving its pool "
+            "cannot be drained without drain_force."
+        ),
+        "arguments": [],
+        "allow_parallel_tasks": False,
+        "survey_vars": [
+            {
+                "name": "drain_state",
+                "title": "Действие",
+                "required": True,
+                "type": "enum",
+                "description": "out - вывести из балансировки, in - вернуть обратно.",
+                "values": [
+                    {"name": "Вывести из балансировки", "value": "out"},
+                    {"name": "Вернуть в балансировку", "value": "in"},
+                ],
+                "default_value": "out",
             },
         ],
     },
@@ -367,7 +397,7 @@ def main() -> int:
                 "inventory_id": inventory["id"],
                 "repository_id": repository["id"],
                 "environment_id": environment["id"],
-                "playbook": PLAYBOOK,
+                "playbook": wanted.get("playbook", PLAYBOOK),
                 "arguments": json.dumps(
                     ["-e", f"@{arguments.fleet_values}", "-e", f"@{arguments.secret_values}"]
                     + wanted["arguments"]

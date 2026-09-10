@@ -351,3 +351,77 @@ class RealitySettingsShapeTests(unittest.TestCase):
     def test_an_inbound_without_reality_is_skipped_not_returned(self) -> None:
         empty = {"inbounds": [{"tag": "TR_01_REALITY", "rawInbound": {"streamSettings": {}}}]}
         self.assertEqual({}, MODULE.remnawave_reality_settings(empty, ["TR_01_REALITY"]))
+
+class DrainPoolGuardTests(unittest.TestCase):
+    """Вывод ноды из балансировки не должен оставлять пул без живых членов.
+
+    Отказ, который это предотвращает: канареечная нода оказывается последней
+    работающей в своём пуле, её выводят на обслуживание, и пользователи получают
+    не переключение на соседа, а отказ. В панели при этом всё выглядит
+    нормально: выключенный Host остаётся в списке членов пула и просто
+    перестаёт предлагаться.
+    """
+
+    HOSTS = {
+        "response": [
+            {"uuid": "h-live-1", "remark": "RU MSK", "isDisabled": False},
+            {"uuid": "h-off", "remark": "RU SPB", "isDisabled": True},
+            {"uuid": "h-live-2", "remark": "DE-02", "isDisabled": False},
+            {"uuid": "h-live-3", "remark": "CZ-01", "isDisabled": False},
+        ]
+    }
+
+    @staticmethod
+    def _template(name, prefix, uuids):
+        return {
+            "name": name,
+            "templateJson": {
+                "remnawave": {
+                    "injectHosts": [
+                        {"tagPrefix": prefix, "selector": {"type": "uuids", "values": uuids}}
+                    ]
+                }
+            },
+        }
+
+    def setUp(self) -> None:
+        self.templates = [
+            # Один живой член из двух: второй уже выключен.
+            self._template("Balancer_RU", "proxy", ["h-live-1", "h-off"]),
+            self._template("Balancer_GAMES", "games", ["h-live-2", "h-live-3"]),
+        ]
+
+    def test_pool_membership_separates_live_from_disabled(self) -> None:
+        pools = MODULE.remnawave_pool_members(self.templates, self.HOSTS)
+        self.assertEqual(["RU MSK"], pools["Balancer_RU / proxy"]["live"])
+        self.assertEqual(["RU SPB"], pools["Balancer_RU / proxy"]["disabled"])
+        self.assertEqual(2, len(pools["Balancer_GAMES / games"]["live"]))
+
+    def test_a_missing_uuid_is_reported_rather_than_counted_live(self) -> None:
+        templates = self.templates + [self._template("Balancer_X", "x", ["h-gone"])]
+        pools = MODULE.remnawave_pool_members(templates, self.HOSTS)
+        self.assertEqual(["h-gone"], pools["Balancer_X / x"]["missing"])
+        self.assertEqual([], pools["Balancer_X / x"]["live"])
+
+    def test_draining_the_last_live_member_is_refused(self) -> None:
+        emptied = MODULE.remnawave_pools_emptied_by(self.templates, self.HOSTS, ["h-live-1"])
+        self.assertEqual(["Balancer_RU / proxy"], emptied)
+
+    def test_draining_a_member_with_a_live_neighbour_is_allowed(self) -> None:
+        self.assertEqual(
+            [], MODULE.remnawave_pools_emptied_by(self.templates, self.HOSTS, ["h-live-2"]))
+
+    def test_a_node_outside_every_pool_empties_nothing(self) -> None:
+        self.assertEqual(
+            [], MODULE.remnawave_pools_emptied_by(self.templates, self.HOSTS, ["h-unrelated"]))
+
+    def test_disabling_both_remaining_members_at_once_is_refused(self) -> None:
+        emptied = MODULE.remnawave_pools_emptied_by(
+            self.templates, self.HOSTS, ["h-live-2", "h-live-3"])
+        self.assertEqual(["Balancer_GAMES / games"], emptied)
+
+    def test_either_a_bare_list_or_a_response_envelope_is_accepted(self) -> None:
+        # В плейбуке под рукой то список, то весь ответ - обе формы валидны.
+        as_list = MODULE.remnawave_pool_members(self.templates, self.HOSTS["response"])
+        as_envelope = MODULE.remnawave_pool_members(self.templates, self.HOSTS)
+        self.assertEqual(as_envelope, as_list)

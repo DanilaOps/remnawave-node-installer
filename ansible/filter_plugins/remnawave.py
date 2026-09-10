@@ -408,6 +408,107 @@ def remnawave_firewall_covers(ruleset: Any, cidr: Any) -> bool:
     return re.search(pattern, ruleset) is not None
 
 
+def _as_items(value: Any, collection_key: str) -> list[Any]:
+    """Принять либо готовый список, либо конверт Remnawave.
+
+    Вызывающему не всегда удобно тащить весь ответ: в плейбуке под рукой то
+    список объектов, то `.json` целиком. Обе формы валидны, и разбирать это
+    в Jinja каждый раз - лишний повод для ошибки.
+    """
+
+    if isinstance(value, list):
+        return value
+    return remnawave_response_items(value, collection_key)
+
+
+def remnawave_pool_members(templates: Any, hosts: Any) -> dict[str, Any]:
+    """Map every balancer pool to its members and their live/disabled state.
+
+    Pool membership is not the Xray selector: it is the list of Host uuids in a
+    subscription template's ``remnawave.injectHosts[].selector.values``.  A Host
+    that is disabled stays in that list and simply stops being offered, so a pool
+    can shrink to nothing without anything in the panel looking wrong - which is
+    exactly what a drain has to refuse to cause.
+
+    Returns ``{pool: {"live": [remark, ...], "disabled": [...], "missing": [uuid, ...]}}``
+    where the pool name is ``"<template> / <tagPrefix>"``.
+    """
+
+    by_uuid: dict[str, Any] = {}
+    for host in _as_items(hosts, "hosts"):
+        if isinstance(host, dict) and host.get("uuid"):
+            by_uuid[host["uuid"]] = host
+
+    pools: dict[str, Any] = {}
+    for template in _as_items(templates, "templates"):
+        if not isinstance(template, dict):
+            continue
+        name = str(template.get("name", ""))
+        body = template.get("templateJson")
+        if not isinstance(body, dict):
+            continue
+        groups = ((body.get("remnawave") or {}).get("injectHosts")) or []
+        for group in groups:
+            if not isinstance(group, dict):
+                continue
+            values = ((group.get("selector") or {}).get("values")) or []
+            key = "%s / %s" % (name, group.get("tagPrefix") or "-")
+            entry = pools.setdefault(key, {"live": [], "disabled": [], "missing": []})
+            for uuid in values:
+                host = by_uuid.get(uuid)
+                if host is None:
+                    entry["missing"].append(uuid)
+                elif host.get("isDisabled"):
+                    entry["disabled"].append(str(host.get("remark") or uuid))
+                else:
+                    entry["live"].append(str(host.get("remark") or uuid))
+    return pools
+
+
+def remnawave_pools_emptied_by(
+    templates: Any,
+    hosts: Any,
+    disabling: Iterable[str],
+) -> list[str]:
+    """Pools that would have no live member left if ``disabling`` were disabled.
+
+    The guard a drain needs.  Taking a node out of balancing is safe only while
+    somewhere else in its pool is still serving; the alternative is not a slower
+    connection but no connection, and the operator finds out from users.
+    """
+
+    going = {str(u) for u in (disabling or [])}
+    by_uuid: dict[str, Any] = {}
+    for host in _as_items(hosts, "hosts"):
+        if isinstance(host, dict) and host.get("uuid"):
+            by_uuid[host["uuid"]] = host
+
+    emptied: list[str] = []
+    for template in _as_items(templates, "templates"):
+        if not isinstance(template, dict):
+            continue
+        body = template.get("templateJson")
+        if not isinstance(body, dict):
+            continue
+        groups = ((body.get("remnawave") or {}).get("injectHosts")) or []
+        for group in groups:
+            if not isinstance(group, dict):
+                continue
+            values = ((group.get("selector") or {}).get("values")) or []
+            if not values:
+                continue
+            live_after = 0
+            for uuid in values:
+                host = by_uuid.get(uuid)
+                if host is None or host.get("isDisabled") or uuid in going:
+                    continue
+                live_after += 1
+            if live_after == 0 and any(u in going for u in values):
+                emptied.append("%s / %s" % (
+                    str(template.get("name", "")), group.get("tagPrefix") or "-"))
+    return emptied
+
+
 class FilterModule:
     """Ansible filter registration."""
 
@@ -428,4 +529,6 @@ class FilterModule:
             "remnawave_ip_in_cidrs": remnawave_ip_in_cidrs,
             "remnawave_country_ordinals": remnawave_country_ordinals,
             "remnawave_next_node_name": remnawave_next_node_name,
+            "remnawave_pool_members": remnawave_pool_members,
+            "remnawave_pools_emptied_by": remnawave_pools_emptied_by,
         }
