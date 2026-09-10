@@ -1,0 +1,33 @@
+---
+# Copy to hosts.yml (git-ignored) and add one line per node. This file is the
+# node registry for command-line runs; Semaphore keeps its own copy of the same
+# structure as a static inventory.
+all:
+  children:
+    remnawave_nodes:
+      hosts:
+        ee01:
+          ansible_host: 203.0.113.10
+
+        # A node whose capacity is declared once, here. On install the monitoring
+        # capacity inventory is synced from these fields - there is no second edit
+        # in monitoring/capacity/capacity.yml. A bare number, never quoted.
+        # capacity_certain: true counts the figure as a declared per-node rating;
+        # false (the default) publishes the node as unmeasured. The pool defaults
+        # to the country (tr02 -> TR); set capacity_pool for a per-node pool where
+        # the country pool is rated as one whole location. See
+        # group_vars/remnawave_nodes/capacity.yml.
+        tr02:
+          ansible_host: 203.0.113.20
+          capacity_download_mbps: 1000
+          capacity_upload_mbps: 1000
+          capacity_certain: true
+
+        # Or let the installer measure it: on install the node runs iperf3 to
+        # several Russian cities and records the rating itself. No figure to
+        # type, and none to keep up to date. Do not combine with the manual
+        # fields above - one source of truth. In a country whose pool is rated as
+        # one location (an aggregate pool) add capacity_pool for a per-node pool.
+        tr03:
+          ansible_host: 203.0.113.30
+          capacity_auto_test: true

@@ -1,0 +1,33 @@
+[Unit]
+Description=Semaphore Ansible UI (pinned {{ semaphore_version }})
+Documentation=https://docs.semaphoreui.com
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User={{ semaphore_user }}
+Group={{ semaphore_group }}
+# A persistent HOME is what makes the SSH host key accepted on a node's first
+# run survive the next one.
+Environment=HOME={{ semaphore_home }}
+Environment=SEMAPHORE_HOME_DIR_MODE=user_home
+Environment=SEMAPHORE_INTERFACE={{ semaphore_interface }}
+Environment=SEMAPHORE_PORT=:{{ semaphore_port }}
+Environment=PATH={{ semaphore_venv_path }}/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+WorkingDirectory={{ semaphore_home }}
+ExecStart={{ semaphore_binary_path }} server --config={{ semaphore_config_path }}
+Restart=on-failure
+RestartSec=5
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+ReadWritePaths={{ semaphore_tmp_path }} {{ semaphore_home }}
+
+[Install]
+WantedBy=multi-user.target

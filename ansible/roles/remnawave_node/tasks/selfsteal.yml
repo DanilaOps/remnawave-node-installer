@@ -1,0 +1,139 @@
+---
+- name: Create nginx, site and log directories
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: "{{ item.owner | default('root') }}"
+    group: "{{ item.group | default('root') }}"
+    mode: "{{ item.mode }}"
+  loop:
+    - path: "{{ remnawave_nginx_dir }}/conf.d"
+      mode: "0755"
+    - path: "{{ remnawave_nginx_logs_dir }}"
+      mode: "0750"
+    - path: "{{ remnawave_install_root }}/acme-webroot"
+      mode: "0755"
+
+- name: Create virtual-host document roots
+  ansible.builtin.file:
+    path: "{{ item.root }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  loop: "{{ selfsteal_virtual_hosts }}"
+  loop_control:
+    label: "{{ item.name }}"
+
+- name: Build the deterministic decoy profile for every virtual host
+  ansible.builtin.set_fact:
+    remnawave_decoy_profiles: >-
+      {{ remnawave_decoy_profiles | default({}) |
+         combine({item.name: remnawave_decoy_seed | trim | remnawave_decoy_profile(item.name)}) }}
+  loop: "{{ selfsteal_virtual_hosts }}"
+  loop_control:
+    label: "{{ item.name }}"
+
+- name: Plan the generated decoy files
+  ansible.builtin.set_fact:
+    remnawave_decoy_files: >-
+      {{ remnawave_decoy_files | default([]) + [
+           {'site': item.name, 'root': item.root, 'src': 'index.html.j2', 'dest': 'index.html'},
+           {'site': item.name, 'root': item.root, 'src': 'favicon.svg.j2', 'dest': 'favicon.svg'},
+           {'site': item.name, 'root': item.root, 'src': 'robots.txt.j2', 'dest': 'robots.txt'},
+           {'site': item.name, 'root': item.root, 'src': 'site.css.j2',
+            'dest': remnawave_decoy_profiles[item.name].assets.css},
+           {'site': item.name, 'root': item.root, 'src': 'logo.svg.j2',
+            'dest': remnawave_decoy_profiles[item.name].assets.logo}
+         ] + ([{'site': item.name, 'root': item.root, 'src': 'app.js.j2',
+                'dest': remnawave_decoy_profiles[item.name].assets.js}]
+              if remnawave_decoy_profiles[item.name].assets.js | length > 0 else []) }}
+  loop: "{{ selfsteal_virtual_hosts }}"
+  loop_control:
+    label: "{{ item.name }}"
+
+- name: Render the generated decoy site
+  ansible.builtin.template:
+    src: "{{ item.src }}"
+    dest: "{{ item.root }}/{{ item.dest }}"
+    owner: root
+    group: root
+    mode: "0644"
+    force: "{{ selfsteal_refresh_content }}"
+  loop: "{{ remnawave_decoy_files }}"
+  loop_control:
+    label: "{{ item.site }}/{{ item.dest }}"
+  vars:
+    decoy: "{{ remnawave_decoy_profiles[item.site] }}"
+    selfsteal_site: "{{ item.site }}"
+  notify: Reload selfsteal nginx
+
+- name: Find generated files that no longer belong to the current seed
+  ansible.builtin.find:
+    paths: "{{ item.root }}"
+    file_type: file
+    excludes: >-
+      {{ ['index.html', 'favicon.svg', 'robots.txt',
+          remnawave_decoy_profiles[item.name].assets.css,
+          remnawave_decoy_profiles[item.name].assets.logo] +
+         ([remnawave_decoy_profiles[item.name].assets.js]
+          if remnawave_decoy_profiles[item.name].assets.js | length > 0 else []) }}
+  loop: "{{ selfsteal_virtual_hosts }}"
+  loop_control:
+    label: "{{ item.name }}"
+  register: remnawave_decoy_stale
+
+- name: Remove decoy assets left over from a previous seed
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop: >-
+    {{ remnawave_decoy_stale.results | map(attribute='files') | flatten | map(attribute='path') | list }}
+  notify: Reload selfsteal nginx
+
+- name: Check whether the compose project has already been applied
+  ansible.builtin.stat:
+    path: "{{ remnawave_install_root }}/.compose-applied"
+  register: remnawave_compose_marker
+
+- name: Render nginx configuration for all virtual hosts
+  ansible.builtin.template:
+    src: nginx.conf.j2
+    dest: "{{ remnawave_nginx_dir }}/nginx.conf"
+    owner: root
+    group: root
+    mode: "0644"
+  register: remnawave_nginx_config
+
+- name: Validate the rendered nginx configuration in the pinned container image
+  ansible.builtin.command:
+    argv:
+      - docker
+      - run
+      - --rm
+      - --network
+      - host
+      - --volume
+      - "{{ remnawave_nginx_dir }}/nginx.conf:/etc/nginx/nginx.conf:ro"
+      - --volume
+      - /etc/letsencrypt:/etc/letsencrypt:ro
+      - --volume
+      - "{{ remnawave_install_root }}/selfsteal:/var/www/selfsteal:ro"
+      - --volume
+      - "{{ remnawave_install_root }}/acme-webroot:/var/www/acme:ro"
+      - --volume
+      - "{{ remnawave_nginx_logs_dir }}:/var/log/nginx"
+      - "{{ remnawave_nginx_image }}"
+      - nginx
+      - -t
+  changed_when: false
+  when: remnawave_nginx_config.changed
+
+- name: Schedule nginx recreation for an updated bind-mounted configuration
+  ansible.builtin.debug:
+    msg: nginx configuration changed; the existing container will be recreated after validation.
+  changed_when: true
+  when:
+    - remnawave_nginx_config.changed
+    - remnawave_compose_marker.stat.exists
+  notify: Recreate selfsteal nginx

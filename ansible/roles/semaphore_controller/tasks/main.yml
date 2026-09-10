@@ -1,0 +1,31 @@
+---
+- name: Validate controller inputs
+  ansible.builtin.import_tasks: preflight.yml
+  tags: [always, preflight]
+
+- name: Configure the controller host
+  ansible.builtin.import_tasks: system.yml
+  tags: [system]
+
+- name: Install the pinned Ansible runtime
+  ansible.builtin.import_tasks: runtime.yml
+  tags: [runtime]
+
+- name: Install and configure Semaphore
+  ansible.builtin.import_tasks: semaphore.yml
+  tags: [semaphore]
+
+- name: Publish the UI behind a TLS reverse proxy
+  ansible.builtin.import_tasks: proxy.yml
+  when: controller_proxy_enabled | bool
+  tags: [proxy]
+
+- name: Install the controller firewall
+  ansible.builtin.import_tasks: firewall.yml
+  when: controller_firewall_enabled | bool
+  tags: [firewall]
+
+- name: Install the backup job
+  ansible.builtin.import_tasks: backup.yml
+  when: controller_backup_enabled | bool
+  tags: [backup]

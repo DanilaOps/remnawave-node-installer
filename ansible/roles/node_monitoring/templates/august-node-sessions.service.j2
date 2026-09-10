@@ -1,0 +1,21 @@
+[Unit]
+Description=Count established TCP sessions on August VPN user ports
+Documentation=file://{{ node_monitoring_sessions_script }}
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart={{ node_monitoring_sessions_script }}
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+SystemCallArchitectures=native
+ReadWritePaths={{ node_monitoring_textfile_dir }}

@@ -1,0 +1,46 @@
+---
+# Account that Ansible uses for every later run. It is created with the
+# controller's public key and password-less sudo; sshd policy itself stays owned
+# by node_base, which writes the highest-priority drop-in and verifies it.
+bootstrap_user: deployer
+bootstrap_user_shell: /bin/bash
+bootstrap_user_groups: [sudo]
+# The controller's own public key, found automatically. Override
+# bootstrap_authorized_key_files or bootstrap_authorized_keys to be explicit.
+bootstrap_authorized_key_files:
+  - "{{ lookup('env', 'HOME') }}/.ssh/id_ed25519.pub"
+  - "{{ lookup('env', 'HOME') }}/.ssh/id_rsa.pub"
+bootstrap_pubkey_file: >-
+  {{ query('first_found', bootstrap_authorized_key_files, errors='ignore') | first | default('', true) }}
+bootstrap_authorized_keys: >-
+  {{ [lookup('file', bootstrap_pubkey_file | trim)]
+     if bootstrap_pubkey_file | trim | length > 0 else [] }}
+bootstrap_sudoers_path: /etc/sudoers.d/90-remnawave-deployer
+bootstrap_packages:
+  - python3
+  - python3-apt
+  - sudo
+bootstrap_supported_os:
+  Debian: ["12", "13"]
+  Ubuntu: ["24.04"]
+
+# Login used for the very first connection, before bootstrap_user exists.
+#
+# Two sources, in the order that wins:
+#   1. NODE_ROOT_PASSWORD in the environment - ./provision-node prompts for it and
+#      never writes it to disk or into argv.
+#   2. vault_node_root_password - encrypted in /etc/remnawave/secrets.yml, which
+#      Ansible decrypts in-process. For unattended runs; normally left empty.
+# Empty from both means key-only bootstrap, which is the target state.
+#
+# Deliberately not a third source: -e bootstrap_ssh_password=... from a Semaphore
+# secret survey field. Semaphore passes survey answers as --extra-vars, so the
+# value lands in argv and is readable by any local account through
+# /proc/<pid>/cmdline for the length of the run. The variable is still honoured
+# if something sets it, because the precedence chain below reads it - but nothing
+# in this project puts it on a command line any more.
+bootstrap_ssh_user: root
+bootstrap_ssh_password: >-
+  {{ lookup('env', 'NODE_ROOT_PASSWORD')
+     if lookup('env', 'NODE_ROOT_PASSWORD') | length > 0
+     else (vault_node_root_password | default('')) }}

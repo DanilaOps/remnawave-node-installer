@@ -1,0 +1,215 @@
+---
+- name: Inspect RemnaNode container
+  community.docker.docker_container_info:
+    name: "{{ remnawave_node_container }}"
+  register: remnawave_verify_node_container
+
+- name: Inspect nginx selfsteal container
+  community.docker.docker_container_info:
+    name: "{{ remnawave_nginx_container }}"
+  register: remnawave_verify_nginx_container
+
+- name: Require running application containers
+  ansible.builtin.assert:
+    that:
+      - remnawave_verify_node_container.exists
+      - remnawave_verify_node_container.container.State.Running
+      - remnawave_verify_node_container.container.State.Health.Status | default('missing') == 'healthy'
+      - remnawave_verify_nginx_container.exists
+      - remnawave_verify_nginx_container.container.State.Running
+      - >-
+        remnawave_verify_nginx_container.container.State.Health.Status | default('missing') == 'healthy'
+    fail_msg: RemnaNode or nginx selfsteal is absent, stopped or unhealthy.
+
+- name: Validate running nginx configuration
+  ansible.builtin.command:
+    argv: [docker, exec, "{{ remnawave_nginx_container }}", nginx, -t]
+  register: remnawave_verify_nginx_config
+  changed_when: false
+
+- name: Read running nginx version
+  ansible.builtin.command:
+    argv: [docker, exec, "{{ remnawave_nginx_container }}", nginx, -v]
+  register: remnawave_verify_nginx_version_raw
+  changed_when: false
+
+- name: Normalize nginx version output
+  ansible.builtin.set_fact:
+    remnawave_verify_nginx_version:
+      stdout: "{{ remnawave_verify_nginx_version_raw.stderr | default(remnawave_verify_nginx_version_raw.stdout) }}"
+
+- name: Read Xray version inside RemnaNode
+  ansible.builtin.command:
+    argv: [docker, exec, "{{ remnawave_node_container }}", xray, version]
+  register: remnawave_verify_xray_version
+  changed_when: false
+  # Read-only: it runs in check mode too, so a dry-run sees real state.
+  check_mode: false
+
+- name: Require the pinned Xray version at runtime
+  ansible.builtin.assert:
+    that:
+      - remnawave_verify_xray_version.stdout is match('^Xray ' ~ xray_version ~ ' ')
+    fail_msg: "RemnaNode is not running pinned Xray {{ xray_version }}."
+
+- name: Read the supervised Xray service state
+  ansible.builtin.command:
+    argv: [docker, exec, "{{ remnawave_node_container }}", /command/s6-svstat, /run/service/xray]
+  register: remnawave_verify_xray_service
+  changed_when: false
+  # Read-only: it runs in check mode too, so a dry-run sees real state.
+  check_mode: false
+
+- name: Require the supervised Xray process to be up
+  ansible.builtin.assert:
+    that:
+      - remnawave_verify_xray_service.stdout is match('^up')
+    fail_msg: RemnaNode is running, but its supervised Xray service is not up.
+
+- name: Read TCP listeners
+  ansible.builtin.command:
+    argv: [ss, -H, -lnt]
+  register: remnawave_verify_tcp_listeners
+  changed_when: false
+  # Read-only: it runs in check mode too, so a dry-run sees real state.
+  check_mode: false
+
+- name: Verify required and forbidden listener exposure
+  ansible.builtin.assert:
+    that:
+      - remnawave_verify_tcp_listeners.stdout is regex('(?m)(^|\s)(0\.0\.0\.0|\[::\]|\*):443\s')
+      - remnawave_verify_tcp_listeners.stdout is regex('(?m)(^|\s)(0\.0\.0\.0|\[::\]|\*):' ~ remnawave_node_port ~ '\s')
+      - remnawave_verify_tcp_listeners.stdout is not regex('(?m)(^|\s)(0\.0\.0\.0|\[::\]|\*):61000\s')
+    fail_msg: Required listeners are absent or Xray internal API 61000 is publicly exposed.
+
+- name: Read managed firewall table
+  ansible.builtin.command:
+    argv: [nft, list, table, inet, "{{ node_firewall_table }}"]
+  register: remnawave_verify_firewall
+  changed_when: false
+  # Read-only: it runs in check mode too, so a dry-run sees real state.
+  check_mode: false
+  when: node_firewall_enabled | bool
+
+# Acceptance reads real state in a dry-run as well, so a --check run is a full
+# health check of a node that is already installed. The only exceptions are the
+# two things this very run would have changed and a dry-run did not apply: the
+# nftables ruleset and the certificate. Verifying those against live state would
+# report a failure the same run is about to fix.
+- name: Report the acceptance checks a dry-run has to leave out
+  ansible.builtin.debug:
+    msg: >-
+      Dry-run: not checking
+      {{ ((['the firewall ruleset (this run would rewrite it)']
+           if node_base_firewall_template.changed | default(false) else []) +
+          (['the certificate (this run would issue it)']
+           if certificate_enabled | bool and
+              not (remnawave_certificate_file.stat.exists | default(false)) else []))
+         | join(' or ') }}.
+      Everything else below - the containers, the listeners, the Panel's view of this node, the
+      logs - was checked against the node as it is now.
+  when:
+    - ansible_check_mode
+    - >-
+      node_base_firewall_template.changed | default(false) or
+      (certificate_enabled | bool and not (remnawave_certificate_file.stat.exists | default(false)))
+
+- name: Verify Panel and management allowlists exist in firewall
+  ansible.builtin.assert:
+    that:
+      # Normalized comparison, not a raw substring: nft prints a host route
+      # without its prefix, so the 94.141.123.63/32 the template wrote comes
+      # back as 94.141.123.63. Both spellings of the same restriction pass;
+      # a missing or different restriction still fails.
+      - remnawave_verify_firewall.stdout | remnawave_firewall_covers(item)
+    fail_msg: "Firewall does not contain required source restriction {{ item }}."
+  loop: "{{ management_cidrs + remnawave_panel_cidrs }}"
+  when:
+    - node_firewall_enabled | bool
+    - not (ansible_check_mode and node_base_firewall_template.changed | default(false))
+
+- name: Verify bridge source restriction exists in firewall
+  ansible.builtin.assert:
+    that:
+      # Same normalization as above: an entry address declared as a /32 host
+      # route comes back from nft without the prefix.
+      - remnawave_verify_firewall.stdout | remnawave_firewall_covers(bridge_spec.entry_address)
+      - bridge_spec.port | string in remnawave_verify_firewall.stdout
+    fail_msg: Bridge port is not restricted to the declared entry address.
+  when:
+    - node_firewall_enabled | bool
+    - bridge_spec.enabled | default(false) | bool
+    - not (ansible_check_mode and node_base_firewall_template.changed | default(false))
+
+- name: Verify the monitoring exporter is restricted to the monitoring host
+  # node_verify runs on its own from Semaphore template 03, so the guarantee
+  # that an unauthenticated exporter is not public is re-checked there and not
+  # only at install time.
+  ansible.builtin.assert:
+    that:
+      - remnawave_verify_firewall.stdout | remnawave_firewall_covers(item)
+      - node_monitoring_exporter_port | string in remnawave_verify_firewall.stdout
+    fail_msg: >-
+      Monitoring is enabled but the firewall does not restrict
+      :{{ node_monitoring_exporter_port }} to {{ item }}.
+  loop: "{{ monitoring_scrape_cidrs | default([]) }}"
+  loop_control:
+    label: "{{ item }}"
+  when:
+    - node_firewall_enabled | bool
+    - node_monitoring_enabled | default(false) | bool
+    - not (ansible_check_mode and node_base_firewall_template.changed | default(false))
+
+- name: Inspect deployed certificate validity
+  community.crypto.x509_certificate_info:
+    path: "/etc/letsencrypt/live/{{ certificate_name }}/fullchain.pem"
+    valid_at:
+      acceptance_window: "+{{ verify_required_certificate_days }}d"
+  register: remnawave_verify_certificate
+  when:
+    - certificate_enabled | bool
+    - not ansible_check_mode or remnawave_certificate_file.stat.exists | default(false)
+
+- name: Require certificate validity beyond acceptance window
+  ansible.builtin.assert:
+    that:
+      - remnawave_verify_certificate.valid_at.acceptance_window
+    fail_msg: Certificate expires inside the acceptance window.
+  when: remnawave_verify_certificate is not skipped
+
+- name: Read recent RemnaNode logs
+  ansible.builtin.command:
+    argv: [docker, logs, --since, "{{ verify_log_since }}", "{{ remnawave_node_container }}"]
+  register: remnawave_verify_node_logs
+  changed_when: false
+  # Read-only: it runs in check mode too, so a dry-run sees real state.
+  check_mode: false
+
+- name: Inspect the persisted Xray log
+  ansible.builtin.stat:
+    path: "{{ remnawave_logs_dir }}/current"
+  register: remnawave_verify_xray_log_file
+
+- name: Require a persisted non-empty Xray log
+  ansible.builtin.assert:
+    that:
+      - remnawave_verify_xray_log_file.stat.exists
+      - remnawave_verify_xray_log_file.stat.isreg
+      - remnawave_verify_xray_log_file.stat.size | int > 0
+    fail_msg: Xray is running without a persisted {{ remnawave_logs_dir }}/current log file.
+
+- name: Read recent Xray log entries from the mounted path
+  ansible.builtin.command:
+    argv: [tail, -n, "200", "{{ remnawave_logs_dir }}/current"]
+  register: remnawave_verify_xray_logs
+  changed_when: false
+  # Read-only: it runs in check mode too, so a dry-run sees real state.
+  check_mode: false
+
+- name: Reject fatal application or Xray log entries
+  ansible.builtin.assert:
+    that:
+      - >-
+        (remnawave_verify_node_logs.stdout ~ remnawave_verify_node_logs.stderr ~ remnawave_verify_xray_logs.stdout)
+        is not regex(verify_fatal_log_pattern)
+    fail_msg: Recent RemnaNode or Xray logs contain a fatal startup or configuration error.

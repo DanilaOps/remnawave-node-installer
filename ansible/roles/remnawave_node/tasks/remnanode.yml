@@ -1,0 +1,48 @@
+---
+- name: Create RemnaNode runtime directories
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "{{ item.mode }}"
+  loop:
+    - path: "{{ remnawave_node_dir }}"
+      mode: "0700"
+    - path: "{{ remnawave_logs_dir }}"
+      mode: "0750"
+    - path: "{{ remnawave_state_dir }}"
+      mode: "0700"
+
+- name: Write RemnaNode secrets
+  ansible.builtin.template:
+    src: remnanode.env.j2
+    dest: "{{ remnawave_node_env_path }}"
+    owner: root
+    group: root
+    mode: "0600"
+  no_log: true
+  diff: false
+  notify: Apply Remnawave compose
+
+- name: Render the Remnawave compose project
+  ansible.builtin.template:
+    src: compose.yml.j2
+    dest: "{{ remnawave_compose_path }}"
+    owner: root
+    group: root
+    mode: "0600"
+    validate: docker compose -f %s config --quiet
+  notify: Apply Remnawave compose
+
+- name: Ensure compose project is applied on first installation
+  ansible.builtin.stat:
+    path: "{{ remnawave_install_root }}/.compose-applied"
+  register: remnawave_compose_marker
+
+- name: Trigger initial compose deployment
+  ansible.builtin.debug:
+    msg: The Remnawave compose project has not been applied yet.
+  changed_when: true
+  notify: Apply Remnawave compose
+  when: not remnawave_compose_marker.stat.exists

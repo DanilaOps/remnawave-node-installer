@@ -1,0 +1,31 @@
+---
+- name: Reload systemd
+  ansible.builtin.systemd_service:
+    daemon_reload: true
+  listen: Reload systemd
+  # A dry-run did not write the unit this would act on, and on a host that
+  # does not have it yet systemd would be asked about something that does not
+  # exist. What the run would do is reported by the tasks instead.
+  when: not ansible_check_mode
+
+- name: Restart node_exporter
+  ansible.builtin.systemd_service:
+    name: node_exporter.service
+    state: restarted
+    daemon_reload: true
+  listen: Restart node_exporter
+  # A dry-run did not write the unit this would act on, and on a host that
+  # does not have it yet systemd would be asked about something that does not
+  # exist. What the run would do is reported by the tasks instead.
+  when: not ansible_check_mode
+
+- name: Restart the session collector timer
+  ansible.builtin.systemd_service:
+    name: august-node-sessions.timer
+    state: restarted
+    daemon_reload: true
+  listen: Restart the session collector timer
+  # A dry-run did not write the unit this would act on, and on a host that
+  # does not have it yet systemd would be asked about something that does not
+  # exist. What the run would do is reported by the tasks instead.
+  when: not ansible_check_mode

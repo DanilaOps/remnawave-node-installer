@@ -1,0 +1,10 @@
+[Unit]
+Description=Automatic rollback for an unconfirmed Remnawave firewall
+
+[Timer]
+OnActiveSec={{ node_firewall_rollback_seconds }}s
+Unit=remnawave-firewall-rollback.service
+
+[Install]
+WantedBy=timers.target
+

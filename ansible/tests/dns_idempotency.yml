@@ -1,0 +1,18 @@
+---
+- name: Reconcile a node's DNS record against the mock registrar
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  become: false
+  vars:
+    dns_provider: regru
+    dns_zone: example.com
+    dns_record_fqdn: ee01.example.com
+    dns_record_value: 203.0.113.10
+    dns_record_ttl: 300
+    dns_wait_for_resolution: false
+    regru_api_url: http://127.0.0.1:18083
+    regru_username: mock-user
+    regru_password: mock-password
+  roles:
+    - role: dns

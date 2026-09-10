@@ -1,0 +1,150 @@
+---
+- name: Collect all selfsteal certificate names
+  ansible.builtin.set_fact:
+    remnawave_certificate_domains: >-
+      {{ selfsteal_virtual_hosts | map(attribute='server_names') | flatten | unique }}
+
+- name: Validate certificate configuration
+  ansible.builtin.assert:
+    that:
+      - acme_email | length > 0
+      - certificate_name | length > 0
+      - remnawave_certificate_domains | length > 0
+      - certificate_mode != 'cloudflare_dns' or cloudflare_token | length > 0
+      - certificate_renew_before_days | int >= 1
+      - certificate_renew_before_days | int <= 30
+      - certificate_acme_environment in ['auto', 'staging', 'production']
+      - certificate_acme_target_environment | trim in certificate_acme_directories
+      - remnawave_acme_directory | trim is match('^https://')
+    fail_msg: >-
+      ACME email, domains and DNS credentials for the selected mode are required;
+      certificate_renew_before_days must be between 1 and Certbot's standard 30-day renewal
+      window, and certificate_acme_environment must be auto, staging or production.
+  no_log: true
+
+- name: Install Cloudflare DNS Certbot plugin
+  ansible.builtin.apt:
+    name: python3-certbot-dns-cloudflare
+    state: present
+    lock_timeout: 300
+  when: certificate_mode == 'cloudflare_dns'
+
+- name: Store Cloudflare DNS credentials
+  ansible.builtin.copy:
+    content: "dns_cloudflare_api_token = {{ cloudflare_token }}\n"
+    dest: "{{ cloudflare_credentials_path }}"
+    owner: root
+    group: root
+    mode: "0600"
+  no_log: true
+  when: certificate_mode == 'cloudflare_dns'
+
+- name: Create the HTTP-01 webroot served by nginx
+  ansible.builtin.file:
+    path: "{{ certificate_webroot_path }}/.well-known/acme-challenge"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  when: certificate_mode == 'http01'
+
+- name: Check existing certificate
+  ansible.builtin.stat:
+    path: "/etc/letsencrypt/live/{{ certificate_name }}/fullchain.pem"
+  register: remnawave_certificate_file
+
+- name: Inspect existing certificate validity and issuer
+  community.crypto.x509_certificate_info:
+    path: "/etc/letsencrypt/live/{{ certificate_name }}/fullchain.pem"
+    valid_at:
+      renewal_threshold: "+{{ certificate_renew_before_days }}d"
+  register: remnawave_certificate_info
+  when: remnawave_certificate_file.stat.exists
+
+- name: Classify the installed certificate
+  ansible.builtin.set_fact:
+    remnawave_certificate_installed_staging: >-
+      {{ remnawave_certificate_file.stat.exists and
+         ((remnawave_certificate_info.issuer.organizationName | default('') ~ ' ' ~
+           remnawave_certificate_info.issuer.commonName | default('')) is search('(?i)staging')) }}
+    remnawave_certificate_in_window: >-
+      {{ remnawave_certificate_file.stat.exists and
+         (remnawave_certificate_info.valid_at.renewal_threshold | default(false)) }}
+
+- name: Plan the ACME phases
+  # auto issues staging first on a node that has no certificate at all: it costs
+  # nothing, proves DNS, port 80 and the challenge path work, and keeps a
+  # misconfigured node from spending the production failure limit. Everything
+  # else needs a single issuance, and a node already holding a valid certificate
+  # of the target environment needs none.
+  ansible.builtin.set_fact:
+    remnawave_certificate_phases: >-
+      {{ []
+         if (remnawave_certificate_in_window | bool
+             and (remnawave_certificate_installed_staging | bool)
+                 == (certificate_acme_target_environment | trim == 'staging')
+             and not certificate_force_reissue | bool)
+         else (['staging', 'production']
+               if (certificate_acme_environment == 'auto'
+                   and not remnawave_certificate_file.stat.exists)
+               else [certificate_acme_target_environment | trim]) }}
+
+- name: Report the certificate decision
+  ansible.builtin.debug:
+    msg: >-
+      {{ certificate_name }}:
+      {{ ('no issuance needed (valid ' ~ (certificate_acme_target_environment | trim) ~ ' certificate)')
+         if remnawave_certificate_phases | length == 0
+         else ('issuing ' ~ (remnawave_certificate_phases | join(' then '))) }}
+
+- name: Issue the certificate
+  ansible.builtin.include_tasks: certificate_issue.yml
+  loop: "{{ remnawave_certificate_phases }}"
+  loop_control:
+    loop_var: remnawave_certificate_phase
+
+# The three checks below judge a certificate on disk. A dry-run did not let
+# certbot run, so on a node that has none there is nothing to judge; the fact is
+# reported once instead of failing three times. A node that already has a
+# certificate is checked for real in a dry-run as well.
+- name: Report that a dry-run cannot check a certificate that does not exist yet
+  ansible.builtin.debug:
+    msg: >-
+      Dry-run: {{ certificate_name }} has no certificate on this node and certbot was not run, so
+      the file, the private key and the issuer cannot be checked. A real run issues the certificate
+      and then requires it to match certificate_acme_target_environment
+      ({{ certificate_acme_target_environment | trim }}).
+  when:
+    - ansible_check_mode
+    - not remnawave_certificate_file.stat.exists
+
+- name: Verify certificate and private key exist
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  loop:
+    - "/etc/letsencrypt/live/{{ certificate_name }}/fullchain.pem"
+    - "/etc/letsencrypt/live/{{ certificate_name }}/privkey.pem"
+  register: remnawave_certificate_artifacts
+  failed_when: not remnawave_certificate_artifacts.stat.exists
+  when: remnawave_certificate_file.stat.exists or not ansible_check_mode
+
+- name: Re-inspect the installed certificate
+  community.crypto.x509_certificate_info:
+    path: "/etc/letsencrypt/live/{{ certificate_name }}/fullchain.pem"
+  register: remnawave_certificate_final
+  when: remnawave_certificate_file.stat.exists or not ansible_check_mode
+
+- name: Require the installed certificate to match the target ACME environment
+  ansible.builtin.assert:
+    that:
+      - >-
+        ((remnawave_certificate_final.issuer.organizationName | default('') ~ ' ' ~
+          remnawave_certificate_final.issuer.commonName | default('')) is search('(?i)staging'))
+        == (certificate_acme_target_environment | trim == 'staging')
+      - certificate_name in (remnawave_certificate_final.subject_alt_name | default([]) | join(' '))
+    fail_msg: >-
+      The installed certificate for {{ certificate_name }} was issued by
+      '{{ remnawave_certificate_final.issuer.commonName | default('unknown') }}', which does not match
+      certificate_acme_target_environment={{ certificate_acme_target_environment | trim }}. A staging
+      certificate is not trusted by clients and must never be left on a production node.
+  when: remnawave_certificate_final is not skipped

@@ -1,0 +1,22 @@
+---
+# This scenario runs the role's xray.yml on its own, but the role is never run
+# on its own: install_node.yml runs node_base, remnawave_panel and this role in
+# one play, in that order, and node_base installs unzip with its base packages
+# (node_base_packages in its defaults). The extraction step therefore relies on
+# a prerequisite the previous role provides, which a container image does not
+# have. This gives the instance that prerequisite, so the scenario starts where
+# the role really starts. Nothing here belongs in the role itself.
+- name: Prepare the instance
+  hosts: all
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Refresh the package metadata the image was built with
+      ansible.builtin.apt:
+        update_cache: true
+      changed_when: false
+
+    - name: Install the extraction tool node_base installs before this role runs
+      ansible.builtin.apt:
+        name: unzip
+        state: present

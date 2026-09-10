@@ -1,0 +1,12 @@
+[Unit]
+Description=Refresh the August VPN established-session count
+Documentation=file://{{ node_monitoring_sessions_script }}
+
+[Timer]
+OnBootSec=30s
+OnUnitActiveSec={{ node_monitoring_sessions_interval }}
+AccuracySec=1s
+Unit=august-node-sessions.service
+
+[Install]
+WantedBy=timers.target

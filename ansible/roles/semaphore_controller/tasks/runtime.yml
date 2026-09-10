@@ -1,0 +1,307 @@
+---
+- name: Create the Semaphore system group
+  ansible.builtin.group:
+    name: "{{ semaphore_group }}"
+    system: true
+    state: present
+
+- name: Create the Semaphore system user
+  ansible.builtin.user:
+    name: "{{ semaphore_user }}"
+    group: "{{ semaphore_group }}"
+    system: true
+    shell: /usr/sbin/nologin
+    home: "{{ semaphore_home }}"
+    create_home: true
+    state: present
+
+- name: Find out whether the managed identity exists yet
+  # A dry-run on a machine that has never been a controller has no such group,
+  # and the file module validates owner and group even in check mode. Without
+  # this the first --check on a fresh host dies on chgrp instead of showing what
+  # it would do. check_mode: false so the answer is real in both modes: on a
+  # normal run the group was just created and this reports it present.
+  ansible.builtin.command:
+    argv: [getent, group, "{{ semaphore_group }}"]
+  register: semaphore_group_lookup
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: Record whether ownership can be applied yet
+  ansible.builtin.set_fact:
+    semaphore_identity_ready: "{{ semaphore_group_lookup.rc == 0 }}"
+
+- name: Create the controller directories
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: "{{ (item.owner | default(semaphore_user)) if semaphore_identity_ready | bool else omit }}"
+    group: "{{ (item.group | default(semaphore_group)) if semaphore_identity_ready | bool else omit }}"
+    mode: "{{ item.mode }}"
+  loop:
+    - path: "{{ semaphore_config_dir }}"
+      owner: root
+      group: "{{ semaphore_group }}"
+      mode: "0750"
+    - path: "{{ semaphore_home }}"
+      mode: "0700"
+    - path: "{{ semaphore_tmp_path }}"
+      mode: "0700"
+    - path: "{{ semaphore_home }}/.ssh"
+      mode: "0700"
+
+- name: Create the deployment values directory
+  # Readable by the service user, writable only by root: it holds the panel URL,
+  # the zone and the encrypted secrets that every run needs.
+  ansible.builtin.file:
+    path: "{{ controller_values_dir }}"
+    state: directory
+    owner: root
+    group: "{{ semaphore_group if semaphore_identity_ready | bool else omit }}"
+    mode: "0750"
+
+- name: Look for the deployment values
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  loop:
+    - "{{ controller_fleet_values_path }}"
+    - "{{ controller_secret_values_path }}"
+    - "{{ controller_vault_password_path }}"
+  register: controller_values_present
+
+- name: Report deployment values that still have to be filled in
+  # Not a failure: a controller can legitimately be built before the fleet is
+  # configured. It is the node run that refuses to proceed on documentation
+  # values, and it says exactly this file's name when it does.
+  ansible.builtin.debug:
+    msg: >-
+      Missing on this controller:
+      {{ controller_values_present.results | rejectattr('stat.exists') | map(attribute='item') | list }}.
+      Copy ansible/examples/fleet.yml.example and ansible/examples/secrets.yml.example there
+      (encrypt the second with ansible-vault) and put the vault password in
+      {{ controller_vault_password_path }}. Until then every node run stops in preflight, which is
+      the intended behaviour.
+  when: controller_values_present.results | rejectattr('stat.exists') | list | length > 0
+
+- name: Restrict the deployment values
+  ansible.builtin.file:
+    path: "{{ item.item }}"
+    owner: root
+    group: "{{ semaphore_group if semaphore_identity_ready | bool else omit }}"
+    mode: "0640"
+  loop: "{{ controller_values_present.results | selectattr('stat.exists') | list }}"
+  loop_control:
+    label: "{{ item.item }}"
+
+- name: Clone or update the project checkout
+  ansible.builtin.git:
+    repo: "{{ semaphore_repository }}"
+    dest: "{{ semaphore_project_root }}"
+    version: "{{ semaphore_repository_version }}"
+    update: true
+  when:
+    - semaphore_manage_checkout | bool
+    - semaphore_repository | length > 0
+
+- name: Require the project checkout to exist
+  ansible.builtin.stat:
+    path: "{{ semaphore_project_root }}/ansible.cfg"
+  register: controller_project_checkout
+
+- name: Explain a missing checkout instead of guessing
+  ansible.builtin.assert:
+    that:
+      - controller_project_checkout.stat.exists
+    fail_msg: >-
+      {{ semaphore_project_root }}/ansible.cfg is missing, so this is not a checkout of this project.
+      Clone it there (Semaphore also clones it itself for its runs), or set semaphore_manage_checkout=true
+      with semaphore_repository so this role does it.
+
+- name: Create the Python virtualenv for the pinned Ansible
+  ansible.builtin.command:
+    argv: [python3, -m, venv, "{{ semaphore_venv_path }}"]
+    creates: "{{ semaphore_venv_path }}/bin/python"
+
+- name: Install the pinned Python dependencies
+  ansible.builtin.pip:
+    requirements: "{{ semaphore_project_root }}/ansible/requirements.txt"
+    virtualenv: "{{ semaphore_venv_path }}"
+    state: present
+
+- name: Install the pinned collections into the checkout
+  # Into the checkout, not into a home directory: the service runs with
+  # ProtectHome=true and would not see collections installed under ~/.ansible,
+  # and this way the collections are pinned together with the project.
+  ansible.builtin.command:
+    argv:
+      - "{{ semaphore_venv_path }}/bin/ansible-galaxy"
+      - collection
+      - install
+      - -r
+      - "{{ semaphore_project_root }}/ansible/collections/requirements.yml"
+      - -p
+      - "{{ semaphore_project_root }}/ansible/collections"
+    chdir: "{{ semaphore_project_root }}"
+  register: controller_collections
+  changed_when: "'Nothing to do' not in controller_collections.stdout"
+
+- name: Let the service user read the checkout
+  ansible.builtin.file:
+    path: "{{ semaphore_project_root }}"
+    state: directory
+    owner: root
+    group: "{{ semaphore_group if semaphore_identity_ready | bool else omit }}"
+    mode: "0755"
+
+- name: Look for the pinned Ansible in the virtualenv
+  ansible.builtin.stat:
+    path: "{{ semaphore_venv_path }}/bin/ansible-galaxy"
+  register: controller_venv_galaxy
+  check_mode: false
+
+- name: Prove the service user can resolve the pinned collections
+  # The failure this catches is silent and confusing: every playbook run fails on
+  # a missing module instead of on a missing collection path. check_mode: false so
+  # the proof is real in a dry-run too - but only once there is something to ask,
+  # because on a first dry-run the virtualenv above has merely been simulated.
+  ansible.builtin.command:
+    argv:
+      - runuser
+      - --user
+      - "{{ semaphore_user }}"
+      - --
+      - env
+      - "HOME={{ semaphore_home }}"
+      - "{{ semaphore_venv_path }}/bin/ansible-galaxy"
+      - collection
+      - list
+    chdir: "{{ semaphore_project_root }}"
+  register: controller_collection_check
+  changed_when: false
+  check_mode: false
+  when: controller_venv_galaxy.stat.exists and semaphore_identity_ready | bool
+
+- name: Say that the collections could not be proven yet
+  # Not a silent pass: a dry-run on a machine that has never been a controller
+  # cannot check this, and says so instead of implying it did.
+  ansible.builtin.debug:
+    msg: >-
+      Collections not verified: {{ semaphore_venv_path }}/bin/ansible-galaxy
+      {{ 'does not exist yet' if not controller_venv_galaxy.stat.exists else 'exists' }} and the
+      '{{ semaphore_user }}' identity
+      {{ 'does not exist yet' if not semaphore_identity_ready | bool else 'exists' }}. A normal run
+      creates both and then verifies for real.
+  when: controller_collection_check is skipped
+
+- name: Require every collection the roles import to be visible to the service user
+  ansible.builtin.assert:
+    that:
+      - item in controller_collection_check.stdout
+    fail_msg: >-
+      The '{{ semaphore_user }}' user cannot see the '{{ item }}' collection. Runs from the UI would fail
+      on a missing module. Collections must be installed into
+      {{ semaphore_project_root }}/ansible/collections, which is what collections_path in ansible.cfg
+      points at.
+  loop:
+    - community.docker
+    - community.crypto
+    - community.general
+    - ansible.posix
+    - ansible.utils
+  when: controller_collection_check is not skipped
+
+- name: Validate the controller Xray asset declaration
+  ansible.builtin.assert:
+    that:
+      - ansible_facts.architecture in controller_xray_assets
+      - ansible_facts.architecture in controller_xray_checksums
+    fail_msg: "No pinned controller Xray asset for {{ ansible_facts.architecture }}."
+
+- name: Create the pinned controller Xray directory
+  ansible.builtin.file:
+    path: "{{ controller_xray_install_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Inspect the pinned controller Xray binary
+  ansible.builtin.stat:
+    path: "{{ controller_xray_install_dir }}/xray"
+  register: controller_xray_binary
+
+- name: Download the pinned controller Xray archive
+  ansible.builtin.get_url:
+    url: >-
+      https://github.com/{{ controller_xray_release_repository }}/releases/download/v{{
+      controller_xray_version }}/{{ controller_xray_assets[ansible_facts.architecture] }}
+    dest: "/var/cache/{{ controller_xray_assets[ansible_facts.architecture] }}"
+    checksum: "sha256:{{ controller_xray_checksums[ansible_facts.architecture] }}"
+    owner: root
+    group: root
+    mode: "0644"
+    timeout: 300
+  register: controller_xray_archive
+
+- name: Extract the pinned controller Xray client
+  ansible.builtin.unarchive:
+    src: "/var/cache/{{ controller_xray_assets[ansible_facts.architecture] }}"
+    dest: "{{ controller_xray_install_dir }}"
+    remote_src: true
+    owner: root
+    group: root
+  when:
+    - not ansible_check_mode
+    - controller_xray_archive.changed or not controller_xray_binary.stat.exists
+
+- name: Publish the pinned controller Xray client
+  # force: the target belongs to this role, and a dry-run has only simulated the
+  # unpacked binary the link points at.
+  ansible.builtin.file:
+    src: "{{ controller_xray_install_dir }}/xray"
+    dest: "{{ controller_xray_binary_path }}"
+    state: link
+    force: true
+    owner: root
+    group: root
+  when: not ansible_check_mode or controller_xray_binary.stat.exists
+
+- name: Look for the published controller Xray client
+  # Taken after the tasks above rather than before them: on a normal run they have
+  # just installed it, and on a dry-run of a fresh host there is nothing yet. This
+  # is what decides whether the version can be read at all.
+  ansible.builtin.stat:
+    path: "{{ controller_xray_binary_path }}"
+  register: controller_xray_published
+  check_mode: false
+
+- name: Read the installed controller Xray version
+  # check_mode: false because reading a version changes nothing - a command task
+  # is otherwise skipped in check mode regardless of its when, and the assert
+  # below would then read a stdout that does not exist.
+  ansible.builtin.command:
+    argv: ["{{ controller_xray_binary_path }}", version]
+  register: controller_xray_version_output
+  changed_when: false
+  check_mode: false
+  when: controller_xray_published.stat.exists
+
+- name: Say that the Xray client could not be checked yet
+  ansible.builtin.debug:
+    msg: >-
+      {{ controller_xray_binary_path }} does not exist yet, so its version was not checked. A normal
+      run installs the pinned {{ controller_xray_version }} and verifies it; this dry-run only shows
+      that it would.
+  when: controller_xray_version_output is skipped
+
+- name: Require the installed controller Xray client to match the pin
+  ansible.builtin.assert:
+    that:
+      - controller_xray_version_output.stdout is match('^Xray ' ~ controller_xray_version ~ ' ')
+    fail_msg: >-
+      {{ controller_xray_binary_path }} reports
+      '{{ controller_xray_version_output.stdout | default('') | trim | truncate(80) }}' but
+      controller_xray_version is {{ controller_xray_version }}. The end-to-end probe needs the
+      pinned client.
+  when: controller_xray_version_output is not skipped

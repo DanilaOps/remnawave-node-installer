@@ -1,0 +1,263 @@
+#!/usr/bin/env bash
+#
+# One-time preparation of this machine as the Ansible controller:
+#
+#   ./setup-controller
+#
+# Works on a laptop and on a freshly created Debian/Ubuntu VPS: it names the
+# system packages it needs and installs them only on a yes. Everything it does is
+# local and idempotent - it never touches a node and never overwrites an existing
+# file without asking. Run it again after pulling changes to refresh dependencies.
+set -euo pipefail
+
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$here"
+
+inventory_dir="${REMNAWAVE_INVENTORY_DIR:-ansible/inventories/production}"
+# The real values of this deployment live outside the repository: Semaphore clones
+# the repository for every job, so a git-ignored file inside it never reaches a run
+# started from the UI. On a machine where /etc is not writable these fall back to
+# the user's own configuration directory.
+values_dir="${REMNAWAVE_VALUES_DIR:-/etc/remnawave}"
+if [[ ! -w "$(dirname "$values_dir")" && ! -w "$values_dir" ]]; then
+  values_dir="$HOME/.config/remnawave"
+fi
+local_file="${REMNAWAVE_FLEET_VARS:-$values_dir/fleet.yml}"
+vault_file="${REMNAWAVE_SECRET_VARS:-$values_dir/secrets.yml}"
+vault_pass_file="${ANSIBLE_VAULT_PASSWORD_FILE:-$values_dir/vault-pass}"
+ssh_key="${REMNAWAVE_SSH_KEY:-$HOME/.ssh/remnawave-deployer}"
+
+die() { printf '\n%s\n' "error: $*" >&2; exit 1; }
+step() { printf '\n== %s\n' "$*"; }
+ok() { printf '   ok  %s\n' "$*"; }
+todo() { printf '   ->  %s\n' "$*"; }
+
+ask() { # ask <prompt> <default>
+  local answer
+  read -rp "   $1${2:+ [$2]}: " answer
+  printf '%s' "${answer:-$2}"
+}
+
+step "System packages"
+# A freshly created VPS has none of this. Nothing is installed behind the
+# operator's back: missing packages are named, and installed only on a yes.
+# python3, its venv module and an SSH client are required; sshpass is needed only
+# to log in with a root password and git only to update this checkout, so a
+# machine without them is usable, just less convenient.
+declare -a required=() optional=()
+command -v python3 >/dev/null 2>&1 || required+=(python3)
+python3 -c 'import ensurepip, venv' >/dev/null 2>&1 || required+=(python3-venv)
+{ command -v ssh >/dev/null 2>&1 && command -v ssh-keygen >/dev/null 2>&1; } || required+=(openssh-client)
+command -v sshpass >/dev/null 2>&1 || optional+=(sshpass)
+command -v git >/dev/null 2>&1 || optional+=(git)
+
+install_packages() { # install_packages <package...>
+  local sudo_prefix=""
+  [[ "$(id -u)" -eq 0 ]] || sudo_prefix="sudo "
+  command -v apt-get >/dev/null 2>&1 || return 1
+  if [[ "$(ask "install ${*} now with '${sudo_prefix}apt-get install -y ${*}'? (y/n)" y)" != "y" ]]; then
+    return 1
+  fi
+  ${sudo_prefix}apt-get update -qq
+  # shellcheck disable=SC2068
+  DEBIAN_FRONTEND=noninteractive ${sudo_prefix}apt-get install -y -qq $@
+}
+
+if [[ ${#required[@]} -eq 0 ]]; then
+  ok "python3, venv and openssh-client present"
+else
+  todo "required packages missing: ${required[*]}"
+  install_packages "${required[@]}" \
+    || die "install them and run this again: apt-get install -y ${required[*]}"
+  ok "installed ${required[*]}"
+fi
+
+if [[ ${#optional[@]} -eq 0 ]]; then
+  ok "sshpass and git present"
+else
+  todo "optional packages missing: ${optional[*]}"
+  if install_packages "${optional[@]}"; then
+    ok "installed ${optional[*]}"
+  else
+    todo "continuing without them"
+    printf '%s\n' "${optional[@]}" | grep -qx sshpass \
+      && todo "without sshpass a new server can only be bootstrapped with an existing SSH key"
+  fi
+fi
+
+step "Python and virtualenv"
+command -v python3 >/dev/null || die "python3 is required"
+python3 - <<'PY' || die "Python 3.11-3.13 is required for the pinned ansible-core"
+import sys
+if not (3, 11) <= sys.version_info[:2] <= (3, 13):
+    print(f"   found python {sys.version.split()[0]}", file=sys.stderr)
+    raise SystemExit(1)
+PY
+ok "python $(python3 -c 'import sys; print(sys.version.split()[0])')"
+if [[ ! -d ansible/.venv ]]; then
+  python3 -m venv ansible/.venv 2>/tmp/venv-error \
+    || die "python3 -m venv failed: $(tr -d '\n' </tmp/venv-error). On Debian and Ubuntu this is usually the missing python3-venv package."
+  ok "created ansible/.venv"
+else
+  ok "ansible/.venv already present"
+fi
+# shellcheck disable=SC1091
+. ansible/.venv/bin/activate
+
+step "Python dependencies"
+pip install --quiet --upgrade pip
+pip install --quiet -r ansible/requirements.txt
+ok "requirements.txt installed ($(ansible --version | head -1))"
+
+step "Ansible collections"
+# Installed into the checkout, not into the invoking user's home: the root
+# ansible.cfg points collections_path here, so every account that runs from this
+# directory - an operator, or the semaphore service user with ProtectHome - sees
+# the same pinned collections.
+ansible-galaxy collection install -r ansible/collections/requirements.yml \
+  -p ansible/collections >/dev/null
+ok "collections installed into ansible/collections"
+
+step "SSH key for the managed account"
+# A dedicated key, not the operator's personal one: it is the credential the
+# whole fleet trusts, and in Semaphore it becomes a Key Store entry.
+if [[ -f "$ssh_key" ]]; then
+  ok "$ssh_key"
+else
+  todo "no deployer key yet, generating $ssh_key"
+  mkdir -p "$(dirname "$ssh_key")"
+  ssh-keygen -q -t ed25519 -N '' -C "remnawave-deployer" -f "$ssh_key"
+  ok "generated $ssh_key"
+fi
+
+step "Vault password file"
+if [[ -f "$vault_pass_file" ]]; then
+  ok "$vault_pass_file (provision-node will use it, no prompt)"
+else
+  todo "no vault password file yet"
+  if [[ "$(ask 'store the vault password in a file so runs stop prompting? (y/n)' y)" == "y" ]]; then
+    mkdir -p "$(dirname "$vault_pass_file")"
+    chmod 750 "$(dirname "$vault_pass_file")"
+    read -rsp "   vault password: " vault_password; printf '\n'
+    [[ -n "$vault_password" ]] || die "empty vault password"
+    printf '%s' "$vault_password" > "$vault_pass_file"
+    chmod 600 "$vault_pass_file"
+    unset vault_password
+    ok "written to $vault_pass_file (outside the repository)"
+  else
+    todo "runs will ask for the vault password each time"
+  fi
+fi
+export ANSIBLE_VAULT_PASSWORD_FILE="$vault_pass_file"
+
+step "Deployment values ($local_file)"
+if [[ -f "$local_file" ]]; then
+  ok "$local_file already present, leaving it alone"
+else
+  panel_url="$(ask 'Remnawave panel URL' 'https://panel.example.com')"
+  panel_host="${panel_url#*://}"; panel_host="${panel_host%%/*}"
+  panel_ip="$(getent hosts "$panel_host" 2>/dev/null | awk '{print $1; exit}' || true)"
+  panel_cidr="$(ask 'panel address allowed to reach NODE_PORT' "${panel_ip:+$panel_ip/32}")"
+  zone="$(ask 'DNS zone all node domains live in' 'example.com')"
+  acme_email="$(ask "Let's Encrypt account email" 'ops@example.com')"
+  squad="$(ask 'Internal Squad name' 'Default')"
+  workstation="$(ask 'address that must keep SSH access to nodes (blank for none)' '')"
+  mkdir -p "$(dirname "$local_file")"
+  cat > "$local_file" <<LOCAL
+---
+# Written by ./setup-controller. Real values of this deployment.
+#
+# Outside the repository on purpose: Semaphore clones the repository for every
+# job, so nothing that is not committed reaches a run started from the UI. This
+# file is loaded as an extra-vars file - automatically by ./provision-node, and by
+# name in every Semaphore template's arguments - so the UI and the command line
+# read the same values. See ansible/examples/fleet.yml.example.
+#
+# Fleet-wide values only: extra vars outrank every file and every host, so
+# anything node-specific here would be applied to the whole fleet at once.
+remnawave_panel_url: $panel_url
+remnawave_panel_cidrs:
+  - $panel_cidr
+node_domain_zone: $zone
+acme_email: $acme_email
+internal_squad_name: $squad
+LOCAL
+  if [[ -n "$workstation" ]]; then
+    cat >> "$local_file" <<LOCAL
+management_cidrs_extra:
+  - $workstation
+LOCAL
+  else
+    cat >> "$local_file" <<'LOCAL'
+# The controller's own address is discovered from the live SSH connection. Add a
+# workstation, jump or rescue host here so it keeps access as well.
+management_cidrs_extra: []
+LOCAL
+  fi
+  ok "wrote $local_file"
+fi
+
+if [[ -f "$vault_file" ]]; then
+  ok "$vault_file already present, leaving it alone"
+else
+  todo "no vault yet - creating one with the panel token"
+  read -rsp "   Remnawave panel API token: " panel_token; printf '\n'
+  [[ -n "$panel_token" ]] || die "empty panel token"
+  umask 077
+  mkdir -p "$(dirname "$vault_file")"
+  cat > "$vault_file" <<VAULT
+---
+# Written and encrypted by ./setup-controller. Loaded as an extra-vars file, so
+# these values are decrypted in-process and never appear on a command line.
+vault_remnawave_panel_token: $panel_token
+# Root passwords are not stored here: ./provision-node asks for one only when a
+# server still needs bootstrapping, Semaphore passes it as a secret survey field,
+# and neither reaches the disk.
+vault_node_root_password: ""
+vault_regru_username: ""
+vault_regru_password: ""
+vault_verify_probe_vless_uuid: ""
+vault_bridge_secret: ""
+VAULT
+  unset panel_token
+  ansible-vault encrypt "$vault_file" >/dev/null
+  ok "wrote and encrypted $vault_file"
+fi
+
+step "Self-check"
+mkdir -p "$inventory_dir"
+if [[ -f "$inventory_dir/hosts.yml" ]]; then
+  ansible-playbook -i "$inventory_dir/hosts.yml" ansible/playbooks/provision_node.yml --syntax-check >/dev/null 2>&1 \
+    && ok "playbooks parse against $inventory_dir/hosts.yml" \
+    || todo "could not syntax-check yet (add a host to $inventory_dir/hosts.yml first)"
+else
+  cp ansible/inventories/production/hosts.yml.example "$inventory_dir/hosts.yml"
+  todo "created $inventory_dir/hosts.yml from the example - replace the sample node"
+fi
+
+zone_line="$( [[ -f "$local_file" ]] && grep -m1 '^node_domain_zone:' "$local_file" | awk '{print $2}' )"
+cat <<NEXT
+
+Controller ready.
+
+Its own address is what the nodes will allow through their firewall, and what the
+registrar has to allow for the DNS API, so keep it stable. To add a node:
+
+  1. buy the VPS and point <name>.${zone_line:-your-zone} at its address
+  2. add one line to $inventory_dir/hosts.yml:
+
+        ee01:
+          ansible_host: 203.0.113.10
+
+  3. ./provision-node ee01 --first-run
+
+Deployment values:  $local_file
+Encrypted secrets:  $vault_file
+Vault password:     $vault_pass_file
+
+Those three are what a Semaphore template loads by name, so they belong on the
+controller and nowhere else. Public key to install on the managed account
+(Semaphore: Key Store entry):
+
+$(cat "${ssh_key}.pub")
+NEXT

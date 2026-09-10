@@ -1,0 +1,105 @@
+#!/usr/bin/env bash
+# Established TCP sockets on this node's VPN inbound ports, for the node_exporter
+# textfile collector.
+#
+# What the numbers are, and are not. These are sockets the kernel reports as
+# ESTABLISHED on the ports the node's VLESS inbounds listen on. They are not
+# users and not sessions: one user can hold several sockets, and a multiplexed
+# client can carry many streams over one. The metric is named for what it
+# measures, and Remnawave's own online-user count is published beside it by the
+# capacity exporter so the two can be compared rather than confused.
+#
+# Two things this script is careful about.
+#
+# Atomicity: node_exporter reads every *.prom in the directory whenever it is
+# scraped, and it does not lock. Writing in place would sooner or later be read
+# half-written, which shows up as a count that briefly collapses and an alert
+# nobody can reproduce. The file is built under a name the collector ignores and
+# renamed into place; rename within one filesystem is atomic.
+#
+# Which ports count: only the VPN inbounds. Remnawave's NODE_PORT
+# ({{ remnawave_node_port | default(2222) }}) carries the panel's own
+# connection, SSH ({{ ansible_port | default(22) }}) carries the operator's, the
+# exporter port carries Prometheus, and 80 carries the ACME challenge and the
+# decoy site. Counting any of them would make an idle node look loaded.
+set -euo pipefail
+
+PROM_FILE={{ node_monitoring_sessions_prom | quote }}
+PROM_DIR="$(dirname "$PROM_FILE")"
+PORTS=({{ node_monitoring_session_ports | map('int') | join(' ') }})
+EXCLUDED=({{ node_monitoring_session_excluded_ports | map('int') | join(' ') }})
+PORTS_DECLARED={{ 0 if (node_monitoring_session_ports | length == 0) else 1 }}
+
+for port in "${PORTS[@]}"; do
+  for forbidden in "${EXCLUDED[@]}"; do
+    if [ "$port" = "$forbidden" ]; then
+      echo "refusing to count control port $port as a VPN socket" >&2
+      exit 1
+    fi
+  done
+done
+
+tmp="$(mktemp "${PROM_DIR}/.august_sessions.XXXXXX")"
+trap 'rm -f "$tmp"' EXIT
+
+{
+  echo "# HELP august_node_vpn_ports_declared 1 when this node's VPN inbound ports are known."
+  echo "# TYPE august_node_vpn_ports_declared gauge"
+  echo "august_node_vpn_ports_declared ${PORTS_DECLARED}"
+} >> "$tmp"
+
+if [ "$PORTS_DECLARED" = 0 ]; then
+  # An explicit unknown state. Publishing a zero here would read as "no traffic"
+  # on every dashboard, which is a different and much worse claim than "we do
+  # not know which ports to look at".
+  {
+    echo "# HELP august_node_sessions_collected_timestamp_seconds When this file was last written."
+    echo "# TYPE august_node_sessions_collected_timestamp_seconds gauge"
+    echo "august_node_sessions_collected_timestamp_seconds $(date +%s)"
+  } >> "$tmp"
+  chmod 0644 "$tmp"
+  mv -f "$tmp" "$PROM_FILE"
+  trap - EXIT
+  exit 0
+fi
+
+count_sockets() {
+  # -H drops the header, -n keeps it numeric, and the state filter is applied by
+  # the kernel rather than by grep, so a listening socket or one in TIME-WAIT is
+  # never counted. -4/-6 split the families: a node that has stopped accepting
+  # IPv6 while IPv4 still works is a real failure and an aggregate hides it.
+  local family_flag="$1" port="$2"
+  ss "$family_flag" -Hnt state established "( sport = :${port} )" | wc -l | tr -d ' '
+}
+
+{
+  echo "# HELP august_node_vpn_established_sockets Established TCP sockets on a VPN inbound port."
+  echo "# TYPE august_node_vpn_established_sockets gauge"
+} >> "$tmp"
+
+total=0
+for port in "${PORTS[@]}"; do
+  ipv4="$(count_sockets -4 "${port}")"
+  ipv6="$(count_sockets -6 "${port}")"
+  echo "august_node_vpn_established_sockets{port=\"${port}\",family=\"ipv4\"} ${ipv4}" >> "$tmp"
+  echo "august_node_vpn_established_sockets{port=\"${port}\",family=\"ipv6\"} ${ipv6}" >> "$tmp"
+  total=$((total + ipv4 + ipv6))
+done
+
+{
+  echo "# HELP august_node_vpn_established_sockets_total Established TCP sockets across every VPN inbound port."
+  echo "# TYPE august_node_vpn_established_sockets_total gauge"
+  echo "august_node_vpn_established_sockets_total ${total}"
+  echo "# HELP august_node_sessions_collected_timestamp_seconds When this file was last written."
+  echo "# TYPE august_node_sessions_collected_timestamp_seconds gauge"
+  echo "august_node_sessions_collected_timestamp_seconds $(date +%s)"
+  echo "# HELP august_node_sessions_excluded_port Ports deliberately not counted as VPN sockets."
+  echo "# TYPE august_node_sessions_excluded_port gauge"
+} >> "$tmp"
+for forbidden in "${EXCLUDED[@]}"; do
+  echo "august_node_sessions_excluded_port{port=\"${forbidden}\"} 1" >> "$tmp"
+done
+
+chmod 0644 "$tmp"
+mv -f "$tmp" "$PROM_FILE"
+trap - EXIT

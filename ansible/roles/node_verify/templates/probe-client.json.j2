@@ -1,0 +1,72 @@
+{# The probe must dial the node the way a real client does, so its transport is
+   read from the inbound this Host publishes rather than assumed. Assuming raw
+   made acceptance fail on every gRPC node - and, worse, would have passed on a
+   node that a reconcile had silently downgraded to raw, which is the exact
+   regression acceptance exists to catch. #}
+{% set probe_inbound = (inbound_specs | selectattr('tag', 'equalto', host_specs[0].inbound_tag | default(inbound_specs[0].tag)) | list | first) | default(inbound_specs[0], true) %}
+{% set probe_network = probe_inbound.network | default(inbound_network_default | default('grpc')) %}
+{
+  "log": {"loglevel": "warning"},
+  "inbounds": [
+    {
+      "tag": "probe-socks",
+      "listen": "127.0.0.1",
+      "port": {{ verify_probe_socks_port | int }},
+      "protocol": "socks",
+      "settings": {"auth": "noauth", "udp": false}
+    }
+  ],
+  "outbounds": [
+    {
+      "tag": "probe-node",
+      "protocol": "vless",
+      "settings": {
+        "vnext": [
+          {
+            "address": {{ host_specs[0].address | to_json }},
+            "port": {{ host_specs[0].port | int }},
+            "users": [
+              {
+                "id": {{ verify_probe_vless_uuid | to_json }},
+                "encryption": "none"
+{% if probe_network == 'raw' %}
+                ,"flow": "xtls-rprx-vision"
+{% endif %}
+              }
+            ]
+          }
+        ]
+      },
+      "streamSettings": {
+        "network": {{ probe_network | to_json }},
+        "security": "reality",
+{% if probe_network == 'grpc' %}
+        {# Client-side keepalive as the fleet's clients carry it. The ping
+           interval must stay ABOVE the inbound's idle_timeout, which grpc-go
+           reads as its enforcement MinTime: 60 against the server's 30. Pinging
+           faster earns GOAWAY ENHANCE_YOUR_CALM "too_many_pings" and the probe
+           fails for a reason that has nothing to do with the node. #}
+        "grpcSettings": {
+          "serviceName": {{ (probe_inbound.service_name | default(grpc_service_name | default('livestreamcontent'))) | to_json }},
+          "idle_timeout": {{ verify_probe_grpc_idle_timeout | default(60) | int }},
+          "health_check_timeout": {{ verify_probe_grpc_health_check_timeout | default(5) | int }},
+          "permit_without_stream": true
+        },
+{% endif %}
+{% if probe_network == 'xhttp' %}
+        "xhttpSettings": {
+          "mode": "packet-up",
+          "path": {{ (probe_inbound.path | default(xhttp_path)) | to_json }}
+        },
+{% endif %}
+        "realitySettings": {
+          "serverName": {{ (host_specs[0].sni | default(selfsteal_domain)) | to_json }},
+          "fingerprint": {{ (host_specs[0].fingerprint | default(reality_fingerprint | default('firefox'))) | to_json }},
+          "publicKey": {{ node_verify_probe_public_key | to_json }},
+          "shortId": {{ (remnawave_reality_short_ids | first) | to_json }},
+          "spiderX": "/"
+        }
+      }
+    }
+  ]
+}

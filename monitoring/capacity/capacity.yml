@@ -1,0 +1,546 @@
+---
+# Measured capacity of the August VPN fleet. Versioned on purpose: capacity is a
+# statement about what was measured, when and by which counter, and that
+# statement has to be reviewable in a diff.
+#
+# THIS FILE CARRIES NO SECRETS. No addresses, no tokens, no UUIDs, no SSH keys.
+# A node is named the way the fleet names it (TR-01), and everything that maps a
+# name to a machine lives in the Semaphore inventory and /etc/remnawave, not
+# here. monitoring/tests/test_capacity_model.py enforces the "no secrets" rule.
+#
+# Deliberately absent: any notion of planned, potential or post-expansion
+# capacity. This file states what a link was measured to carry, and nothing
+# about what it might carry after somebody buys more of it.
+#
+# Schema, invariants and the meaning of every field: monitoring/capacity/README.md.
+version: 2
+
+defaults:
+  # Applied to an entry that does not say otherwise.
+  session_limit: 0        # 0 = not established yet; no session status is derived
+  quota_bytes: 0          # 0 = unlimited; no quota alert is derived
+
+nodes:
+  # --- Foreign exit nodes ----------------------------------------------------
+  DE-01:
+    pool: DE
+    enabled: true
+    capacity:
+      download:
+        source: shared_pool
+        note: >-
+          The owner's table rates the DE location at 2.6 Gbit/s as one number.
+          Which share of it belongs to this machine is not known, so the rating
+          lives on pool DE and this node publishes none. Giving DE-01 the whole
+          2.6 Gbit/s would claim that losing DE-01 costs exactly that much,
+          which nothing measured supports.
+      upload:
+        source: shared_pool
+        note: See download.
+    measurement:
+      kind: inbound
+      node: DE-01
+
+  DE-02:
+    pool: DE
+    enabled: true
+    capacity:
+      download:
+        source: shared_pool
+        note: >-
+          Accounted at pool DE, which is rated as one location.
+      upload:
+        source: shared_pool
+        note: See download.
+    measurement:
+      kind: inbound
+      node: DE-02
+
+  DE-03:
+    pool: DE
+    enabled: true
+    capacity:
+      download:
+        source: shared_pool
+        note: >-
+          Accounted at pool DE, which is rated as one location.
+      upload:
+        source: shared_pool
+        note: See download.
+    measurement:
+      kind: inbound
+      node: DE-03
+
+  EE-01:
+    pool: EE
+    enabled: true
+    capacity:
+      download: {mbps: 1000, source: declared}
+      upload: {mbps: 1000, source: declared}
+    measurement:
+      kind: inbound
+      node: EE-01
+
+  SW-01:
+    pool: SE
+    enabled: true
+    capacity:
+      download: {mbps: 1000, source: declared}
+      upload: {mbps: 1000, source: declared}
+    measurement:
+      kind: inbound
+      node: SW-01
+
+  NL-01:
+    pool: NL
+    enabled: true
+    capacity:
+      download: {mbps: 1000, source: declared}
+      upload: {mbps: 1000, source: declared}
+    measurement:
+      kind: inbound
+      node: NL-01
+
+  PL-01:
+    pool: PL
+    enabled: true
+    capacity:
+      download: {mbps: 5500, source: declared}
+      upload: {mbps: 5500, source: declared}
+    measurement:
+      kind: inbound
+      node: PL-01
+
+  CZ-01:
+    pool: CZ
+    enabled: true
+    capacity:
+      download: {mbps: 1000, source: declared}
+      upload: {mbps: 1000, source: declared}
+    measurement:
+      kind: inbound
+      node: CZ-01
+
+  LV-01:
+    pool: LV
+    enabled: true
+    capacity:
+      download:
+        source: unmeasured
+        note: >-
+          The owner's capacity table rates the RU-LV link, not this machine as a
+          standalone exit. Its physical throughput is still measured by
+          node_exporter and by the node's own Remnawave counters - what is
+          missing is a rating to compare that against, so it is published as
+          unrated instead of being given the bridge's number, which would count
+          the same gigabits twice.
+      upload:
+        source: unmeasured
+        note: See download.
+    measurement:
+      kind: inbound
+      node: LV-01
+
+  FL-01:
+    pool: FL
+    enabled: true
+    capacity:
+      download:
+        source: unmeasured
+        note: >-
+          The owner's capacity table rates the RU-FL link, not this machine as
+          a standalone exit, so it has no independent rating. Published as
+          unrated rather than given the bridge's number, which would count the
+          same gigabits twice.
+      upload:
+        source: unmeasured
+        note: See download.
+    measurement:
+      kind: inbound
+      node: FL-01
+
+  US-01:
+    pool: US
+    enabled: true
+    capacity:
+      download:
+        source: unmeasured
+        note: >-
+          The owner's capacity table rates the RU-USA link, not this machine as a
+          standalone exit. Its physical throughput is still measured by
+          node_exporter and by the node's own Remnawave counters - what is
+          missing is a rating to compare that against, so it is published as
+          unrated instead of being given the bridge's number, which would count
+          the same gigabits twice.
+      upload:
+        source: unmeasured
+        note: See download.
+    measurement:
+      kind: inbound
+      node: US-01
+
+  FR-01:
+    pool: FR
+    enabled: true
+    capacity:
+      download:
+        source: unmeasured
+        note: >-
+          The owner's capacity table rates the FR location, not this machine.
+          The rating therefore stays on the pool - see pools.FR below - and this
+          node is published as unrated rather than being handed the whole
+          location's figure.
+      upload:
+        source: unmeasured
+        note: See download.
+    measurement:
+      kind: inbound
+      node: FR-01
+
+  TR-01:
+    pool: TR
+    enabled: true
+    capacity:
+      download:
+        source: unmeasured
+        note: >-
+          The owner's capacity table rates the TR location, not this machine.
+          The rating therefore stays on the pool - see pools.TR below - and this
+          node is published as unrated rather than being handed the whole
+          location's figure.
+      upload:
+        source: unmeasured
+        note: See download.
+    measurement:
+      kind: inbound
+      node: TR-01
+
+  # --- RU entry nodes --------------------------------------------------------
+  # Their user-facing capacity is the RU side of the link, which the owner's
+  # table rates at 1 Gbit/s each. The bridge rows below carry the measured
+  # RU <-> foreign figures and are counted separately; see README.md, "Why a
+  # bridge row is not added to the pool".
+  RU-01:
+    pool: RU_ENTRY
+    enabled: true
+    capacity:
+      download: {mbps: 1000, source: declared}
+      upload: {mbps: 1000, source: declared}
+    measurement:
+      kind: inbound
+      node: RU-01
+
+  RU-02:
+    pool: RU_ENTRY
+    enabled: true
+    capacity:
+      download: {mbps: 1000, source: declared}
+      upload: {mbps: 1000, source: declared}
+    measurement:
+      kind: inbound
+      node: RU-02
+
+  RU-03:
+    pool: RU_ENTRY
+    enabled: true
+    capacity:
+      download: {mbps: 1000, source: declared}
+      upload: {mbps: 1000, source: declared}
+    measurement:
+      kind: inbound
+      node: RU-03
+
+  RU-04:
+    pool: RU_ENTRY
+    enabled: true
+    capacity:
+      download: {mbps: 1000, source: declared}
+      upload: {mbps: 1000, source: declared}
+    measurement:
+      kind: inbound
+      node: RU-04
+
+  # --- RU_AUTO ---------------------------------------------------------------
+  # Interchangeable RU entry nodes behind one balancer. They carry no row in the
+  # owner's capacity table, so neither the nodes nor the pool are rated: they are
+  # monitored, counted and alerted on, and contribute nothing to a capacity
+  # figure until somebody measures them.
+  RU-05:
+    pool: RU_AUTO
+    enabled: true
+    capacity:
+      download:
+        source: unmeasured
+        note: >-
+          No row for the RU_AUTO pool exists in the owner's capacity table, and no
+          iperf3 run has been recorded for this machine.
+      upload:
+        source: unmeasured
+        note: See download.
+    measurement:
+      kind: inbound
+      node: RU-05
+
+  RU-06:
+    pool: RU_AUTO
+    enabled: true
+    capacity:
+      download:
+        source: unmeasured
+        note: >-
+          No row for the RU_AUTO pool exists in the owner's capacity table, and no
+          iperf3 run has been recorded for this machine.
+      upload:
+        source: unmeasured
+        note: See download.
+    measurement:
+      kind: inbound
+      node: RU-06
+
+pools:
+  DE:
+    strategy: leastLoad
+    members: [DE-01, DE-02, DE-03]
+    # The owner's table rates this location at 2.6 Gbit/s as one figure and does
+    # not say how it divides between the three machines. attribution: aggregate
+    # is that fact written down: the pool total is known, the per-node share is
+    # not, and losing one member does not subtract a computable amount. The
+    # exporter publishes august_pool_capacity_certain=0 whenever a member of
+    # such a pool is missing, so the dashboard shows uncertainty instead of an
+    # invented remainder.
+    capacity:
+      download:
+        mbps: 2600
+        source: declared
+        attribution: aggregate
+        note: Owner capacity table, row "DE". Rates the location, not a machine.
+      upload:
+        mbps: 2600
+        source: declared
+        attribution: aggregate
+        note: Owner capacity table, row "DE". Rates the location, not a machine.
+    measurement:
+      kind: inbound
+  EE:
+    strategy: leastLoad
+    members: [EE-01]
+  SE:
+    strategy: leastLoad
+    members: [SW-01]
+  NL:
+    strategy: leastLoad
+    members: [NL-01]
+  PL:
+    strategy: leastLoad
+    members: [PL-01]
+  CZ:
+    strategy: leastLoad
+    members: [CZ-01]
+  LV:
+    strategy: leastLoad
+    members: [LV-01]
+  US:
+    strategy: leastLoad
+    members: [US-01]
+  FL:
+    strategy: leastLoad
+    members: [FL-01]
+    # Reachable only through the RU-02 bridge, so its throughput is bridged
+    # traffic and not a service capacity of its own. Left out of the service
+    # figure; it is still monitored and still appears under physical capacity.
+    serves_users: false
+  RU_ENTRY:
+    strategy: leastLoad
+    members: [RU-01, RU-02, RU-03, RU-04]
+  # The balanced pair. leastPing is what capacity-dashboard-tz.md records for
+  # this pool; unlike leastLoad it does not look at load, so the dashboard shows
+  # its members individually as well as their total.
+  RU_AUTO:
+    strategy: leastPing
+    members: [RU-05, RU-06]
+
+  # --- Pool-level capacity ---------------------------------------------------
+  # FR and TR are rated as a range in the owner's table (FR 5-6 Gbit/s,
+  # TR 3-4 Gbit/s) and the source data does not say how that range divides
+  # between the machines behind the location. Splitting it per node would be an
+  # invented number, so the capacity is stated once, at the pool, and the range
+  # is stated as a range. capacity_policy decides what the exporter does with
+  # it; "conservative" publishes the lower bound and marks the series as
+  # conservative, "blocker" refuses to publish and fails validation.
+  FR:
+    strategy: leastLoad
+    # The member is named, its capacity is not: the owner's table rates the
+    # location and nothing measures this machine on its own. So the rating stays
+    # here, at the pool, and the member below contributes no capacity of its own -
+    # which is exactly the shape the validator allows, because with no rated
+    # member there is nothing for a pool figure to be counted twice against.
+    members: [FR-01]
+    unrated_members_reason: >-
+      The owner's capacity table rates the location, not the individual
+      machines behind it, so the location is measured as a whole until somebody
+      measures FR-01 by itself.
+    capacity:
+      download:
+        mbps_min: 5000
+        mbps_max: 6000
+        source: range
+        attribution: aggregate
+        policy: conservative
+        note: Owner capacity table, "FR 5-6 Gbit/s". Lower bound published.
+      upload:
+        mbps_min: 5000
+        mbps_max: 6000
+        source: range
+        attribution: aggregate
+        policy: conservative
+        note: Owner capacity table, "FR 5-6 Gbit/s". Lower bound published.
+    measurement:
+      kind: inbound
+
+  TR:
+    strategy: leastLoad
+    # The member is named, its capacity is not: the owner's table rates the
+    # location and nothing measures this machine on its own. So the rating stays
+    # here, at the pool, and the member below contributes no capacity of its own -
+    # which is exactly the shape the validator allows, because with no rated
+    # member there is nothing for a pool figure to be counted twice against.
+    members: [TR-01]
+    unrated_members_reason: >-
+      Same as FR: the range is a property of the location in the owner's table,
+      not of TR-01.
+    capacity:
+      download:
+        mbps_min: 3000
+        mbps_max: 4000
+        source: range
+        attribution: aggregate
+        policy: conservative
+        note: Owner capacity table, "TR 3-4 Gbit/s". Lower bound published.
+      upload:
+        mbps_min: 3000
+        mbps_max: 4000
+        source: range
+        attribution: aggregate
+        policy: conservative
+        note: Owner capacity table, "TR 3-4 Gbit/s". Lower bound published.
+    measurement:
+      kind: inbound
+
+bridges:
+  # A bridge is measured by the source node's OUTBOUND counter for exactly one
+  # tag. That is the only counter that separates bridge traffic from the user
+  # traffic of the same machine, which is why the tag is mandatory here and why
+  # a bridge without one is a validation failure rather than a row that quietly
+  # borrows DIRECT.
+  #
+  # Direction follows the user, not the wire: "download" is destination -> RU,
+  # "upload" is RU -> destination.
+  #
+  # The published number is the owner's rating (source: declared), because the
+  # RU side is what limits these links in the owner's table. iperf3 runs are
+  # recorded under "evidence" and never silently replace the rating; where a
+  # run exceeds the rating the validator says so, so that a stale rating is
+  # noticed instead of being quietly overwritten by one afternoon's test.
+  RU01-DE:
+    source_node: RU-01
+    destination_node: DE-01
+    outbound_tag: RU01-40913C-DE-BRIDGE
+    enabled: true
+    capacity:
+      download:
+        mbps: 1000
+        source: declared
+        note: Owner capacity table, row "RU-DE"; the RU side is the limit.
+      upload:
+        mbps: 1000
+        source: declared
+        note: Owner capacity table, row "RU-DE"; the RU side is the limit.
+    measurement:
+      kind: outbound
+      node: RU-01
+      tag: RU01-40913C-DE-BRIDGE
+
+  RU02-FL:
+    source_node: RU-02
+    destination_node: FL-01
+    outbound_tag: RU02-F74902-FL-BRIDGE
+    enabled: true
+    capacity:
+      download:
+        mbps: 1000
+        source: declared
+        note: Owner capacity table, row "RU-FL"; the RU side is the limit.
+      upload:
+        mbps: 1000
+        source: declared
+        note: Owner capacity table, row "RU-FL"; the RU side is the limit.
+    measurement:
+      kind: outbound
+      node: RU-02
+      tag: RU02-F74902-FL-BRIDGE
+
+  RU03-LV:
+    source_node: RU-03
+    destination_node: LV-01
+    outbound_tag: RU03-B53002-LV-BRIDGE
+    enabled: true
+    capacity:
+      download:
+        mbps: 1000
+        source: declared
+        note: Owner capacity table, row "RU-LV"; the RU side is the limit.
+      upload:
+        mbps: 1000
+        source: declared
+        note: Owner capacity table, row "RU-LV"; the RU side is the limit.
+    evidence:
+      - kind: iperf3
+        direction: download
+        mbps: 996
+        at: "2026-08-31"
+        note: >-
+          Best sum_received over 1/8/16 streams, LV-01 -> RU-03, TCP 2087.
+          Matches the rating.
+      - kind: iperf3
+        direction: upload
+        mbps: 4739
+        at: "2026-08-31"
+        note: >-
+          Best sum_received over 1/8/16 streams, RU-03 -> LV-01, TCP 2087, with
+          significant retransmits. Far above the rating - the validator raises
+          capacity.evidence_above_declared so the rating is reviewed rather
+          than replaced by one afternoon of testing.
+    measurement:
+      kind: outbound
+      node: RU-03
+      tag: RU03-B53002-LV-BRIDGE
+
+  RU04-US:
+    source_node: RU-04
+    destination_node: US-01
+    outbound_tag: RU04-TO-US01-BRIDGE
+    enabled: true
+    capacity:
+      download:
+        mbps: 1000
+        source: declared
+        note: Owner capacity table, row "RU-USA"; the RU side is the limit.
+      upload:
+        mbps: 1000
+        source: declared
+        note: Owner capacity table, row "RU-USA"; the RU side is the limit.
+    evidence:
+      - kind: iperf3
+        direction: download
+        mbps: 877
+        at: "2026-08-31"
+        note: Best sum_received, US-01 -> RU-04, TCP 2087.
+      - kind: iperf3
+        direction: upload
+        mbps: 894
+        at: "2026-08-31"
+        note: Best sum_received, RU-04 -> US-01, TCP 2087.
+    measurement:
+      kind: outbound
+      node: RU-04
+      tag: RU04-TO-US01-BRIDGE

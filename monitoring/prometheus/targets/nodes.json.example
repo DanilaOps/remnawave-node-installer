@@ -1,0 +1,16 @@
+[
+  {
+    "targets": ["<NODE_IP>:9100"],
+    "labels": {
+      "node": "TR-01",
+      "country": "tr"
+    }
+  },
+  {
+    "targets": ["<NODE_IP>:9100"],
+    "labels": {
+      "node": "DE-01",
+      "country": "de"
+    }
+  }
+]

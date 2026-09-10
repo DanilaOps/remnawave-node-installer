@@ -1,0 +1,186 @@
+---
+# Proves the node carries traffic, from the controller, as a client would: VLESS
+# over Reality with Vision to the published Host, then one HTTP request through
+# it. Read-only with respect to the panel - the probe user must already exist,
+# because a verification step that creates panel objects is no longer a
+# verification step.
+- name: Require an identity for the end-to-end probe
+  ansible.builtin.assert:
+    that:
+      - verify_probe_vless_uuid | default('') | trim | length > 0
+    fail_msg: >-
+      Strict acceptance needs an end-to-end probe and none is configured. Either put the VLESS UUID of
+      an existing panel user in vault_verify_probe_vless_uuid (ansible/README.md, "End-to-end probe"),
+      or set verify_tunnel_probe_command to a controller-side command of your own. Setting
+      verify_require_tunnel_probe=false is not an alternative: it would report a node nobody proved
+      carries traffic.
+  no_log: true
+
+- name: Read the probe user's state from the panel
+  ansible.builtin.uri:
+    url: "{{ remnawave_api_base }}/users/by-username/{{ verify_probe_username | urlencode }}"
+    method: GET
+    headers:
+      Authorization: "Bearer {{ remnawave_panel_token }}"
+    return_content: true
+    status_code: [200, 404]
+    timeout: "{{ remnawave_api_timeout }}"
+    validate_certs: "{{ remnawave_panel_validate_certs }}"
+  register: node_verify_probe_user
+  delegate_to: localhost
+  become: false
+  no_log: true
+  changed_when: false
+  # Read-only: it runs in check mode too, so a dry-run really validates the
+  # probe user's status and squad membership instead of skipping the check.
+  check_mode: false
+  when:
+    - verify_probe_check_panel_state | bool
+    - verify_probe_username | default('') | length > 0
+
+- name: Require the probe user to be usable on this node
+  ansible.builtin.assert:
+    that:
+      - node_verify_probe_user.status == 200
+      - node_verify_probe_user.json.response.status | default('') | upper == 'ACTIVE'
+      - >-
+        remnawave_internal_squad_uuid in
+        (node_verify_probe_user.json.response.activeInternalSquads | default([]) | remnawave_uuid_list)
+      - >-
+        node_verify_probe_user.json.response.vlessUuid | default('') == verify_probe_vless_uuid
+        or verify_probe_accept_uuid_mismatch | default(false) | bool
+    fail_msg: >-
+      The probe user '{{ verify_probe_username }}' cannot prove this node.
+      Panel answered HTTP {{ node_verify_probe_user.status }};
+      status={{ node_verify_probe_user.json.response.status | default('unknown') }};
+      squads={{ node_verify_probe_user.json.response.activeInternalSquads | default([]) | remnawave_uuid_list }},
+      and this node publishes to {{ remnawave_internal_squad_uuid }}. The user has to exist, be ACTIVE
+      and be a member of that Internal Squad - which is what gives it access to this node's inbound.
+      Its VLESS id is response.vlessUuid ('{{ node_verify_probe_user.json.response.vlessUuid |
+      default('none') }}'), which has to equal vault_verify_probe_vless_uuid. If they legitimately
+      differ, set verify_probe_accept_uuid_mismatch=true and keep vault_verify_probe_vless_uuid
+      authoritative.
+  when: node_verify_probe_user is not skipped | default(false)
+
+- name: Derive the Reality public key the probe has to present
+  ansible.builtin.set_fact:
+    node_verify_probe_public_key: "{{ remnawave_reality_private_key | remnawave_reality_public_key }}"
+  no_log: true
+
+- name: Report that a dry-run cannot carry real traffic through the node
+  ansible.builtin.debug:
+    msg: >-
+      Dry-run: the end-to-end probe is not executed. It starts a real VLESS/Reality
+      client and fetches {{ verify_probe_url }} through the node, which needs the
+      node to be configured and running - state a simulation has not created. Every
+      panel-side precondition above was checked for real; run without --check to
+      prove the tunnel itself.
+  when: ansible_check_mode
+
+- name: Run the end-to-end probe
+  delegate_to: localhost
+  become: false
+  # The probe is a live traffic test: it cannot be simulated, and reporting it as
+  # passed in a dry-run would be a lie. It is announced above instead.
+  when: not ansible_check_mode
+  block:
+    - name: Render the probe client configuration
+      ansible.builtin.template:
+        src: probe-client.json.j2
+        dest: "{{ verify_probe_workdir }}/remnawave-probe-{{ node_id }}.json"
+        mode: "0600"
+      no_log: true
+      # Acceptance changes nothing. This file is the probe's own scratch client
+      # configuration on the controller, written and removed inside this block,
+      # and reporting it as a change made every single run of an unchanged node
+      # end in "changed", which is what an operator reads as drift.
+      changed_when: false
+
+    - name: Start the probe client
+      ansible.builtin.command:
+        argv:
+          - "{{ verify_probe_xray_binary }}"
+          - run
+          - -c
+          - "{{ verify_probe_workdir }}/remnawave-probe-{{ node_id }}.json"
+      async: "{{ verify_probe_timeout | int + verify_probe_startup_timeout | int + 30 }}"
+      poll: 0
+      register: node_verify_probe_client
+      changed_when: false
+
+    - name: Wait for the probe client to accept connections
+      block:
+        - name: Poll the probe client's local port
+          ansible.builtin.wait_for:
+            host: 127.0.0.1
+            port: "{{ verify_probe_socks_port }}"
+            state: started
+            connect_timeout: 2
+            timeout: "{{ verify_probe_startup_timeout }}"
+      rescue:
+        # A client that never started fails as a bare timeout, which says nothing
+        # about why. Its own output is what the operator needs.
+        - name: Read why the probe client did not start
+          ansible.builtin.async_status:
+            jid: "{{ node_verify_probe_client.ansible_job_id }}"
+          register: node_verify_probe_client_result
+          failed_when: false
+
+        - name: Report why the probe client did not start
+          ansible.builtin.fail:
+            msg: >-
+              The probe client did not open 127.0.0.1:{{ verify_probe_socks_port }} within
+              {{ verify_probe_startup_timeout }}s. '{{ verify_probe_xray_binary }}' exited
+              {{ node_verify_probe_client_result.rc | default('(still running)') }};
+              stderr: {{ node_verify_probe_client_result.stderr | default('') | trim | truncate(400) }}
+              stdout: {{ node_verify_probe_client_result.stdout | default('') | trim | truncate(400) }}
+
+    - name: Fetch one URL through the node
+      ansible.builtin.command:
+        argv:
+          - curl
+          - --silent
+          - --show-error
+          - --output
+          - /dev/null
+          - --max-time
+          - "{{ verify_probe_timeout }}"
+          - --proxy
+          - "socks5h://127.0.0.1:{{ verify_probe_socks_port }}"
+          - --write-out
+          - "%{http_code}"
+          - "{{ verify_probe_url }}"
+      register: node_verify_probe_request
+      changed_when: false
+      failed_when: false
+
+    - name: Require the request through the node to succeed
+      ansible.builtin.assert:
+        that:
+          - node_verify_probe_request.rc == 0
+          - node_verify_probe_request.stdout | trim == verify_probe_expected_status | string
+        fail_msg: >-
+          A request through {{ selfsteal_domain }} did not succeed: curl exited
+          {{ node_verify_probe_request.rc }} and reported HTTP
+          '{{ node_verify_probe_request.stdout | trim }}' for {{ verify_probe_url }}, expected
+          {{ verify_probe_expected_status }}. The node answers on 443 and the panel reports it online,
+          so look at the Reality parameters and at whether the probe user reaches this node's inbound.
+        success_msg: >-
+          A real VLESS/Reality connection through {{ selfsteal_domain }} reached
+          {{ verify_probe_url }} and returned {{ verify_probe_expected_status }}.
+
+  always:
+    - name: Stop the probe client
+      ansible.builtin.command:
+        argv: [pkill, -f, "remnawave-probe-{{ node_id }}.json"]
+      register: node_verify_probe_stop
+      changed_when: false
+      failed_when: node_verify_probe_stop.rc not in [0, 1]
+
+    - name: Remove the probe client configuration
+      ansible.builtin.file:
+        path: "{{ verify_probe_workdir }}/remnawave-probe-{{ node_id }}.json"
+        state: absent
+      # Removing the scratch file this block created is not a change to the
+      # node either; see the render task above.
+      changed_when: false

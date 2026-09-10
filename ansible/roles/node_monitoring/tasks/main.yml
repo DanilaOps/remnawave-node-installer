@@ -1,0 +1,37 @@
+---
+- name: Refuse a state this role does not implement
+  ansible.builtin.assert:
+    that: node_monitoring_state in ['present', 'absent']
+    fail_msg: >-
+      node_monitoring_state is {{ node_monitoring_state | default('undefined') }}.
+      It has to be present or absent.
+    quiet: true
+  tags: [always]
+
+- name: Take the node monitoring agent off this node
+  ansible.builtin.import_tasks: remove.yml
+  when: node_monitoring_state == 'absent'
+  tags: [always, node_monitoring_remove]
+
+- name: Install the node monitoring agent
+  when: node_monitoring_state == 'present'
+  block:
+    # Preflight first: an exporter with no authentication behind no firewall is the
+    # one way this role could make a node worse, so it refuses that combination
+    # before it installs anything.
+    - name: Check what monitoring a node may be given
+      ansible.builtin.import_tasks: preflight.yml
+      tags: [always, preflight]
+
+    - name: Install the node exporter
+      ansible.builtin.import_tasks: node_exporter.yml
+      tags: [node_exporter]
+
+    - name: Install the established-session collector
+      ansible.builtin.import_tasks: sessions.yml
+      when: node_monitoring_sessions_enabled | bool
+      tags: [node_sessions]
+
+    - name: Prove the node exporter answers where it should and nowhere else
+      ansible.builtin.import_tasks: verify.yml
+      tags: [node_monitoring_verify]

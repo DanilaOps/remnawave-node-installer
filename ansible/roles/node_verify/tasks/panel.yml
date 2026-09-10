@@ -1,0 +1,89 @@
+---
+- name: Wait until Panel reports Node online
+  ansible.builtin.uri:
+    url: "{{ remnawave_api_base }}/nodes/{{ remnawave_node_uuid }}"
+    method: GET
+    headers:
+      Authorization: "Bearer {{ remnawave_panel_token }}"
+    return_content: true
+    status_code: 200
+    timeout: "{{ remnawave_api_timeout }}"
+    validate_certs: "{{ remnawave_panel_validate_certs }}"
+  register: remnawave_verify_panel_node
+  delegate_to: localhost
+  become: false
+  no_log: true
+  changed_when: false
+  # Read-only: it runs in check mode too. Acceptance is the one place where a
+  # dry-run is most useful as it is - it re-checks a node that is already
+  # installed against the Panel instead of reporting nothing.
+  check_mode: false
+  retries: "{{ verify_panel_retries }}"
+  delay: "{{ verify_panel_delay }}"
+  until:
+    - remnawave_verify_panel_node.json.response.isConnected | default(false) | bool
+    - remnawave_verify_panel_node.json.response.xrayUptime | default(0) | int > 0
+    - remnawave_verify_panel_node.json.response.versions | default({}, true) | length > 0
+
+- name: Read final Config Profile, Hosts and Squad
+  ansible.builtin.uri:
+    url: "{{ item.url }}"
+    method: GET
+    headers:
+      Authorization: "Bearer {{ remnawave_panel_token }}"
+    return_content: true
+    status_code: 200
+    timeout: "{{ remnawave_api_timeout }}"
+    validate_certs: "{{ remnawave_panel_validate_certs }}"
+  register: remnawave_verify_panel_resources
+  loop:
+    - name: profile
+      url: "{{ remnawave_api_base }}/config-profiles/{{ remnawave_config_profile_uuid }}"
+    - name: hosts
+      url: "{{ remnawave_api_base }}/hosts"
+    - name: squad
+      url: "{{ remnawave_api_base }}/internal-squads/{{ remnawave_internal_squad_uuid }}"
+  loop_control:
+    label: "{{ item.name }}"
+  delegate_to: localhost
+  become: false
+  no_log: true
+  changed_when: false
+  # Read-only: it runs in check mode too, so a dry-run sees real state.
+  check_mode: false
+
+- name: Store final Panel resource responses
+  ansible.builtin.set_fact:
+    remnawave_verify_profile_response: "{{ remnawave_verify_panel_resources.results[0].json.response }}"
+    remnawave_verify_hosts_response: "{{ remnawave_verify_panel_resources.results[1].json.response }}"
+    remnawave_verify_squad_response: "{{ remnawave_verify_panel_resources.results[2].json.response }}"
+
+- name: Require one reconciled UUID for every declared Host
+  ansible.builtin.assert:
+    that:
+      - remnawave_host_uuids | length == host_specs | length
+    fail_msg: Panel reconciliation did not publish one Host UUID for every Host declaration.
+
+- name: Verify each managed Host against its exact declared inbound and Node
+  ansible.builtin.include_tasks: panel_host.yml
+  loop: "{{ range(0, host_specs | length) | list }}"
+  loop_control:
+    loop_var: remnawave_verify_host_index
+    label: "{{ host_specs[remnawave_verify_host_index].remark }}"
+
+- name: Verify Panel resource relationships
+  ansible.builtin.assert:
+    that:
+      - remnawave_verify_panel_node.json.response.configProfile.activeConfigProfileUuid == remnawave_config_profile_uuid
+      - remnawave_verify_panel_node.json.response.xrayUptime | int > 0
+      - remnawave_verify_panel_node.json.response.versions.xray == xray_version
+      - remnawave_verify_panel_node.json.response.versions.node | length > 0
+      - >-
+        remnawave_managed_inbound_uuids | difference(
+          remnawave_verify_panel_node.json.response.configProfile.activeInbounds | remnawave_uuid_list) | length == 0
+      - >-
+        remnawave_host_uuids | difference(remnawave_verify_hosts_response | map(attribute='uuid') | list) | length == 0
+      - >-
+        remnawave_managed_inbound_uuids | difference(
+          remnawave_verify_squad_response.inbounds | default([]) | remnawave_uuid_list) | length == 0
+    fail_msg: Node, Config Profile, Hosts or Internal Squad relationships differ from the declared state.

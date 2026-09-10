@@ -1,0 +1,69 @@
+#!/usr/sbin/nft -f
+# Controller firewall. Its own isolated table, so anything else on the host keeps
+# working: this file is the only thing this project owns in nftables here.
+table inet {{ controller_firewall_table }} {
+  chain input {
+    type filter hook input priority 0; policy drop;
+
+    iif lo accept
+    ct state established,related accept
+    ct state invalid drop
+
+{% if controller_cluster_interfaces | default([]) | length > 0 %}
+    # Интерфейсы контейнерной сети, если на этом хосте живёт кластер. Поды ходят
+    # к API-серверу на 6443, которого нет в списке публичных портов, поэтому без
+    # этой строки всё, что говорит с API - CoreDNS, metrics-server, панель, -
+    # не поднимается. Пока conntrack наполнен, поломка не видна: спасает
+    # ct state established. Она вскрывается ровно на первой перезагрузке.
+    iifname { {{ controller_cluster_interfaces | map('to_json') | join(', ') }} } accept
+{% endif %}
+
+    ip protocol icmp icmp type { echo-request, destination-unreachable, time-exceeded } accept
+    ip6 nexthdr icmpv6 accept
+
+{% for cidr in controller_ssh_effective_cidrs %}
+{% if ':' in cidr %}
+    ip6 saddr {{ cidr }} tcp dport {{ ansible_port | default(22) }} accept
+{% else %}
+    ip saddr {{ cidr }} tcp dport {{ ansible_port | default(22) }} accept
+{% endif %}
+{% endfor %}
+
+{% if controller_proxy_enabled | default(false) %}
+    # The published UI. 80 is the ACME challenge and the redirect; 443 is nginx.
+    # {{ semaphore_port }} is never opened: Semaphore binds loopback, and the
+    # only way in is through the proxy above it.
+{% if controller_proxy_allowed_cidrs | default([]) | length > 0 %}
+{% for cidr in controller_proxy_allowed_cidrs %}
+{% if ':' in cidr %}
+    ip6 saddr {{ cidr }} tcp dport { 80, 443 } accept
+{% else %}
+    ip saddr {{ cidr }} tcp dport { 80, 443 } accept
+{% endif %}
+{% endfor %}
+    # 80 stays open to everyone for the ACME challenge only - Let's Encrypt
+    # validates from addresses nobody can predict, and nginx serves nothing else
+    # there but the challenge path and a redirect.
+    tcp dport 80 accept
+{% else %}
+    tcp dport { 80, 443 } accept
+{% endif %}
+{% endif %}
+  }
+
+  chain forward {
+    type filter hook forward priority 0; policy drop;
+{% if controller_cluster_interfaces | default([]) | length > 0 %}
+
+    # Трафик между подами идёт через forward, а не input: приложение обращается
+    # к базе по имени сервиса. Пустая цепочка с policy drop роняет всё общение
+    # внутри кластера.
+    iifname { {{ controller_cluster_interfaces | map('to_json') | join(', ') }} } accept
+    oifname { {{ controller_cluster_interfaces | map('to_json') | join(', ') }} } accept
+{% endif %}
+  }
+
+  chain output {
+    type filter hook output priority 0; policy accept;
+  }
+}

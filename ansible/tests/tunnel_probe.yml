@@ -1,0 +1,42 @@
+---
+# Exercises the built-in end-to-end probe without a node: the panel is the mock,
+# the Xray client is tests/fake_socks_xray.py and the target is a local HTTP
+# server. What is proven here is everything except the Reality handshake -
+# the panel-side state checks, the rendered client configuration, startup,
+# the request through the proxy, the status assertion and the teardown.
+- name: Run the built-in tunnel probe against local stand-ins
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  become: false
+  vars:
+    node_id: mock_01
+    selfsteal_domain: node.example.test
+    remnawave_api_base: http://127.0.0.1:18080/api
+    remnawave_panel_token: mock-token
+    remnawave_panel_validate_certs: false
+    remnawave_api_timeout: 10
+    remnawave_internal_squad_uuid: "{{ test_squad_uuid }}"
+    remnawave_reality_private_key: oLpYJEHmHMIA2KCpmsoUihaKHH_nfKzH3ex-yM9p8Ek
+    remnawave_reality_short_ids: ["0011223344556677"]
+    reality_fingerprint: firefox
+    host_specs:
+      - remark: Mock
+        address: 127.0.0.1
+        inbound_tag: MOCK_01_REALITY
+        port: 443
+        sni: node.example.test
+        fingerprint: firefox
+    verify_probe_workdir: "{{ test_workdir }}"
+    verify_probe_xray_binary: "{{ test_xray_binary }}"
+    verify_probe_socks_port: "{{ test_socks_port | default(11081) }}"
+    verify_probe_url: "{{ test_probe_url }}"
+    verify_probe_expected_status: "{{ test_expected_status | default(204) }}"
+    verify_probe_username: "{{ test_probe_username | default('probe') }}"
+    verify_probe_vless_uuid: "{{ test_probe_uuid | default('') }}"
+
+  tasks:
+    - name: Include the probe exactly as node_verify does
+      ansible.builtin.include_role:
+        name: node_verify
+        tasks_from: tunnel_probe.yml

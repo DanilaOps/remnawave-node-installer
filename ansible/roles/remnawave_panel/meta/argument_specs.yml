@@ -1,0 +1,64 @@
+---
+argument_specs:
+  main:
+    short_description: Reconcile Remnawave Panel resources for one managed node
+    options:
+      remnawave_panel_url:
+        type: str
+        required: true
+      remnawave_panel_token:
+        type: str
+        required: true
+      node_name:
+        type: str
+        required: true
+      node_public_ip:
+        type: str
+        required: true
+      node_country:
+        type: str
+        required: true
+      profile_name:
+        type: str
+        required: true
+        description: >-
+          Name of the Config Profile - the Xray JSON the node itself runs, and the profile whose
+          inbound each published Host is bound to. Not the client-side Xray JSON template.
+      xray_json_template_name:
+        type: str
+        description: >-
+          Name of the Subscription Template of type XRAY_JSON that published Hosts must carry
+          (xrayJsonTemplateUuid). A different entity from profile_name, which is the Config
+          Profile the node runs. Empty leaves the link as the panel has it.
+      config_profile_mode:
+        type: str
+        choices: [shared, per_node]
+        description: shared keeps one profile for all nodes; per_node renders a private profile.
+      config_profile_create:
+        type: bool
+        description: Allow this run to create the shared profile when it does not exist yet.
+      config_profile_require_routing:
+        type: bool
+        description: Refuse to publish Hosts against a profile that has no routing rules.
+      inbound_prune_tags:
+        type: list
+        elements: str
+        description: Inbound tags this node used to own and that must be dropped from the profile.
+      inbound_specs:
+        type: list
+        elements: dict
+        required: true
+      host_specs:
+        type: list
+        elements: dict
+        required: true
+      bridge_spec:
+        type: dict
+      reality_rotate_keys:
+        type: bool
+      remnawave_adopt_existing_profile:
+        type: bool
+      remnawave_node_env_path:
+        type: path
+      remnawave_rotate_node_secret_key:
+        type: bool

@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{ decoy.title }}</title>
+<meta name="description" content="{{ decoy.description }}">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/{{ decoy.assets.css }}">
+</head>
+<body class="{{ decoy.classes.page }}">
+<header class="{{ decoy.classes.bar }}">
+  <a class="{{ decoy.classes.logo }}" href="/">
+    <img src="/{{ decoy.assets.logo }}" width="28" height="28" alt="">
+    <span>{{ decoy.brand }}</span>
+  </a>
+  <nav class="{{ decoy.classes.nav }}">
+{% for entry in decoy.nav %}
+    <a href="/{{ entry|lower }}">{{ entry }}</a>
+{% endfor %}
+  </nav>
+</header>
+
+<main>
+  <section class="{{ decoy.classes.hero }}">
+    <h1>{{ decoy.tagline }}</h1>
+    <p class="{{ decoy.classes.lead }}">{{ decoy.description }}</p>
+    <p class="{{ decoy.classes.cta }}">
+      <a href="/signup">{{ decoy.cta_primary }}</a>
+      <a href="/docs">{{ decoy.cta_secondary }}</a>
+    </p>
+  </section>
+
+{% for section in decoy.sections %}
+{% if section == 'features' %}
+  <section class="{{ decoy.classes.section }}" id="features">
+    <h2>What you get</h2>
+    <div class="{{ decoy.classes.grid }}">
+{% for feature in decoy.features %}
+      <article class="{{ decoy.classes.card }}">
+        <h3>{{ feature.title }}</h3>
+        <p>{{ feature.text }}</p>
+      </article>
+{% endfor %}
+    </div>
+  </section>
+{% elif section == 'about' %}
+  <section class="{{ decoy.classes.section }}" id="about">
+    <h2>About {{ decoy.brand_short }}</h2>
+    <p>{{ decoy.about }}</p>
+    <p>Operating since {{ decoy.established }}.</p>
+  </section>
+{% elif section == 'status' %}
+  <section class="{{ decoy.classes.section }}" id="status">
+    <h2>Service status</h2>
+    <ul class="{{ decoy.classes.status }}">
+{% for service, state in decoy.status %}
+      <li class="{{ decoy.classes.row }}"><span>{{ service }}</span><span class="{{ decoy.classes.badge }}">{{ state }}</span></li>
+{% endfor %}
+    </ul>
+  </section>
+{% elif section == 'contact' %}
+  <section class="{{ decoy.classes.section }}" id="contact">
+    <h2>Contact</h2>
+    <p>Support requests are answered during business hours. Existing customers can
+       reach the team from the dashboard.</p>
+    <p><a href="/support">Open a support request</a></p>
+  </section>
+{% endif %}
+{% endfor %}
+</main>
+
+<footer class="{{ decoy.classes.foot }}">
+  <p>&copy; {{ decoy.established }}&ndash;{{ decoy.established + 5 }} {{ decoy.brand }}. {{ decoy.footer_note }}</p>
+</footer>
+{% if decoy.assets.js %}
+<script src="/{{ decoy.assets.js }}"></script>
+{% endif %}
+<!--
+{{ decoy | remnawave_decoy_filler }}
+-->
+</body>
+</html>

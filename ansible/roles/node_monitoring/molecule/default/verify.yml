@@ -1,0 +1,118 @@
+---
+# What has to be true on a node after this role has run. Each assertion is a
+# way the exporter could be wrong in a way that matters: a missing session
+# count, a control port counted as user load, a file written non-atomically, or
+# an exporter that answers on more than the address it was told to.
+- name: Verify node_monitoring
+  hosts: all
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Read the exporter
+      ansible.builtin.uri:
+        url: http://127.0.0.1:9100/metrics
+        return_content: true
+        status_code: 200
+      register: node_monitoring_metrics
+
+    - name: The exporter publishes the standard collectors
+      ansible.builtin.assert:
+        that:
+          - "'node_cpu_seconds_total' in node_monitoring_metrics.content"
+          - "'node_memory_MemAvailable_bytes' in node_monitoring_metrics.content"
+          - "'node_netstat_Tcp_PassiveOpens' in node_monitoring_metrics.content"
+
+    - name: The exporter publishes VPN sockets per port and per family
+      ansible.builtin.assert:
+        that:
+          - "'august_node_vpn_ports_declared 1' in node_monitoring_metrics.content"
+          - "'august_node_vpn_established_sockets{family=\"ipv4\",port=\"443\"}' in node_monitoring_metrics.content"
+          - "'august_node_vpn_established_sockets{family=\"ipv6\",port=\"443\"}' in node_monitoring_metrics.content"
+          - "'august_node_vpn_established_sockets_total' in node_monitoring_metrics.content"
+
+    - name: Neither a control port nor the web port is counted as a VPN socket
+      ansible.builtin.assert:
+        that:
+          - "'port=\"2222\",family' not in node_monitoring_metrics.content"
+          - "'august_node_vpn_established_sockets{family=\"ipv4\",port=\"80\"}' not in node_monitoring_metrics.content"
+          - "'august_node_vpn_established_sockets{family=\"ipv4\",port=\"22\"}' not in node_monitoring_metrics.content"
+          - "'august_node_sessions_excluded_port{port=\"2222\"} 1' in node_monitoring_metrics.content"
+          - "'august_node_sessions_excluded_port{port=\"80\"} 1' in node_monitoring_metrics.content"
+        fail_msg: >-
+          The socket count includes a control or web port. A capacity figure that counts the panel's
+          own connection or an ACME challenge as user load hides free capacity.
+
+    - name: Read the textfile the collector publishes
+      ansible.builtin.stat:
+        path: /var/lib/node_exporter/textfile/august_sessions.prom
+      register: node_monitoring_prom
+
+    - name: The textfile is present and world readable by the exporter
+      ansible.builtin.assert:
+        that:
+          - node_monitoring_prom.stat.exists
+          - node_monitoring_prom.stat.mode == '0644'
+
+    - name: No temporary file is left behind in the textfile directory
+      # A leftover would either be read as metrics or accumulate silently.
+      ansible.builtin.find:
+        paths: /var/lib/node_exporter/textfile
+        patterns: ".august_sessions.*"
+        hidden: true
+      register: node_monitoring_leftovers
+
+    - name: The collector cleans up after itself
+      ansible.builtin.assert:
+        that:
+          - node_monitoring_leftovers.matched == 0
+
+    - name: Run the collector again by hand
+      ansible.builtin.command:
+        argv: [/usr/local/bin/august-node-sessions]
+      changed_when: false
+
+    - name: The published file is still whole after a second run
+      ansible.builtin.slurp:
+        src: /var/lib/node_exporter/textfile/august_sessions.prom
+      register: node_monitoring_second
+
+    - name: The collector output ends with its last metric and not mid-line
+      ansible.builtin.assert:
+        that:
+          - (node_monitoring_second.content | b64decode).splitlines() | last is match('^august_node_sessions_excluded_port')
+        fail_msg: The textfile looks truncated, which is what a non-atomic write produces.
+
+    - name: The exporter listens only where it was told to
+      ansible.builtin.command:
+        argv: [ss, -Hltn]
+      register: node_monitoring_listeners
+      changed_when: false
+
+    - name: Nothing published the exporter on a public address
+      ansible.builtin.assert:
+        that:
+          - node_monitoring_listeners.stdout_lines | select('search', '0\.0\.0\.0:9100') | list | length == 0
+        fail_msg: >-
+          The exporter is bound to every address in this scenario, where it was told 127.0.0.1.
+
+    - name: The pinned version is the one running
+      ansible.builtin.command:
+        argv: [/usr/local/bin/node_exporter, --version]
+      register: node_monitoring_version
+      changed_when: false
+
+    - name: The exporter is the pinned release
+      ansible.builtin.assert:
+        that:
+          - "'1.12.1' in (node_monitoring_version.stdout ~ node_monitoring_version.stderr)"
+
+    - name: The timer that refreshes the count is armed
+      ansible.builtin.systemd_service:
+        name: august-node-sessions.timer
+      register: node_monitoring_timer
+
+    - name: The timer is enabled and running
+      ansible.builtin.assert:
+        that:
+          - node_monitoring_timer.status.ActiveState == 'active'
+          - node_monitoring_timer.status.UnitFileState == 'enabled'

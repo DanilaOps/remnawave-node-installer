@@ -1,0 +1,7 @@
+[Unit]
+Description=Back up the Semaphore controller state
+After=semaphore.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/semaphore-backup

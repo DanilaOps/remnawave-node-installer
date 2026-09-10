@@ -1,0 +1,11 @@
+[Unit]
+Description=Nightly Semaphore controller backup
+
+[Timer]
+OnCalendar=*-*-* {{ '%02d' | format(controller_backup_hour | int) }}:{{ '%02d' | format(controller_backup_minute | int) }}:00
+Persistent=true
+RandomizedDelaySec=300
+Unit=semaphore-backup.service
+
+[Install]
+WantedBy=timers.target

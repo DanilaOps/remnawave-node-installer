@@ -1,0 +1,13 @@
+[Unit]
+Description=Remnawave node nftables policy
+Wants=network-pre.target
+Before=network-pre.target
+
+[Service]
+Type=oneshot
+ExecStartPre=-/usr/sbin/nft delete table inet {{ node_firewall_table }}
+ExecStart=/usr/sbin/nft -f {{ node_firewall_config_path }}
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

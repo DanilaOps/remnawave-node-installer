@@ -1,0 +1,65 @@
+---
+argument_specs:
+  main:
+    short_description: Auto-measure a node's capacity with iperf3
+    description:
+      - Runs iperf3 from a new node to several Russian endpoints, in both
+        directions and several times, and records the rated capacity as the
+        Ansible-side source of truth.
+      - Changes no routing, Xray, firewall or sysctl; it only opens outbound
+        iperf3 sessions on the node's existing network path.
+      - Off unless the host sets capacity_auto_test. A node already measured is
+        reused, not retested, so an ordinary re-run stays changed=0.
+    options:
+      capacity_auto_test:
+        type: bool
+        required: false
+        description: Measure this node's capacity. Off by default.
+      capacity_auto_retest:
+        type: bool
+        required: false
+        description: Force a fresh measurement even if a rating already exists.
+      capacity_test_apply:
+        type: bool
+        required: false
+        description: >-
+          Record a good result as the source of truth. False is a measure-only
+          dry run that writes nothing.
+      capacity_test_runs:
+        type: int
+        required: false
+        description: Successful passes per city per direction.
+      capacity_test_duration_seconds:
+        type: int
+        required: false
+        description: Length of one iperf3 run.
+      capacity_test_parallel_streams:
+        type: int
+        required: false
+        description: Parallel iperf3 streams per run.
+      capacity_test_safety_factor:
+        type: float
+        required: false
+        description: Fraction of the best stable figure to rate the node at.
+      capacity_test_round_down_mbps:
+        type: int
+        required: false
+        description: Round the rating down to this step; never up.
+      capacity_test_min_valid_cities:
+        type: int
+        required: false
+        description: >-
+          Cities with a successful result a direction needs before the rating is
+          trusted; below it the node stays unmeasured.
+      capacity_test_endpoints:
+        type: list
+        elements: dict
+        required: false
+        description: >-
+          The Russian iperf3 endpoints, each a city with one or more hosts and
+          the ports to probe. Named in the repository and reached directly - no
+          remote script is fetched and run.
+      capacity_measured_dir:
+        type: str
+        required: false
+        description: Controller directory holding one measured-rating file per node.

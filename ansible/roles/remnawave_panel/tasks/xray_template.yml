@@ -1,0 +1,58 @@
+---
+# Three different things in Remnawave carry the words "Xray" or "profile", and
+# conflating any two of them publishes a working-looking node that serves the
+# wrong configuration:
+#
+#   Config Profile        the Xray JSON the NODE runs. GET /api/config-profiles.
+#                         A Node points at one through configProfile.activeConfigProfileUuid;
+#                         a Host points at one inbound of it through inbound.configProfileUuid.
+#   Xray JSON template    the JSON a CLIENT receives, called a Subscription Template
+#                         in the API: GET /api/subscription-templates/, one row per
+#                         template with templateType XRAY_JSON. A Host points at one
+#                         through xrayJsonTemplateUuid. A Node has no template field.
+#   Internal Squad        which inbounds a user may use. GET /api/internal-squads.
+#
+# This file resolves the second one, and only that one.
+- name: List subscription templates
+  ansible.builtin.uri:
+    url: "{{ remnawave_api_base }}/subscription-templates"
+    method: GET
+    headers:
+      Authorization: "Bearer {{ remnawave_panel_token }}"
+    return_content: true
+    status_code: 200
+    timeout: "{{ remnawave_api_timeout }}"
+    validate_certs: "{{ remnawave_panel_validate_certs }}"
+  register: remnawave_templates_response
+  delegate_to: localhost
+  become: false
+  no_log: true
+  changed_when: false
+  # Read-only: it runs in check mode too, so a dry-run sees real state.
+  check_mode: false
+
+- name: Match the Xray JSON template by exact name
+  ansible.builtin.set_fact:
+    remnawave_xray_json_template_matches: >-
+      {{ remnawave_templates_response.json | remnawave_response_items('templates') |
+         selectattr('templateType', 'equalto', 'XRAY_JSON') |
+         selectattr('name', 'equalto', xray_json_template_name) | list }}
+
+- name: Require exactly one Xray JSON template with that name
+  ansible.builtin.assert:
+    that:
+      - remnawave_xray_json_template_matches | length == 1
+    fail_msg: >-
+      Xray JSON template '{{ xray_json_template_name }}' is
+      {{ 'absent' if remnawave_xray_json_template_matches | length == 0 else 'ambiguous' }}.
+      This is a Subscription Template of type XRAY_JSON, not a Config Profile - the panel lists it
+      under Subscriptions, and the API returns it from /api/subscription-templates. The XRAY_JSON
+      templates this panel holds are:
+      {{ remnawave_templates_response.json | remnawave_response_items('templates') |
+         selectattr('templateType', 'equalto', 'XRAY_JSON') | map(attribute='name') | list | join(', ')
+         | default('(none)', true) }}.
+      Fix xray_json_template_name, or leave it empty to publish Hosts without a template.
+
+- name: Store the Xray JSON template UUID
+  ansible.builtin.set_fact:
+    remnawave_xray_json_template_uuid: "{{ remnawave_xray_json_template_matches[0].uuid }}"

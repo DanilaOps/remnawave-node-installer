@@ -1,0 +1,7 @@
+User-agent: *
+{% if decoy.robots_allow_all %}
+Allow: /
+{% else %}
+Disallow: /support
+Disallow: /signup
+{% endif %}

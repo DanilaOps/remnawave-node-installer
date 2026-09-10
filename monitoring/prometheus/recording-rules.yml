@@ -1,0 +1,622 @@
+# Prometheus recording rules for the August VPN fleet.
+#
+# NOT installed by Ansible. Copy this file to the monitoring server
+# yourself and point prometheus.yml's rule_files at it - see
+# monitoring/README.ru.md. Ansible manages the node-side agent only.
+#
+# Checked in CI by ansible/tests/test_monitoring_rules.sh, which runs
+# promtool against this exact file, so what CI accepted is byte for
+# byte what Prometheus loads.
+#
+# Four ideas run through every rule below, and each of them is a decision that
+# was made once and is not re-litigated per panel:
+#
+#   1. IDENTITY. Remnawave labels its traffic and status series with the node's
+#      UUID, not its name. Nothing downstream wants to think in UUIDs, so there
+#      is exactly one mapping series - august:node_uuid_name - and every join
+#      goes through it. Traffic whose UUID is not in the mapping is kept, with
+#      its UUID, in a series of its own: folding it into an empty node label
+#      would silently attribute somebody's gigabits to nothing.
+#
+#   2. SERVICE IS NOT PHYSICAL. A user flow RU ingress -> bridge -> EU exit
+#      crosses two nodes and appears twice in the sum of node counters. The
+#      bridge's own tag counter measures exactly that duplication, so
+#      service usage = physical usage - bridge usage. Service is the fleet KPI;
+#      physical is a diagnostic for the plumbing.
+#
+#   3. DIRECTION SURVIVES. download and upload are carried as a label from the
+#      first rule to the last, because they fail apart.
+#
+#   4. ABSENT IS NOT ZERO. A missing series is reported as missing. Nothing here
+#      turns "we cannot see it" into "it is fine".
+---
+groups:
+  - name: august_identity
+    interval: 30s
+    rules:
+      # The one mapping. The capacity exporter publishes it from the panel's
+      # REST answer, which is the authority; Remnawave's own info series is the
+      # fallback, so the join still works if the exporter is down. "or" keeps
+      # the first source where both exist.
+      - record: august:node_uuid_name
+        expr: |
+          max by (node_uuid, node) (august_node_identity)
+          or
+          max by (node_uuid, node) (
+            label_replace(
+              remnawave_node_basic_info,
+              "node", "$1", "node_name", "(.+)")
+          )
+
+      # More than one name for one UUID, or more than one UUID for one name.
+      # Either makes every join below ambiguous.
+      - record: august:node_uuid_name_duplicates
+        expr: |
+          count by (node_uuid) (august:node_uuid_name) > 1
+
+      - record: august:node_name_uuid_duplicates
+        expr: count by (node) (august:node_uuid_name) > 1
+
+      # Node -> (pool, country). The pool comes from the capacity inventory,
+      # which is the authority on membership; the country comes from the
+      # Ansible inventory, which is the only place an operator declares it, and
+      # it reaches Prometheus as a target label on the node_exporter job. A
+      # node whose inventory entry declares no country is carried with
+      # country="unknown" rather than dropped: a join that silently loses a
+      # node is how a fleet view starts lying. "unless on (node)" makes the
+      # fallback apply only to nodes the first branch did not resolve, so no
+      # node appears twice with two different countries.
+      - record: august:node_meta
+        expr: |
+          max by (node, pool, country) (
+            august_node_identity
+              * on (node) group_left(country)
+                max by (node, country) (up{job="august_node_exporter", country!=""})
+          )
+          or
+          (
+            label_replace(
+              max by (node, pool) (august_node_identity),
+              "country", "unknown", "", "")
+            unless on (node)
+            max by (node) (
+              august_node_identity
+                * on (node) group_left(country)
+                  max by (node, country) (up{job="august_node_exporter", country!=""})
+            )
+          )
+
+  - name: august_traffic
+    interval: 30s
+    rules:
+      # Raw, still by UUID. Kept as its own rule so the unmapped case below can
+      # be expressed without repeating the rate().
+      - record: august:node_traffic_bps
+        expr: |
+          label_replace(
+            sum by (node_uuid) (
+              rate(remnawave_node_inbound_download_bytes[5m])) * 8,
+            "direction", "download", "", "")
+          or
+          label_replace(
+            sum by (node_uuid) (
+              rate(remnawave_node_inbound_upload_bytes[5m])) * 8,
+            "direction", "upload", "", "")
+
+      # All traffic crossing a node, by name. This is the destination end of a
+      # bridge included on purpose: that machine really is carrying those bytes.
+      - record: august:node_used_bps
+        expr: |
+          sum by (node, direction) (
+            august:node_traffic_bps
+            * on (node_uuid) group_left (node) august:node_uuid_name
+          )
+
+      # Traffic the mapping cannot attribute. The UUID is retained: this is the
+      # series that says "a node exists that nothing here knows about".
+      - record: august:unmapped_traffic_bps
+        expr: |
+          august:node_traffic_bps
+          unless on (node_uuid) august:node_uuid_name
+
+      # One outbound tag leaving one node, still by UUID.
+      - record: august:tag_traffic_bps
+        expr: |
+          label_replace(
+            sum by (node_uuid, tag) (
+              rate(remnawave_node_outbound_download_bytes[5m])) * 8,
+            "direction", "download", "", "")
+          or
+          label_replace(
+            sum by (node_uuid, tag) (
+              rate(remnawave_node_outbound_upload_bytes[5m])) * 8,
+            "direction", "upload", "", "")
+
+      - record: august:tag_used_bps
+        expr: |
+          sum by (node, tag, direction) (
+            august:tag_traffic_bps
+            * on (node_uuid) group_left (node) august:node_uuid_name
+          )
+
+      # Only the tags that name a declared bridge. This is what a bridge's usage
+      # is: the source node's outbound counter for its own tag, and nothing else.
+      - record: august:bridge_used_bps
+        expr: |
+          august:tag_used_bps * on (node, tag) group_left (name) august_bridge_info
+
+      # Usage of the active members of a pool.
+      - record: august:pool_used_bps
+        expr: |
+          sum by (pool, direction) (
+            august:node_used_bps * on (node) group_left (pool) august_node_active
+          )
+
+      - record: august:node_online_users
+        expr: |
+          sum by (node) (
+            remnawave_node_online_users
+            * on (node_uuid) group_left (node) august:node_uuid_name
+          )
+
+  - name: august_service_accounting
+    interval: 30s
+    rules:
+      # Every leg, counted as many times as the traffic crosses one. Diagnostic.
+      - record: august:physical_usage_bps
+        expr: sum by (direction) (august:node_used_bps)
+
+      # The duplication introduced by bridging, measured rather than estimated.
+      - record: august:bridge_usage_total_bps
+        expr: sum by (direction) (august:bridge_used_bps)
+
+      # What the service is actually carrying. clamp_min because a scrape skew
+      # between the two counters can make the difference momentarily negative,
+      # and a negative service usage is never the right answer.
+      - record: august:service_usage_bps
+        expr: |
+          clamp_min(
+            sum by (direction) (august:node_used_bps)
+            - sum by (direction) (august:bridge_used_bps)
+            or sum by (direction) (august:node_used_bps),
+            0)
+
+      - record: august:service_free_ratio
+        expr: |
+          clamp_min(
+            (
+              august_service_capacity_mbps * 1e6
+              - on (direction) group_left () august:service_usage_bps
+            ) / (august_service_capacity_mbps * 1e6),
+            0)
+
+  - name: august_capacity
+    interval: 30s
+    rules:
+      # One record name per scope. Prometheus tolerates the same name three
+      # times distinguished only by a label; promtool lints it, and the day two
+      # label sets overlap one silently overwrites the other.
+      - record: august:node_free_ratio
+        expr: |
+          clamp_min(
+            (
+              august_capacity_mbps{scope="node"} * 1e6
+              - on (node, direction) group_left () august:node_used_bps
+            ) / (august_capacity_mbps{scope="node"} * 1e6),
+            0)
+
+      - record: august:node_free_mbps
+        expr: |
+          clamp_min(
+            august_capacity_mbps{scope="node"}
+            - on (node, direction) group_left () (august:node_used_bps / 1e6),
+            0)
+
+      # A pool's own resource figure. august_pool_capacity_mbps already accounts
+      # for whether members are active; august_pool_capacity_certain says whether
+      # the number can be trusted after a member went away.
+      - record: august:pool_free_ratio
+        labels:
+          scope: pool
+        expr: |
+          clamp_min(
+            (
+              august_pool_capacity_mbps * 1e6
+              - on (pool, direction) group_left () august:pool_used_bps
+            ) / (august_pool_capacity_mbps * 1e6),
+            0)
+
+      - record: august:pool_free_mbps
+        labels:
+          scope: pool
+        expr: |
+          clamp_min(
+            august_pool_capacity_mbps
+            - on (pool, direction) group_left () (august:pool_used_bps / 1e6),
+            0)
+
+      # A pool whose figure is an aggregate with a member missing has a free
+      # percentage that is an upper bound, not a measurement. Published
+      # separately so a panel can show it as uncertain instead of as a number.
+      - record: august:pool_free_ratio_uncertain
+        expr: |
+          august:pool_free_ratio
+          and on (pool, direction) (august_pool_capacity_certain == 0)
+
+      - record: august:bridge_free_ratio
+        expr: |
+          clamp_min(
+            (
+              august_capacity_mbps{scope="bridge"} * 1e6
+              - on (node, tag, direction) group_left () august:tag_used_bps
+            ) / (august_capacity_mbps{scope="bridge"} * 1e6),
+            0)
+
+      - record: august:bridge_free_mbps
+        expr: |
+          clamp_min(
+            august_capacity_mbps{scope="bridge"}
+            - on (node, tag, direction) group_left () (august:tag_used_bps / 1e6),
+            0)
+
+      # 2 GREEN, 1 YELLOW, 0 RED. Two boolean comparisons added together, so the
+      # thresholds appear once and the arithmetic cannot disagree with them.
+      - record: august:capacity_status_by_direction
+        expr: |
+          (
+            (august:node_free_ratio >= bool 0.3)
+            + (august:node_free_ratio >= bool 0.2)
+          )
+          or
+          (
+            (august:pool_free_ratio >= bool 0.3)
+            + (august:pool_free_ratio >= bool 0.2)
+          )
+          or
+          (
+            (august:bridge_free_ratio >= bool 0.3)
+            + (august:bridge_free_ratio >= bool 0.2)
+          )
+
+      - record: august:capacity_status
+        expr: min without (direction) (august:capacity_status_by_direction)
+
+  - name: august_health
+    interval: 30s
+    rules:
+      # Health is a separate number from capacity. A node with plenty of free
+      # bandwidth that nobody can reach is not green, and a busy node that
+      # answers every probe is not unhealthy.
+      #
+      # Each signal is published separately so a panel can say which one failed.
+      # A node with no probe target simply has no probe signal; it is not marked
+      # unhealthy for a check that was never configured. Administratively
+      # disabled nodes are excluded: somebody meant that.
+      - record: august:node_health_signal
+        expr: |
+          label_replace(
+            august_node_enabled * on (node) group_left () august_node_connected,
+            "signal", "panel", "", "")
+          or
+          label_replace(max by (node) (up{job="august_node_exporter"}), "signal", "exporter", "", "")
+          or
+          label_replace(max by (node) (probe_success), "signal", "probe", "", "")
+
+      - record: august:node_health_status
+        expr: |
+          min by (node) (august:node_health_signal)
+          unless on (node) (august_node_administratively_disabled == 1)
+
+      - record: august:node_sessions
+        expr: sum by (node) (august_node_vpn_established_sockets)
+
+      - record: august:node_session_ratio
+        expr: |
+          august:node_sessions
+          / on (node) group_left () (august_node_session_limit > 0)
+
+      - record: august:node_quota_ratio
+        expr: |
+          august_node_traffic_used_bytes
+          / on (node) group_left () (august_node_traffic_limit_bytes > 0)
+
+      - record: august:node_tcp_passive_opens_per_second
+        expr: sum by (node) (rate(node_netstat_Tcp_PassiveOpens[5m]))
+
+  - name: august_data_quality
+    interval: 30s
+    rules:
+      # "up == 1" only says the exporter answered. These say whether the series
+      # the whole model depends on are actually there, and still moving.
+      - record: august:required_series_present
+        labels:
+          series: remnawave_inbound_download
+        expr: (count(remnawave_node_inbound_download_bytes) > bool 0) or vector(0)
+
+      - record: august:required_series_present
+        labels:
+          series: remnawave_inbound_upload
+        expr: (count(remnawave_node_inbound_upload_bytes) > bool 0) or vector(0)
+
+      - record: august:required_series_present
+        labels:
+          series: remnawave_outbound_download
+        expr: (count(remnawave_node_outbound_download_bytes) > bool 0) or vector(0)
+
+      - record: august:required_series_present
+        labels:
+          series: node_uuid_mapping
+        expr: (count(august:node_uuid_name) > bool 0) or vector(0)
+
+      - record: august:required_series_present
+        labels:
+          series: capacity_exporter
+        expr: (count(august_service_capacity_mbps) > bool 0) or vector(0)
+
+      - record: august:required_series_present
+        labels:
+          series: node_vpn_sockets
+        expr: (count(august_node_vpn_established_sockets) > bool 0) or vector(0)
+
+      # The series exists but has stopped being updated. An absent series is
+      # covered above; this is the other half, and it is the one "up == 1"
+      # cannot see.
+      - record: august:traffic_counter_age_seconds
+        expr: |
+          time() - max by (node_uuid) (
+            timestamp(remnawave_node_inbound_download_bytes))
+
+      - record: august:exporter_age_seconds
+        expr: time() - august_capacity_exporter_timestamp_seconds
+
+      - record: august:node_sessions_age_seconds
+        expr: time() - august_node_sessions_collected_timestamp_seconds
+
+      # A declared bridge with no traffic series at all: the tag is wrong, or the
+      # node is not reporting it. Either way its capacity row is meaningless.
+      - record: august:bridge_metric_missing
+        expr: |
+          august_bridge_enabled == 1
+          unless on (name) (count by (name) (august:bridge_used_bps) > 0)
+
+  - name: august_analytics
+    interval: 30s
+    rules:
+      # Stable load, not a five-minute rate dressed up as a percentile.
+      # august:*_used_bps is itself a recorded series sampled every evaluation
+      # interval, so quantile_over_time over it is a percentile of real samples.
+      # The window has to hold enough of them to mean anything, which
+      # august:analytics_samples below is the gate for.
+      - record: august:pool_used_bps_p95_1h
+        expr: quantile_over_time(0.95, august:pool_used_bps[1h])
+
+      - record: august:pool_used_bps_max_1h
+        expr: max_over_time(august:pool_used_bps[1h])
+
+      - record: august:bridge_used_bps_p95_1h
+        expr: quantile_over_time(0.95, august:bridge_used_bps[1h])
+
+      # How many samples the windows below actually have. At the configured
+      # evaluation interval of 30s a full day
+      # holds far more than analytics_min_samples_24h; a count anywhere near the
+      # floor is a series with gaps, and a growth number computed from it is
+      # noise rather than a trend.
+      - record: august:analytics_samples_24h
+        expr: count_over_time(august:pool_used_bps[24h])
+
+      - record: august:analytics_ready
+        expr: |
+          august:analytics_samples_24h >= bool 1440
+
+      # Growth as the ratio of a short window to a long one, gated on having
+      # enough history and a non-zero baseline. Without the gates a pool that
+      # was idle yesterday grows infinitely today.
+      - record: august:pool_growth_ratio
+        expr: |
+          (
+            avg_over_time(august:pool_used_bps[1h])
+            / (avg_over_time(august:pool_used_bps[24h]) > 0)
+          )
+          * on (pool, direction) group_left () (august:analytics_ready == 1)
+
+      # Seconds until a pool reaches the RED threshold at the current trend.
+      # Only where the trend is actually upward and the history is sufficient -
+      # predict_linear on a flat or falling series answers with a number that
+      # means nothing.
+      - record: august:pool_seconds_to_red
+        expr: |
+          (
+            (
+              august_pool_capacity_mbps * 1e6 * 0.2
+              - on (pool, direction) group_left () august:pool_used_bps
+            )
+            / on (pool, direction) group_left ()
+              (deriv(august:pool_used_bps[24h]) > 0)
+          )
+          * on (pool, direction) group_left () (august:analytics_ready == 1)
+
+  - name: august_scaling
+    interval: 30s
+    rules:
+      # Which pool or bridge should get the next node. The order is fixed and
+      # the arithmetic below is the whole of it:
+      #
+      #   priority  1 RED bridge, 2 RED pool, 3 YELLOW bridge, 4 YELLOW pool,
+      #             5 overloaded active node
+      #   tie-break lowest free %, then lowest absolute free capacity, then
+      #             highest growth
+      #
+      # Encoded as one number so the answer does not depend on how a panel
+      # happens to sort: lowest rank acts first. The same formula is implemented
+      # and exhaustively tested in monitoring/scaling.py, which is the
+      # specification this mirrors.
+      - record: august:scaling_priority
+        labels:
+          kind: bridge
+        expr: |
+          (august:bridge_free_ratio < bool 0.2) * 1
+          + (
+              (august:bridge_free_ratio >= bool 0.2)
+              * (august:bridge_free_ratio < bool 0.3)
+            ) * 3
+
+      - record: august:scaling_priority
+        labels:
+          kind: pool
+        expr: |
+          (august:pool_free_ratio < bool 0.2) * 2
+          + (
+              (august:pool_free_ratio >= bool 0.2)
+              * (august:pool_free_ratio < bool 0.3)
+            ) * 4
+
+      - record: august:scaling_priority
+        labels:
+          kind: node
+        expr: |
+          (
+            (august:node_free_ratio < bool 0.2)
+            * on (node) group_left () (august_node_active == 1)
+          ) * 5
+
+      - record: august:scaling_free_ratio
+        expr: |
+          august:bridge_free_ratio
+          or august:pool_free_ratio
+          or august:node_free_ratio
+
+      - record: august:scaling_free_mbps
+        expr: |
+          august:bridge_free_mbps
+          or august:pool_free_mbps
+          or august:node_free_mbps
+
+      # rank = priority*1e9 + free_ratio*1e6 + capped free Mbit/s*1e3 - growth.
+      # Every term is bounded, so a lower priority can never be outranked by a
+      # tie-break, and a bigger free ratio can never be outranked by absolute
+      # free capacity.
+      - record: august:scaling_rank
+        expr: |
+          (august:scaling_priority > 0) * 1e9
+          + clamp_max(clamp_min(august:scaling_free_ratio, 0), 1) * 1e6
+          + clamp_max(clamp_min(august:scaling_free_mbps, 0), 999) * 1e3
+          - clamp_max(clamp_min(august:pool_growth_ratio or vector(0), 0), 999)
+
+  # --- What Alertmanager is allowed to page on --------------------------------
+  #
+  # Everything above describes the fleet. This group is narrower: it is the
+  # subset that may wake somebody up, and it exists as its own group so the
+  # question "what can page me?" has one place to look.
+  #
+  # Two decisions are encoded here rather than in the alert expressions, so the
+  # alerts stay one-line comparisons that read like the threshold they enforce:
+  #
+  #   1. HEADROOM IS ABSOLUTE, NOT A PERCENTAGE. 20% of a 5 Gbit/s link is a
+  #      gigabit still free, which is not an emergency; 20% of a 1 Gbit/s link
+  #      is 200 Mbit/s, which is. A percentage cannot mean both. The percentages
+  #      stay in Grafana, where a human reads them next to the absolute figure.
+  #
+  #   2. AN ALERT NEEDS A CAPACITY SOMEBODY MEASURED. A node whose rating is
+  #      unmeasured, or a pool whose figure stopped being attributable when a
+  #      member left, produces no series here at all - so it produces no alert,
+  #      rather than a confident number derived from nothing. Those states are
+  #      visible on the dashboard, which is where "we do not know" belongs.
+  - name: august_alerting
+    interval: 30s
+    rules:
+      # CPU actually busy, averaged across cores. Deliberately not load average:
+      # load counts runnable and uninterruptible tasks, so an I/O-blocked node
+      # reads as loaded while its CPUs idle, and a 2-core box at load 2 is at
+      # 100% while an 8-core box at load 2 is at 25%. A ratio 0..1.
+      - record: august:node_cpu_busy_ratio
+        expr: |
+          1 - avg by (node) (rate(node_cpu_seconds_total{mode="idle"}[5m]))
+
+      # Memory genuinely unavailable, from MemAvailable - the kernel's own
+      # estimate of what a new allocation could get. Deliberately not
+      # MemFree: page cache counts as free memory in every sense that matters,
+      # and MemFree would page for a healthy node with a warm cache. A ratio 0..1.
+      - record: august:node_memory_used_ratio
+        expr: |
+          1 - (
+            node_memory_MemAvailable_bytes
+            / on (node) group_left () node_memory_MemTotal_bytes
+          )
+
+      # Node headroom in Mbit/s, carrying the pool so an alert can say where the
+      # node lives. Restricted to nodes that are active: a machine nobody is
+      # using has no interesting headroom, and a disabled one is not an
+      # incident. august:node_free_mbps only exists where a per-node rating
+      # does, so an unmeasured node is absent here by construction.
+      #
+      # max by (...) is a projection rather than an aggregation: it drops scope,
+      # name, kind, source and the rest of the labels the capacity exporter
+      # attaches for the dashboard's benefit. An alert that reaches a phone
+      # should carry what a human needs in order to act - which node, which
+      # pool, which direction - and nothing else.
+      - record: august:alert_node_free_mbps
+        expr: |
+          max by (node, pool, direction) (
+            (
+              august:node_free_mbps
+              and on (node) (august_node_active == 1)
+            )
+            + on (node) group_left (pool) (0 * august_node_enabled)
+          )
+
+      # Pool headroom in Mbit/s, only while the pool's figure is still
+      # attributable. august_pool_capacity_certain drops to 0 when a member has
+      # gone and the aggregate became an upper bound; alerting on an upper bound
+      # would be inventing capacity.
+      - record: august:alert_pool_free_mbps
+        expr: |
+          max by (pool, direction) (
+            august:pool_free_mbps
+            and on (pool, direction) (august_pool_capacity_certain == 1)
+          )
+
+      # Bridge headroom in Mbit/s. A bridge row exists only when the link was
+      # measured, so there is no uncertain case to exclude - but a bridge whose
+      # traffic series is missing must not read as "completely free", so it is
+      # gated on the tag actually reporting.
+      - record: august:alert_bridge_free_mbps
+        expr: |
+          max by (name, direction) (
+            august:bridge_free_mbps
+            unless on (name) (august:bridge_metric_missing == 1)
+          )
+
+      # The dashboard's colour, on the same scale the alerts use: 2 GREEN,
+      # 1 YELLOW, 0 RED, by Mbit/s still free rather than by percentage. Two
+      # boolean comparisons added together, so the thresholds appear once and
+      # the arithmetic cannot disagree with the alert that fires on them.
+      #
+      # Absent where the headroom is absent - an unmeasured node, a shared
+      # rating, a pool whose figure became an upper bound. Grafana renders a
+      # missing value as N/A, which is the honest colour for "we do not know";
+      # painting it red would be a claim, and painting it green would be worse.
+      # The percentage columns stay next to these, because a human reading a
+      # dashboard wants both: 170 Mbit/s free means something different on a
+      # 5 Gbit/s link and on a 1 Gbit/s one.
+      - record: august:headroom_status
+        expr: |
+          (
+            (august:alert_node_free_mbps >= bool 500)
+            + (august:alert_node_free_mbps >= bool 200)
+          )
+          or
+          (
+            (august:alert_pool_free_mbps >= bool 500)
+            + (august:alert_pool_free_mbps >= bool 200)
+          )
+          or
+          (
+            (august:alert_bridge_free_mbps >= bool 500)
+            + (august:alert_bridge_free_mbps >= bool 200)
+          )
+
+      # Worst direction wins: a node with 3 Gbit/s free down and 150 Mbit/s free
+      # up is red, because the direction that is short is the one that decides
+      # what a user experiences.
+      - record: august:headroom_status_worst
+        expr: min without (direction) (august:headroom_status)

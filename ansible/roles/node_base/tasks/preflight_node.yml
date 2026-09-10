@@ -1,0 +1,116 @@
+---
+# Node-side preflight: everything that needs the server itself. It runs as the
+# first thing node_base does, so a wrong platform, a taken port or a management
+# address that would lock Ansible out stops the run while the node is still
+# untouched. The DNS record already exists by now - the dns role ran in the
+# previous play - so resolving the selfsteal name from the node is a real check
+# and not a chicken-and-egg failure on a brand new node.
+- name: Detect the source address of the active Ansible SSH session
+  ansible.builtin.set_fact:
+    node_base_observed_ssh_source: >-
+      {{ ansible_env.SSH_CONNECTION.split()[0] if ansible_env.SSH_CONNECTION is defined else '' }}
+
+- name: Resolve and validate who may reach SSH on this node
+  ansible.builtin.import_tasks: preflight_management_cidrs.yml
+
+- name: Validate supported platform
+  ansible.builtin.assert:
+    that:
+      - ansible_facts.distribution in node_base_supported_os
+      # Debian is listed by major version ("12"), Ubuntu by its full release
+      # ("24.04", so that 24.10 is not silently accepted). Both spellings are
+      # compared: distribution_major_version is "24" on Ubuntu 24.04, which used
+      # to reject a supported platform.
+      - >-
+        ansible_facts.distribution_major_version in node_base_supported_os[ansible_facts.distribution]
+        or ansible_facts.distribution_version in node_base_supported_os[ansible_facts.distribution]
+      - ansible_facts.architecture in node_base_supported_architectures
+    fail_msg: >-
+      Unsupported platform. Supported systems are Debian 12, Debian 13 and Ubuntu 24.04 on
+      {{ node_base_supported_architectures | join(' or ') }}; this host reports
+      {{ ansible_facts.distribution }} {{ ansible_facts.distribution_version }}
+      on {{ ansible_facts.architecture }}.
+
+- name: Check root filesystem capacity
+  ansible.builtin.assert:
+    that:
+      # "| list | first | default(0)" and not a bare "first": a host that does not
+      # report "/" among its mounts used to crash the guard with "No first item,
+      # sequence was empty" instead of failing with the message below.
+      - >-
+        (ansible_facts.mounts | selectattr('mount', 'equalto', '/')
+         | map(attribute='size_available') | list | first | default(0) | int)
+        >= (node_base_minimum_free_mb | int * 1024 * 1024)
+    fail_msg: "At least {{ node_base_minimum_free_mb }} MiB must be free on /."
+  when: preflight_check_disk | bool
+
+- name: Resolve the selfsteal domain from the node
+  ansible.builtin.command:
+    argv: [getent, ahostsv4, "{{ selfsteal_domain }}"]
+  register: node_base_dns_result
+  changed_when: false
+  failed_when: node_base_dns_result.rc != 0
+  check_mode: false
+  when: preflight_check_dns | bool
+
+- name: Require DNS to point to this VPS
+  ansible.builtin.assert:
+    that:
+      - node_public_ip in (node_base_dns_result.stdout | regex_findall('(?m)^([0-9.]+)\s+'))
+    fail_msg: >-
+      {{ selfsteal_domain }} does not resolve to {{ node_public_ip }} from the new node. The
+      controller-side preflight and the dns role run before this point, so either the record is still
+      propagating to this node's resolver or it points somewhere else.
+  when: preflight_check_dns | bool
+
+- name: Check NTP synchronization state
+  ansible.builtin.command:
+    argv: [timedatectl, show, --property=NTPSynchronized, --value]
+  register: node_base_ntp_state
+  changed_when: false
+  failed_when: preflight_require_ntp_sync | bool and node_base_ntp_state.stdout | trim != 'yes'
+  check_mode: false
+
+- name: Detect an existing managed compose project
+  ansible.builtin.stat:
+    path: /opt/remnawave-node/compose.yml
+  register: node_base_existing_compose
+
+- name: Read listeners before a first installation
+  ansible.builtin.command:
+    argv: [ss, -H, -lnt]
+  register: node_base_listeners
+  changed_when: false
+  check_mode: false
+  when:
+    - preflight_check_ports | bool
+    - not node_base_existing_compose.stat.exists
+
+- name: Reject conflicting public listeners on a new node
+  ansible.builtin.assert:
+    that:
+      - >-
+        node_base_listeners.stdout is not regex('(?m)(^|\s)(0\.0\.0\.0|\[::\]|\*):' ~ item ~ '\s')
+    fail_msg: "Required public port {{ item }} is already occupied before installation."
+  loop: "{{ (node_public_tcp_ports + [remnawave_node_port | int]) | unique }}"
+  when:
+    - preflight_check_ports | bool
+    - not node_base_existing_compose.stat.exists
+
+- name: Read which units systemd already knows about
+  # A dry-run writes no unit file and installs no package, so a later systemd task
+  # would be asked to start something that does not exist and the run would stop
+  # on "Could not find the requested service". This one read is what those tasks
+  # consult instead of assuming the unit is there. It covers .service and .timer
+  # alike, and units from a package as well as the ones this role writes.
+  ansible.builtin.command:
+    argv: [systemctl, list-unit-files, --no-legend, --no-pager]
+  register: node_base_unit_files
+  changed_when: false
+  failed_when: false
+  # Read-only: it runs in check mode too, so a dry-run sees real state.
+  check_mode: false
+
+- name: Remember which units systemd already knows about
+  ansible.builtin.set_fact:
+    node_base_systemd_units: "{{ node_base_unit_files.stdout | default('') }}"

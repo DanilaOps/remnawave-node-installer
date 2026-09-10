@@ -1,0 +1,584 @@
+---
+- name: Validate Config Profile mode
+  ansible.builtin.assert:
+    that:
+      - config_profile_mode in ['shared', 'per_node']
+      - profile_name | length > 0 or profile_uuid | length > 0
+    fail_msg: >-
+      config_profile_mode must be 'shared' (all nodes share one Xray profile that carries
+      the routing) or 'per_node', and the profile must be identified by name or UUID.
+
+- name: Collect the inbound tags this node manages
+  ansible.builtin.set_fact:
+    remnawave_managed_inbound_tags: >-
+      {{ (inbound_specs | map(attribute='tag') | list) +
+         ([bridge_spec.tag] if bridge_spec.enabled | default(false) | bool else []) }}
+
+- name: Require every pruned inbound tag to belong to this node
+  # inbound_prune_tags deletes inbounds from the profile the whole fleet shares.
+  # A typo here would remove another node's inbound and the run would still
+  # report success, so a tag may only be pruned inside this node's own namespace.
+  ansible.builtin.assert:
+    that:
+      - >-
+        inbound_prune_tags | default([]) |
+        reject('match', '^' ~ (node_name | upper | regex_replace('[^A-Z0-9_]', '_')) ~ '_') |
+        list | length == 0
+    fail_msg: >-
+      inbound_prune_tags may only name inbounds this node owns, which start with
+      '{{ node_name | upper | regex_replace('[^A-Z0-9_]', '_') }}_'. Refusing to delete
+      {{ inbound_prune_tags | default([]) |
+         reject('match', '^' ~ (node_name | upper | regex_replace('[^A-Z0-9_]', '_')) ~ '_') | list }}
+      from the shared Config Profile.
+
+- name: List Config Profiles
+  ansible.builtin.uri:
+    url: "{{ remnawave_api_base }}/config-profiles"
+    method: GET
+    headers:
+      Authorization: "Bearer {{ remnawave_panel_token }}"
+    return_content: true
+    status_code: 200
+    timeout: "{{ remnawave_api_timeout }}"
+    validate_certs: "{{ remnawave_panel_validate_certs }}"
+  register: remnawave_profiles_response
+  delegate_to: localhost
+  become: false
+  no_log: true
+  changed_when: false
+  # Read-only: it runs in check mode too, so a dry-run sees real state.
+  check_mode: false
+
+- name: Select Config Profile candidates
+  ansible.builtin.set_fact:
+    remnawave_all_profiles: "{{ remnawave_profiles_response.json | remnawave_response_items('configProfiles') }}"
+    remnawave_profile_matches: >-
+      {{ (remnawave_profiles_response.json | remnawave_response_items('configProfiles') |
+          selectattr('uuid', 'equalto', profile_uuid) | list)
+         if profile_uuid | length > 0 else
+         (remnawave_profiles_response.json | remnawave_response_items('configProfiles') |
+          selectattr('name', 'equalto', profile_name) | list) }}
+
+- name: Reject ambiguous Config Profiles
+  ansible.builtin.assert:
+    that:
+      - remnawave_profile_matches | length <= 1
+    fail_msg: "Multiple Config Profiles match {{ profile_uuid | default(profile_name, true) }}; refusing an arbitrary update."
+
+- name: Detect foreign owners of managed inbound tags
+  ansible.builtin.set_fact:
+    remnawave_foreign_profile_owners: >-
+      {{ remnawave_all_profiles |
+         remnawave_inbound_owners(remnawave_managed_inbound_tags,
+                                  remnawave_profile_matches[0].uuid | default('') if remnawave_profile_matches | length == 1 else '') }}
+
+- name: Refuse to publish an inbound tag that another Config Profile already owns
+  ansible.builtin.assert:
+    that:
+      - remnawave_foreign_profile_owners | length == 0
+    fail_msg: >-
+      Inbound tags {{ remnawave_managed_inbound_tags }} already exist in another Config Profile:
+      {{ remnawave_foreign_profile_owners }}. Two profiles claiming one inbound tag makes the
+      published Host ambiguous. Rename this node's inbound tag or remove the stale inbound.
+  when:
+    - config_profile_mode == 'shared'
+    - remnawave_profile_matches | length == 1
+
+- name: Refuse silent adoption of a foreign profile
+  # Adopting a profile because it happens to contain a matching inbound tag is a
+  # guess. If a profile really is the right one, it is named by its UUID.
+  ansible.builtin.assert:
+    that:
+      - remnawave_foreign_profile_owners | length == 0
+        or (remnawave_adopt_existing_profile | bool and profile_uuid | length > 0)
+    fail_msg: >-
+      Managed inbound tags already belong to another Config Profile: {{ remnawave_foreign_profile_owners }}.
+      To use that profile on purpose, name it by UUID in profile_uuid and set
+      remnawave_adopt_existing_profile=true; adoption by a matching tag alone is refused.
+  when: remnawave_profile_matches | length == 0
+
+- name: Choose an adopted profile explicitly
+  ansible.builtin.set_fact:
+    remnawave_config_profile_uuid: "{{ remnawave_foreign_profile_owners[0].uuid }}"
+  when:
+    - remnawave_profile_matches | length == 0
+    - remnawave_foreign_profile_owners | length > 0
+    - remnawave_adopt_existing_profile | bool
+
+- name: Choose the existing Config Profile
+  ansible.builtin.set_fact:
+    remnawave_config_profile_uuid: "{{ remnawave_profile_matches[0].uuid }}"
+  when: remnawave_profile_matches | length == 1
+
+- name: Require the shared Config Profile to exist before any node is published
+  ansible.builtin.assert:
+    that:
+      - remnawave_config_profile_uuid is defined or config_profile_create | bool
+    fail_msg: >-
+      Config Profile '{{ profile_name }}' is absent from the panel. A Config Profile is the Xray
+      JSON the node itself runs (/api/config-profiles) - it is not the client-side Xray JSON
+      template (xray_json_template_name) and not an Internal Squad. In shared mode it carries the
+      routing every published Host depends on, so it is never invented silently. Create it in the
+      panel first, or set config_profile_create=true to let this run create it from the role
+      template (routing from the template, not from the panel). The Config Profiles this panel
+      holds are:
+      {{ remnawave_all_profiles |
+         map(attribute='name') | list | join(', ') | default('(none)', true) }}.
+  when: config_profile_mode == 'shared'
+
+- name: Read existing or adopted Config Profile
+  ansible.builtin.uri:
+    url: "{{ remnawave_api_base }}/config-profiles/{{ remnawave_config_profile_uuid }}"
+    method: GET
+    headers:
+      Authorization: "Bearer {{ remnawave_panel_token }}"
+    return_content: true
+    status_code: 200
+    timeout: "{{ remnawave_api_timeout }}"
+    validate_certs: "{{ remnawave_panel_validate_certs }}"
+  register: remnawave_existing_profile_response
+  delegate_to: localhost
+  become: false
+  no_log: true
+  changed_when: false
+  when: remnawave_config_profile_uuid is defined
+
+- name: Extract the current profile config and this node's Reality settings
+  ansible.builtin.set_fact:
+    remnawave_existing_profile_config: >-
+      {{ remnawave_existing_profile_response.json.response.config | default({})
+         if remnawave_existing_profile_response is not skipped | default(false) else {} }}
+    remnawave_existing_reality: >-
+      {{ (remnawave_existing_profile_response.json.response.config | default({}) |
+          remnawave_reality_settings(remnawave_managed_inbound_tags))
+         if remnawave_existing_profile_response is not skipped | default(false) else {} }}
+  no_log: true
+
+- name: Remember what the shared Config Profile held before this run
+  # The write below is a read-modify-write of the whole profile. These two facts
+  # are what makes it verifiable: the fingerprint detects a concurrent change
+  # between the read and the write, and the tag list proves afterwards that no
+  # other node's inbound disappeared.
+  ansible.builtin.set_fact:
+    remnawave_profile_fingerprint_before: >-
+      {{ remnawave_existing_profile_config | to_json(sort_keys=True) | hash('sha256') }}
+    remnawave_profile_tags_before: >-
+      {{ remnawave_existing_profile_config.inbounds | default([]) |
+         selectattr('tag', 'defined') | map(attribute='tag') | list }}
+
+- name: Decide whether a Reality key must be generated
+  ansible.builtin.set_fact:
+    remnawave_generate_reality_key: >-
+      {{ reality_rotate_keys | bool or
+         (reality_private_key | length == 0 and remnawave_existing_reality.privateKey | default('') | length == 0) }}
+
+- name: Explain why a dry-run cannot go past a node that has no Reality key yet
+  ansible.builtin.debug:
+    msg: >-
+      Dry-run stops after this play: this node has no Reality key in Config Profile
+      '{{ profile_name }}' yet, and one can only be produced by running the pinned RemnaNode image
+      ({{ remnawave_node_image }}) - which a simulation deliberately does not do, so every check
+      below would be measured against a key that does not exist. Everything up to here was checked
+      for real: the inventory, the panel token, the shared Config Profile and its routing, DNS, the
+      platform, the SSH policy and the firewall inputs. Run without --check to install the node;
+      every later --check then walks the whole role. To walk it now, set reality_private_key.
+  when:
+    - ansible_check_mode
+    - remnawave_generate_reality_key | bool
+
+- name: End the dry-run for a node that has no Reality key yet
+  ansible.builtin.meta: end_host
+  when:
+    - ansible_check_mode
+    - remnawave_generate_reality_key | bool
+
+- name: Pull the pinned RemnaNode image for X25519 generation
+  community.docker.docker_image:
+    name: "{{ remnawave_node_image }}"
+    source: pull
+  when: remnawave_generate_reality_key | bool
+
+- name: Generate a Reality X25519 keypair
+  ansible.builtin.command:
+    argv:
+      - docker
+      - run
+      - --rm
+      - --entrypoint
+      - /usr/local/bin/xray
+      - "{{ remnawave_node_image }}"
+      - x25519
+  register: remnawave_reality_keygen
+  changed_when: true
+  no_log: true
+  when: remnawave_generate_reality_key | bool
+
+- name: Select stable Reality private key
+  ansible.builtin.set_fact:
+    remnawave_reality_private_key: >-
+      {{ (remnawave_reality_keygen.stdout | regex_search('(?im)^Private\s*key:\s*(\S+)', '\1') | first)
+         if remnawave_generate_reality_key | bool else
+         (reality_private_key if reality_rotate_keys | bool and reality_private_key | length > 0 else
+          remnawave_existing_reality.privateKey | default(reality_private_key)) }}
+  no_log: true
+
+- name: Generate a Reality short ID when none can be reused
+  ansible.builtin.command:
+    argv: [openssl, rand, -hex, "8"]
+  register: remnawave_short_id_generation
+  # Generating a random string changes nothing; the write to the Config Profile
+  # below is the change. Running it in check mode too is what lets a dry-run
+  # validate the short IDs instead of failing on an empty list.
+  changed_when: false
+  check_mode: false
+  no_log: true
+  when:
+    - reality_rotate_keys | bool or (reality_short_ids | length == 0 and remnawave_existing_reality.shortIds | default([]) | length == 0)
+
+- name: Select stable Reality short IDs
+  ansible.builtin.set_fact:
+    remnawave_reality_short_ids: >-
+      {{ [remnawave_short_id_generation.stdout | trim]
+         if remnawave_short_id_generation is not skipped else
+         (reality_short_ids if reality_rotate_keys | bool and reality_short_ids | length > 0 else
+          remnawave_existing_reality.shortIds | default(reality_short_ids)) }}
+  no_log: true
+
+- name: Validate Reality key and short IDs
+  ansible.builtin.assert:
+    that:
+      - remnawave_reality_private_key | length > 0
+      - remnawave_reality_short_ids | length > 0
+      - item is match('^([0-9a-fA-F]{2}){0,8}$')
+    fail_msg: Reality private key is empty or shortId is not even-length hexadecimal up to 16 characters.
+  loop: "{{ remnawave_reality_short_ids }}"
+  no_log: true
+
+- name: Render this node's inbounds in memory
+  ansible.builtin.set_fact:
+    remnawave_desired_inbounds: "{{ lookup('template', 'inbounds.json.j2') | from_json }}"
+  no_log: true
+
+- name: Merge this node's inbounds into the shared Config Profile
+  ansible.builtin.set_fact:
+    remnawave_desired_xray_config: >-
+      {{ remnawave_existing_profile_config |
+         remnawave_upsert_inbounds(remnawave_desired_inbounds, inbound_prune_tags) }}
+  no_log: true
+  when:
+    - config_profile_mode == 'shared'
+    - remnawave_existing_profile_config | length > 0
+
+- name: Render a standalone profile for this node
+  ansible.builtin.set_fact:
+    remnawave_desired_xray_config: "{{ lookup('template', 'xray-config.json.j2') | from_json }}"
+  no_log: true
+  when: remnawave_desired_xray_config is not defined
+
+- name: Require the managed profile to carry routing rules
+  ansible.builtin.assert:
+    that:
+      - remnawave_desired_xray_config.routing.rules | default([]) | length > 0
+    fail_msg: >-
+      Config Profile '{{ profile_name }}' has no routing rules. Publishing Hosts against an
+      empty profile would ship clients without the routing this deployment depends on.
+  when: config_profile_require_routing | bool
+
+- name: Require every managed inbound to be present in the desired profile
+  ansible.builtin.assert:
+    that:
+      - >-
+        remnawave_managed_inbound_tags | difference(
+          remnawave_desired_xray_config.inbounds | default([]) | map(attribute='tag') | list) | length == 0
+    fail_msg: The merged Config Profile lost a managed inbound tag; refusing to write it back.
+
+- name: Require every inbound in the merged profile to be one the panel strips per node
+  # The panel removes inbounds of managed protocols that a node does not activate
+  # before it pushes the config, so a node never receives a neighbour's Reality
+  # key. An inbound of any other protocol is delivered to every node in full,
+  # settings included, so it is only allowed when its tag says so on purpose.
+  ansible.builtin.assert:
+    that:
+      - >-
+        remnawave_desired_xray_config.inbounds | default([]) |
+        rejectattr('protocol', 'in', shared_profile_managed_protocols) |
+        rejectattr('tag', 'in', shared_profile_allowed_unmanaged_inbound_tags | default([])) |
+        list | length == 0
+    fail_msg: >-
+      The merged Config Profile carries inbound(s)
+      {{ remnawave_desired_xray_config.inbounds | default([]) |
+         rejectattr('protocol', 'in', shared_profile_managed_protocols) |
+         rejectattr('tag', 'in', shared_profile_allowed_unmanaged_inbound_tags | default([])) |
+         map(attribute='tag') | list }}
+      whose protocol is not one the panel strips per node
+      ({{ shared_profile_managed_protocols | join(', ') }}). Every node in the fleet would receive it in
+      full. List the tag in shared_profile_allowed_unmanaged_inbound_tags if that is intended.
+
+- name: Validate the merged profile with the pinned Node image
+  # The file written here is the whole shared profile. It is root-only, lives on
+  # tmpfs and is removed in always: a failed validation must not leave the fleet's
+  # Xray configuration sitting on a node's disk.
+  when: remnawave_validate_xray_profile | bool
+  block:
+    - name: Write temporary profile for Xray validation
+      ansible.builtin.copy:
+        content: "{{ remnawave_desired_xray_config | remnawave_strip_inbound_uuids | to_nice_json }}\n"
+        dest: "{{ remnawave_profile_validation_path }}"
+        owner: root
+        group: root
+        mode: "0600"
+      no_log: true
+
+    - name: Validate desired profile with the pinned Node image
+      ansible.builtin.command:
+        argv:
+          - docker
+          - run
+          - --rm
+          - --entrypoint
+          - /usr/local/bin/xray
+          - --volume
+          - "{{ remnawave_profile_validation_path }}:/tmp/config.json:ro"
+          - "{{ remnawave_node_image }}"
+          - run
+          - -test
+          - -c
+          - /tmp/config.json
+      register: remnawave_profile_validation
+      changed_when: false
+      no_log: true
+
+  always:
+    - name: Remove the temporary validation profile
+      ansible.builtin.file:
+        path: "{{ remnawave_profile_validation_path }}"
+        state: absent
+
+- name: Determine Config Profile change
+  ansible.builtin.set_fact:
+    remnawave_profile_needs_update: >-
+      {{ remnawave_config_profile_uuid is not defined or
+         not (remnawave_desired_xray_config |
+              remnawave_is_subset(remnawave_existing_profile_config | default({}), ['uuid'])) }}
+
+- name: Create Config Profile
+  ansible.builtin.uri:
+    url: "{{ remnawave_api_base }}/config-profiles"
+    method: POST
+    headers:
+      Authorization: "Bearer {{ remnawave_panel_token }}"
+    body_format: json
+    body:
+      name: "{{ profile_name }}"
+      config: "{{ remnawave_desired_xray_config }}"
+    return_content: true
+    status_code: 201
+    timeout: "{{ remnawave_api_timeout }}"
+    validate_certs: "{{ remnawave_panel_validate_certs }}"
+  register: remnawave_profile_create
+  delegate_to: localhost
+  become: false
+  no_log: true
+  changed_when: true
+  when: remnawave_config_profile_uuid is not defined
+
+- name: Store new Config Profile UUID
+  ansible.builtin.set_fact:
+    remnawave_config_profile_uuid: "{{ remnawave_profile_create.json.response.uuid }}"
+  when: remnawave_profile_create is not skipped | default(false)
+
+- name: Re-read the shared Config Profile immediately before writing it
+  # Everything between the first read and this point took time: generating a
+  # Reality key, validating the merged config. A second run, or a person editing
+  # the profile in the panel, would be silently overwritten by the PATCH below.
+  ansible.builtin.uri:
+    url: "{{ remnawave_api_base }}/config-profiles/{{ remnawave_config_profile_uuid }}"
+    method: GET
+    headers:
+      Authorization: "Bearer {{ remnawave_panel_token }}"
+    return_content: true
+    status_code: 200
+    timeout: "{{ remnawave_api_timeout }}"
+    validate_certs: "{{ remnawave_panel_validate_certs }}"
+  register: remnawave_profile_recheck
+  delegate_to: localhost
+  become: false
+  no_log: true
+  changed_when: false
+  when:
+    # A dry-run did not create the profile, so there is no UUID to re-read and
+    # nothing to compare against. On a real run the create above filled it in.
+    - remnawave_config_profile_uuid is defined
+    - remnawave_profile_create is skipped | default(true)
+    - remnawave_profile_needs_update | bool
+
+- name: Refuse to overwrite a Config Profile that changed while this run was working
+  # This is as close to compare-and-swap as the panel API allows: the window is
+  # now the single PATCH below rather than the whole role. A concurrent edit is
+  # reported instead of being lost, and re-running the node reconciles cleanly on
+  # top of whatever the other writer left.
+  ansible.builtin.assert:
+    that:
+      - >-
+        (remnawave_profile_recheck.json.response.config | to_json(sort_keys=True) | hash('sha256'))
+        == remnawave_profile_fingerprint_before
+    fail_msg: >-
+      Config Profile '{{ profile_name }}' changed between the moment this run read it and the moment it
+      was about to write it back. Another provisioning run or somebody editing the profile in the panel
+      would have had their change overwritten. Nothing was written. Re-run this node - one node is
+      reconciled at a time on purpose.
+  when: remnawave_profile_recheck is not skipped | default(false)
+
+- name: Update Config Profile only when its managed config differs
+  ansible.builtin.uri:
+    url: "{{ remnawave_api_base }}/config-profiles"
+    method: PATCH
+    headers:
+      Authorization: "Bearer {{ remnawave_panel_token }}"
+    body_format: json
+    body:
+      uuid: "{{ remnawave_config_profile_uuid }}"
+      name: "{{ profile_name }}"
+      config: "{{ remnawave_desired_xray_config }}"
+    return_content: true
+    status_code: 200
+    timeout: "{{ remnawave_api_timeout }}"
+    validate_certs: "{{ remnawave_panel_validate_certs }}"
+  register: remnawave_profile_update
+  delegate_to: localhost
+  become: false
+  no_log: true
+  changed_when: true
+  when:
+    # Same reason as the re-read above: with no UUID there is nothing to patch,
+    # and in a dry-run the profile this would patch was never created.
+    - remnawave_config_profile_uuid is defined
+    - remnawave_profile_create is skipped | default(true)
+    - remnawave_profile_needs_update | bool
+
+- name: Read reconciled Config Profile and panel-assigned inbound UUIDs
+  ansible.builtin.uri:
+    url: "{{ remnawave_api_base }}/config-profiles/{{ remnawave_config_profile_uuid }}"
+    method: GET
+    headers:
+      Authorization: "Bearer {{ remnawave_panel_token }}"
+    return_content: true
+    status_code: 200
+    timeout: "{{ remnawave_api_timeout }}"
+    validate_certs: "{{ remnawave_panel_validate_certs }}"
+  register: remnawave_profile_final
+  delegate_to: localhost
+  become: false
+  no_log: true
+  changed_when: false
+  # Read-only: it runs in check mode too, so a dry-run resolves the real inbound
+  # UUIDs and can compare Hosts. Skipped only when there is no profile to read,
+  # which on a real run cannot happen - it was created above.
+  check_mode: false
+  when: remnawave_config_profile_uuid | default('') | length > 0
+
+- name: Confirm the reconciled profile is the one named in inventory
+  ansible.builtin.assert:
+    that:
+      - remnawave_profile_final.json.response.name == profile_name
+    fail_msg: >-
+      Reconciled Config Profile is named '{{ remnawave_profile_final.json.response.name }}',
+      not '{{ profile_name }}'. Hosts would be published against the wrong Xray JSON.
+  when:
+    - profile_uuid | length == 0
+    - remnawave_profile_final is not skipped
+
+- name: Require every inbound the shared profile already held to still be there
+  # The failure this catches is the dangerous one: a write that succeeds and
+  # silently drops another node's inbound. Only tags this node was explicitly
+  # asked to prune are allowed to be gone.
+  ansible.builtin.assert:
+    that:
+      - >-
+        remnawave_profile_tags_before |
+        difference(remnawave_profile_final.json.response.config.inbounds | default([]) |
+                   selectattr('tag', 'defined') | map(attribute='tag') | list) |
+        difference(inbound_prune_tags | default([])) | length == 0
+    fail_msg: >-
+      Inbound(s)
+      {{ remnawave_profile_tags_before |
+         difference(remnawave_profile_final.json.response.config.inbounds | default([]) |
+                    selectattr('tag', 'defined') | map(attribute='tag') | list) |
+         difference(inbound_prune_tags | default([])) }}
+      were in Config Profile '{{ profile_name }}' before this run and are not there now. That is another
+      node's traffic. Restore the profile from the panel's history before running anything else.
+  when:
+    - remnawave_profile_final is not skipped
+    # In check mode this read returns the state before the write, so the check
+    # would be vacuous rather than reassuring; it is announced below instead.
+    - not ansible_check_mode
+
+- name: Initialize inbound UUID map
+  ansible.builtin.set_fact:
+    remnawave_inbound_uuid_map: {}
+
+- name: Map panel-assigned inbound UUIDs by tag
+  ansible.builtin.set_fact:
+    remnawave_inbound_uuid_map: "{{ remnawave_inbound_uuid_map | combine({item.tag: item.uuid}) }}"
+  loop: >-
+    {{ (remnawave_profile_final.json.response.inbounds
+        | default(remnawave_profile_final.json.response.config.inbounds))
+       if remnawave_profile_final is not skipped else [] }}
+  loop_control:
+    label: "{{ item.tag }}"
+
+- name: Determine which managed inbounds the Panel does not carry yet
+  ansible.builtin.set_fact:
+    remnawave_missing_inbound_tags: >-
+      {{ remnawave_managed_inbound_tags | reject('in', remnawave_inbound_uuid_map) | list }}
+
+- name: Require UUIDs for all managed inbounds
+  ansible.builtin.assert:
+    that:
+      - remnawave_missing_inbound_tags | length == 0
+    fail_msg: >-
+      Panel returned no inbound UUID for tag(s) {{ remnawave_missing_inbound_tags | join(', ') }}
+      after the Config Profile was written.
+  # A dry-run wrote nothing, so an inbound this run would create is legitimately
+  # absent; that case is reported below instead of failing.
+  when: not ansible_check_mode
+
+- name: Report the Config Profile a dry-run would create
+  ansible.builtin.debug:
+    msg: >-
+      Would create Config Profile '{{ profile_name }}' - the Xray JSON node {{ node_name }} runs,
+      named after the node. The panel carries no profile of that name, so this run has no profile
+      UUID, and the Node, the Hosts and the Squad below would all be compared against an identifier
+      the panel has not issued. The dry-run therefore stops after this play. Everything up to here
+      was checked for real: the panel token, the profile list, the ownership of every inbound tag,
+      DNS, the platform, the SSH policy and the firewall inputs.
+  when:
+    - ansible_check_mode
+    - remnawave_config_profile_uuid is not defined
+
+- name: Report what a dry-run could not verify about the shared Config Profile
+  ansible.builtin.debug:
+    msg: >-
+      Dry-run: nothing was written, so the read above shows the Config Profile as it is now.
+      {{ ('Inbound(s) ' ~ remnawave_missing_inbound_tags | join(', ') ~ ' do not exist yet and a real '
+          ~ 'run would create them. ')
+         if remnawave_missing_inbound_tags | length > 0 else '' }}A real run writes the merged profile
+      and then proves that no other node's inbound disappeared - a check a simulation cannot make.
+  when: ansible_check_mode
+
+- name: Store managed inbound UUIDs and profile change state
+  ansible.builtin.set_fact:
+    remnawave_managed_inbound_uuids: >-
+      {{ inbound_specs | map(attribute='tag') | select('in', remnawave_inbound_uuid_map)
+         | map('extract', remnawave_inbound_uuid_map) | list }}
+    remnawave_panel_profile_changed: >-
+      {{ remnawave_profile_create is not skipped | default(false) or
+         remnawave_profile_update is not skipped | default(false) }}
+
+- name: End the dry-run for a node whose Config Profile does not exist yet
+  # Announced by the report above. Without a profile UUID every check below would
+  # be measured against nothing.
+  ansible.builtin.meta: end_host
+  when:
+    - ansible_check_mode
+    - remnawave_config_profile_uuid is not defined

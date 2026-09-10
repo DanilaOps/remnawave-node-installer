@@ -1,0 +1,10 @@
+#!/bin/sh
+set -eu
+export XRAY_LOCATION_ASSET={{ xray_install_dir | quote }}
+case "${1:-status}" in
+  status) exec /usr/bin/docker compose -f {{ remnawave_compose_path | quote }} ps ;;
+  logs) exec /usr/bin/docker compose -f {{ remnawave_compose_path | quote }} logs --tail=200 "${2:-remnanode}" ;;
+  validate) exec {{ xray_binary_path | quote }} run -test -c {{ (remnawave_state_dir ~ '/desired-xray.json') | quote }} ;;
+  restart) exec /usr/bin/docker compose -f {{ remnawave_compose_path | quote }} restart "${2:-remnanode}" ;;
+  *) echo "usage: remnawave-node {status|logs [service]|validate|restart [service]}" >&2; exit 2 ;;
+esac

@@ -1,0 +1,68 @@
+---
+# Take the node-side monitoring agent off a node again.
+#
+# The rollback half of node_monitoring_state. It removes the exporter, the
+# session collector and their units, and leaves the node's firewall alone: the
+# rule that limits the exporter port to the monitoring host is applied by
+# node_base, and removing it here would be this role reaching into another
+# role's chain. Re-run node_base's firewall tasks to drop the rule.
+
+- name: Read which systemd units this node has
+  ansible.builtin.service_facts:
+  register: node_monitoring_remove_service_facts
+  changed_when: false
+  check_mode: false
+
+- name: Stop and disable the node monitoring units
+  ansible.builtin.systemd_service:
+    name: "{{ item }}"
+    state: stopped
+    enabled: false
+  loop: "{{ node_monitoring_units }}"
+  when:
+    - item in node_monitoring_remove_service_facts.ansible_facts.services | default({})
+    - not ansible_check_mode
+
+- name: Remove the node monitoring unit files
+  ansible.builtin.file:
+    path: "/etc/systemd/system/{{ item }}"
+    state: absent
+  loop: "{{ node_monitoring_units }}"
+  register: node_monitoring_units_removed
+
+- name: Reload systemd after removing the units
+  ansible.builtin.systemd_service:
+    daemon_reload: true
+  when:
+    - node_monitoring_units_removed is changed
+    - not ansible_check_mode
+
+- name: Remove the exporter, the collector and what they wrote
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - "{{ node_exporter_binary_path }}"
+    - "{{ node_exporter_install_dir }}"
+    - "{{ node_monitoring_sessions_script }}"
+    - "{{ node_monitoring_textfile_dir }}"
+
+- name: Remove the exporter account
+  ansible.builtin.user:
+    name: "{{ node_exporter_user }}"
+    state: absent
+    remove: false
+    force: false
+
+- name: Remove the exporter group
+  ansible.builtin.group:
+    name: "{{ node_exporter_group }}"
+    state: absent
+
+- name: Say what was deliberately left in place
+  ansible.builtin.debug:
+    msg: >-
+      The exporter and the session collector are gone. The firewall rule that
+      restricted port {{ node_monitoring_exporter_port }} to the monitoring host
+      belongs to node_base and was not touched: re-run node_base's firewall
+      tasks to remove it.

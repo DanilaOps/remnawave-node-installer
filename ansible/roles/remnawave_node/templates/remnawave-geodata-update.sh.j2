@@ -1,0 +1,22 @@
+#!/bin/sh
+set -eu
+changed=0
+tmpdir="$(mktemp -d /var/tmp/remnawave-geodata.XXXXXX)"
+trap 'rm -rf "$tmpdir"' EXIT INT TERM
+{% for item in geodata_files %}
+{% if item.checksum_url | default('') | length > 0 %}
+curl --fail --location --silent --show-error --connect-timeout 15 --max-time 180 -o "$tmpdir/{{ item.name }}" {{ item.url | quote }}
+curl --fail --location --silent --show-error --connect-timeout 15 --max-time 60 -o "$tmpdir/{{ item.name }}.sha256" {{ item.checksum_url | quote }}
+expected="$(awk 'NR==1 {print $1}' "$tmpdir/{{ item.name }}.sha256")"
+actual="$(sha256sum "$tmpdir/{{ item.name }}" | awk '{print $1}')"
+[ "$expected" = "$actual" ] || { echo "Checksum mismatch for {{ item.name }}" >&2; exit 1; }
+if ! cmp -s "$tmpdir/{{ item.name }}" {{ (remnawave_geodata_dir ~ '/' ~ item.name) | quote }}; then
+  install -m 0644 "$tmpdir/{{ item.name }}" {{ (remnawave_geodata_dir ~ '/' ~ item.name) | quote }}
+  changed=1
+fi
+{% endif %}
+{% endfor %}
+if [ "$changed" -eq 1 ]; then
+  /usr/bin/docker compose -f {{ remnawave_compose_path | quote }} restart remnanode
+fi
+

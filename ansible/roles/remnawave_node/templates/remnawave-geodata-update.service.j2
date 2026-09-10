@@ -1,0 +1,9 @@
+[Unit]
+Description=Update verified Remnawave geodata
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/remnawave-geodata-update
+

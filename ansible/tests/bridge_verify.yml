@@ -1,0 +1,76 @@
+---
+# The two shapes bridge_spec really has, run against the role's real bridge.yml.
+#
+# The direct-node play imports the file STATICALLY on purpose: that is the
+# harsher of the two inclusion modes - a static import inlines the tasks and
+# templates each task's delegate_to before evaluating the inherited condition,
+# which is exactly how tr01 crashed on the entry_inventory_host its bridge_spec
+# never had. The file has to survive that even though main.yml now includes it
+# dynamically.
+- name: A direct node skips bridge verification safely
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  become: false
+  vars:
+    # The fleet default, verbatim: the whole spec is one switch, no bridge-only
+    # fields anywhere.
+    bridge_spec:
+      enabled: false
+    node_public_ip: 127.0.0.1
+    verify_external_timeout: 5
+  tasks:
+    - name: Import the real bridge acceptance the static way
+      ansible.builtin.import_role:
+        name: node_verify
+        tasks_from: bridge.yml
+      when: bridge_spec.enabled | default(false) | bool
+
+    - name: Require the direct node to have reached this point
+      ansible.builtin.debug:
+        msg: bridge verification was skipped without templating bridge-only fields
+
+- name: A bridge node still verifies its entry path
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  become: false
+  vars:
+    bridge_spec:
+      enabled: true
+      id: bridge-test-01
+      port: "{{ test_bridge_port }}"
+      entry_inventory_host: localhost
+      entry_address: 127.0.0.1
+    node_public_ip: 127.0.0.1
+    verify_external_timeout: 5
+  tasks:
+    - name: Import the real bridge acceptance the static way
+      ansible.builtin.import_role:
+        name: node_verify
+        tasks_from: bridge.yml
+      when: bridge_spec.enabled | default(false) | bool
+
+- name: A probe-only bridge needs no entry host
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  become: false
+  vars:
+    # No entry_inventory_host: acceptance runs an external probe command from
+    # the controller instead. Both delegate_to expressions in bridge.yml have to
+    # template cleanly without the field.
+    bridge_spec:
+      enabled: true
+      id: bridge-test-02
+      port: "{{ test_bridge_port }}"
+    node_public_ip: 127.0.0.1
+    verify_external_timeout: 5
+    verify_bridge_probe_command: ["true"]
+    verify_bridge_probe_no_log: false
+  tasks:
+    - name: Import the real bridge acceptance the static way
+      ansible.builtin.import_role:
+        name: node_verify
+        tasks_from: bridge.yml
+      when: bridge_spec.enabled | default(false) | bool

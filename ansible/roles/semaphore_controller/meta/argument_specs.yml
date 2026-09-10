@@ -1,0 +1,27 @@
+---
+argument_specs:
+  main:
+    short_description: Ansible controller running Semaphore behind an SSH tunnel.
+    description:
+      - Installs the pinned Ansible runtime and a pinned Semaphore, binds the UI
+        to loopback, hardens the host and backs up the state that does not live
+        in git.
+      - Never installs Docker and never changes SSH authentication policy.
+    options:
+      semaphore_version:
+        type: str
+        required: true
+        description: Pinned Semaphore release, recorded so the controller is rebuildable.
+      semaphore_db_dialect:
+        type: str
+        required: true
+        choices: [bolt, sqlite, mysql, postgres]
+        description: Database backend. Changing it on an existing instance is refused.
+      semaphore_interface:
+        type: str
+        required: true
+        description: Listen address. Anything but a loopback address is refused.
+      controller_backup_remote:
+        type: str
+        required: false
+        description: rsync destination the nightly archive is copied to.

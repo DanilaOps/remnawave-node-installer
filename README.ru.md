@@ -14,7 +14,7 @@
   монтируется поверх версии из образа ноды).
 - `/api/keygen`: основной формат 3.x `response.secretKey`; для старых панелей
   сохранён fallback на `response.pubKey`.
-- Версия установщика: **3.3.2-rw2**.
+- Версия установщика: **3.3.2-rw3**.
 
 В отличие от скриптов-обёрток, которые `curl | bash` тянут несколько сторонних
 установщиков, этот скрипт инлайнит всё, что контролирует (контейнер ноды, nginx
@@ -26,7 +26,7 @@ selfsteal, TLS-сертификат, Xray Reality-конфиг). Единств�
 
 Скрипт сам ставит зависимости (Docker, jq, openssl, socat, cron), поэтому чистому
 серверу Debian/Ubuntu нужен только `curl`. Для воспроизводимых установок ссылка
-закреплена на tag/release (`v3.3.2-rw2`), а не на меняющуюся ветку `main`.
+закреплена на tag/release (`v3.3.2-rw3`), а не на меняющуюся ветку `main`.
 
 Подробная инструкция с отдельными командами: **[INSTALL.ru.md](INSTALL.ru.md)**.
 
@@ -35,7 +35,7 @@ apt-get update -qq && apt-get install -y -qq curl
 
 # Рекомендуемый вариант: скачать, проверить синтаксис, затем запустить.
 curl -fsSLo /root/remnawave-node.sh \
-  https://raw.githubusercontent.com/DanilaOps/remnawave-node-installer/v3.3.2-rw2/remnawave-node.sh
+  https://raw.githubusercontent.com/DanilaOps/remnawave-node-installer/v3.3.2-rw3/remnawave-node.sh
 chmod 700 /root/remnawave-node.sh
 bash -n /root/remnawave-node.sh
 sudo bash /root/remnawave-node.sh
@@ -95,8 +95,9 @@ sudo bash /root/remnawave-node.sh -y \
 5. Разворачивает **контейнер ноды Remnawave** (`ghcr.io/remnawave/node`) с
    `NODE_PORT` + `SECRET_KEY` от панели.
 6. Создаёт в панели через API (предварительно проверив конфиг через `xray -test`):
-   **config-profile** (VLESS inbound(ы)), **node** (привязанную к профилю) и
-   **host** (запись подписки). Опционально добавляет inbound в **Internal Squad**
+   **config-profile** (VLESS inbound(ы)), **node** (привязанную к профилю),
+   отдельный **Node Plugin** со штатным Torrent Blocker и **host** (запись
+   подписки). Опционально добавляет inbound в **Internal Squad**
    (`--squad-name`/`--squad-uuid`), чтобы его увидели пользователи — иначе выводит
    громкое предупреждение с ручным шагом.
 7. Запускает `node-accelerator` для firewall (strict nftables), если не пропущено.
@@ -119,7 +120,9 @@ sudo bash /root/remnawave-node.sh -y \
 
 ## Требования
 
-- Чистый сервер Debian/Ubuntu, запуск от root.
+- Чистый сервер Debian/Ubuntu, запуск от root. Для штатного Torrent Blocker нужны
+  Linux-ядро **5.7+** и `nftables`; установщик ставит пакет `nftables`, проверяет
+  запущенное ядро и добавляет контейнеру `cap_add: NET_ADMIN`.
 - **A-запись** selfsteal-домена на IP сервера (серое облако / DNS-only, если зона в
   Cloudflare — никогда не проксировать).
 - URL панели Remnawave и **API-токен** с правами на все эндпоинты, которые вызывает
@@ -128,9 +131,10 @@ sudo bash /root/remnawave-node.sh -y \
   | Право | Эндпоинт | Зачем |
   |---|---|---|
   | **Keygen** | `GET /api/keygen` | `response.secretKey` → `SECRET_KEY` ноды |
-  | **Nodes** (create + read) | `POST/GET /api/nodes` | регистрация/проверка ноды |
+  | **Nodes** (create + read + update) | `POST/GET/PATCH /api/nodes` | регистрация, проверка и привязка plugin-профиля |
   | **Config Profiles** (create + read + update) | `POST/GET/PATCH /api/config-profiles` | Xray-конфиг + UUID инбаундов |
-  | **Hosts** (create + update) | `POST/PATCH /api/hosts` | host для подписки |
+  | **Hosts** (create + read + update) | `POST/GET/PATCH /api/hosts` | host для подписки |
+  | **Node Plugins** (create + read + update) | `POST/GET/PATCH /api/node-plugins` | конфигурация и повторное обновление Torrent Blocker |
 
   Частая ошибка: у токена есть Nodes/Hosts/Config-Profiles, но **нет Keygen** —
   тогда `GET /api/keygen` отдаёт `403`. Либо включи это право, либо обойди через
@@ -141,10 +145,10 @@ sudo bash /root/remnawave-node.sh -y \
 
   ```bash
   T='<токен>'; P='https://panel.example.com'
-  for ep in keygen nodes hosts config-profiles; do
+  for ep in keygen nodes hosts config-profiles node-plugins; do
     printf '%-16s -> ' "$ep"
     curl -sS -o /dev/null -w '%{http_code}\n' -H "Authorization: Bearer $T" "$P/api/$ep"
-  done   # все четыре должны вернуть 200
+  done   # все пять должны вернуть 200
   ```
 - Для `cf-dns`: Cloudflare API-токен с `Zone:DNS:Edit` для нужной зоны.
 
@@ -237,6 +241,12 @@ sudo bash remnawave-node.sh --resume -y \
 | `--node-port` | `2222` | control-порт панель ↔ нода |
 | `--node-public-ip` | авто | публичный IP ноды (нужен за NAT, когда автоопределение выдаёт приватный адрес) |
 | `--node-image` | `ghcr.io/remnawave/node:3.3.2` | образ RemnaNode (закреплённая версия; или env `REMNANODE_IMAGE`) |
+| `--torrent-blocker` / `--no-torrent-blocker` | on | включить (по умолчанию) или отключить штатный Remnawave Torrent Blocker |
+| `--torrent-block-duration` | `3600` | время блокировки source IP в секундах; `0` — без срока до сброса nftables/перезапуска |
+| `--torrent-ignore-ips` | — | конкретные IPv4/IPv6 через запятую; CIDR здесь не поддерживается |
+| `--torrent-ignore-users` | — | числовые ID пользователей Remnawave через запятую |
+| `--torrent-rule-tags` | — | дополнительные Xray `ruleTag` через запятую, срабатывания которых тоже блокируют source IP |
+| `--node-plugin-name` | авто | имя отдельного plugin-профиля (2-30 букв/цифр/`_`/`-`/пробел); по умолчанию стабильно выводится из имени ноды |
 | `--mask` | `reality` | `reality` (443 у Xray, XTLS-Reality) \| `grpc-tls` (443 у nginx с реальным сертом, VLESS+gRPC за ним — работает через CDN/Cloudflare) |
 | `--grpc-port` | `11443` | loopback-порт gRPC-инбаунда (`grpc-tls`) |
 | `--grpc-service` | `grpc` | gRPC serviceName; nginx роутит `/<name>/Tun` в Xray (`grpc-tls`) |
@@ -510,6 +520,38 @@ Internal Squad → Пользователи**. Установщик автома
 - Иначе установщик **громко предупреждает** с ручным шагом: в панели открой
   *Internal Squads → редактировать/создать squad → включить inbound → сохранить*,
   затем привяжи squad к подписке/пользователям.
+
+## Штатный Torrent Blocker
+
+По умолчанию установщик создаёт для каждой ноды отдельный plugin-профиль
+`TB-<namespace>`, включает в нём `torrentBlocker` на 3600 секунд и записывает его
+UUID в `activePluginUuid` ноды. Повторный запуск обновляет тот же профиль. Если у
+существующей ноды уже был другой plugin-профиль, его конфигурация сначала
+копируется в новый отдельный профиль — настройки фильтров других нод не меняются.
+
+Все созданные inbound уже содержат обязательный sniffing:
+
+```json
+"sniffing": {
+  "enabled": true,
+  "destOverride": ["http", "tls", "quic"]
+}
+```
+
+Remnawave Node сам вставляет webhook-rule перед остальными routing rules,
+добавляет обнаруженный source IP в nftables и обрывает соединения. Не добавляйте
+webhook вручную в Xray JSON. Детектирование сигнатур не гарантирует обнаружение
+каждого BitTorrent-пакета; блокировка IP срабатывает после первого распознанного
+пакета. Отчёты доступны в панели и через событие `torrent_blocker.report`.
+
+Проверка после установки:
+
+```bash
+nft list table ip remnanode
+docker logs remnanode --tail 200 | grep -iE 'torrent|plugin|nft'
+```
+
+Описание механизма и ограничений: [официальная документация Node Plugins](https://docs.rw/learn/node-plugins/).
 
 ## Каскадный мост (`--bridge`) — эта нода как выход
 

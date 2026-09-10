@@ -1,0 +1,19 @@
+{
+  "dialect": "{{ semaphore_db_dialect }}",
+{% if semaphore_db_dialect == 'bolt' %}
+  "bolt": {"host": "{{ semaphore_bolt_path }}"},
+{% elif semaphore_db_dialect == 'sqlite' %}
+  "sqlite": {"host": "{{ semaphore_sqlite_path }}"},
+{% endif %}
+  "tmp_path": "{{ semaphore_tmp_path }}",
+  "cookie_hash": "{{ semaphore_effective_keys.cookie_hash }}",
+  "cookie_encryption": "{{ semaphore_effective_keys.cookie_encryption }}",
+  "access_key_encryption": "{{ semaphore_effective_keys.access_key_encryption }}",
+  "interface": "{{ semaphore_interface }}",
+  "port": ":{{ semaphore_port }}",
+  "web_host": "{{ semaphore_web_host | trim }}",
+  "password_login_disable": {{ semaphore_password_login_disable | bool | lower }},
+  "non_admin_can_create_project": {{ semaphore_non_admin_can_create_project | bool | lower }},
+  "max_parallel_tasks": {{ semaphore_max_parallel_tasks | default(0) }},
+  "ssh_config_path": "{{ semaphore_home }}/.ssh/config"
+}

@@ -1,0 +1,45 @@
+---
+verify_panel_retries: 30
+verify_panel_delay: 5
+verify_external_timeout: 30
+verify_log_since: 10m
+# End-to-end acceptance: a node is not "ready" until traffic has actually gone
+# through it. This stays fail-closed - with neither a built-in probe identity nor
+# a custom command the run fails rather than reporting an unproven node.
+verify_require_tunnel_probe: true
+
+# The built-in probe. It connects to the node exactly as a client would - VLESS
+# over Reality with Vision - and fetches one URL through it. Everything it needs
+# except the client identity is already known from this run: the address, the
+# SNI, the shortId and the Reality public key derived from the node's own key.
+#
+# verify_probe_vless_uuid is the VLESS id of an existing panel user, not an
+# internal panel object id. It is read once from the vault and never created or
+# modified by this role: verification must not mutate the panel.
+verify_probe_vless_uuid: "{{ vault_verify_probe_vless_uuid | default('') }}"
+# Username of that same user, used only to read its state through the API.
+verify_probe_username: ""
+verify_probe_check_panel_state: true
+# What "the tunnel works" means. A 204 endpoint keeps the check cheap and has no
+# body to depend on; override both for a different target.
+verify_probe_url: https://www.gstatic.com/generate_204
+verify_probe_expected_status: 204
+verify_probe_socks_port: 11080
+verify_probe_timeout: 20
+verify_probe_startup_timeout: 15
+# Xray client on the controller. The controller deliberately has no Docker, so
+# this is a plain binary; ansible/README.md has the one-time setup.
+verify_probe_xray_binary: xray
+verify_probe_workdir: /tmp
+
+# A completely custom probe. When set it replaces the built-in one entirely.
+verify_tunnel_probe_command: []
+verify_tunnel_probe_no_log: true
+verify_require_node_port_denied_probe: true
+verify_node_port_untrusted_probe_host: ""
+verify_bridge_probe_command: []
+verify_bridge_probe_no_log: true
+verify_fatal_log_pattern: "(?i)(fatal|panic|configuration error|failed to start)"
+verify_required_certificate_days: 7
+# The decoy must be the one generated for this node, not a shared default.
+verify_require_unique_decoy: true

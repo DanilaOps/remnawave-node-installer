@@ -1,0 +1,23 @@
+---
+- name: Converge node_monitoring
+  hosts: all
+  become: true
+  gather_facts: true
+  vars:
+    # A container has no nftables of its own and no business loading one, so the
+    # firewall is off here exactly as it is in the node_base scenario. The rule
+    # itself is covered by ansible/tests/test_monitoring_config.sh, which
+    # renders both shapes of the ruleset and diffs them.
+    node_firewall_enabled: false
+    node_public_tcp_ports: [80, 443]
+    # What a real node declares. The collector derives its ports from this, so
+    # 80 never reaches the socket count.
+    inbound_specs:
+      - tag: TEST_01_REALITY
+        port: 443
+        network: raw
+    remnawave_node_port: 2222
+    monitoring_scrape_cidrs: [203.0.113.20/32]
+    node_monitoring_bind_address: 127.0.0.1
+  roles:
+    - role: node_monitoring

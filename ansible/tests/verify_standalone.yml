@@ -1,0 +1,73 @@
+---
+# The standalone acceptance contract: a fresh Ansible run, no facts inherited
+# from the reconciler, resolves everything it needs read-only and verifies the
+# Panel state. The vars mirror panel_idempotency.yml - the same node the
+# reconciler just published.
+- name: Verify the reconciled node from a fresh run
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  become: false
+  vars:
+    node_id: mock_01
+    node_name: MOCK-01
+    node_public_ip: 203.0.113.10
+    selfsteal_domain: node.example.test
+    remnawave_panel_url: http://127.0.0.1:18080
+    remnawave_panel_token: mock-token
+    remnawave_panel_validate_certs: false
+    remnawave_api_timeout: 10
+    profile_name: Mock-Profile
+    inbound_specs:
+      - tag: MOCK_01_REALITY
+        port: 443
+        network: raw
+    host_specs:
+      - remark: Mock Germany
+        address: 203.0.113.10
+        inbound_tag: MOCK_01_REALITY
+        port: 443
+        sni: node.example.test
+        fingerprint: firefox
+        security_layer: DEFAULT
+        tags: [EU, DIRECT]
+    internal_squad_name: Mock Squad
+    xray_json_template_name: Mock Xray Template
+    xray_version: 26.6.27
+    verify_panel_retries: 2
+    verify_panel_delay: 1
+    selfsteal_virtual_hosts:
+      - name: primary
+        server_names: [node.example.test]
+        root: "{{ test_selfsteal_root | default('unused-by-this-play') }}"
+        title: Cloud Infrastructure
+    remnawave_decoy_seed: mock_01|salt|1
+  tasks:
+    - name: Resolve every Panel reference the way standalone acceptance does
+      ansible.builtin.include_role:
+        name: node_verify
+        tasks_from: panel_resolve.yml
+
+    - name: Run the Panel acceptance checks against the resolved references
+      ansible.builtin.include_role:
+        name: node_verify
+        tasks_from: panel.yml
+
+    - name: Require every resolved reference to be non-empty
+      ansible.builtin.assert:
+        that:
+          - remnawave_api_base == 'http://127.0.0.1:18080/api'
+          - remnawave_node_uuid | length > 0
+          - remnawave_config_profile_uuid | length > 0
+          - remnawave_internal_squad_uuid | length > 0
+          - remnawave_host_uuids | length == host_specs | length
+          - remnawave_managed_inbound_uuids | length == inbound_specs | length
+          - remnawave_xray_json_template_uuid | length > 0
+          # Not just "non-empty": the key acceptance resolved has to be the
+          # one the reconciler actually published for THIS node's inbound.
+          - remnawave_reality_private_key == test_expected_reality_key
+          - remnawave_reality_short_ids == test_expected_short_ids
+          - remnawave_inbound_uuid_map[inbound_specs[0].tag] | length > 0
+          - remnawave_managed_inbound_uuids == [remnawave_inbound_uuid_map[inbound_specs[0].tag]]
+          - not (subscription_refresh_required | bool)
+        fail_msg: standalone acceptance left a Panel reference unresolved

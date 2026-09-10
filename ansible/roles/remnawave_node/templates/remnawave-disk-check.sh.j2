@@ -1,0 +1,9 @@
+#!/bin/sh
+set -eu
+used="$(df -P {{ remnawave_install_root }} | awk 'NR==2 {gsub(/%/,"",$5); print $5}')"
+if [ "$used" -ge {{ remnawave_disk_warning_percent }} ]; then
+  echo "Remnawave disk usage is ${used}% (threshold {{ remnawave_disk_warning_percent }}%)" >&2
+  exit 1
+fi
+echo "Remnawave disk usage is ${used}%"
+

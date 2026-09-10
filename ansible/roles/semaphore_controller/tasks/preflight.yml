@@ -1,0 +1,157 @@
+---
+- name: Validate the controller declaration
+  ansible.builtin.assert:
+    that:
+      - ansible_facts.distribution in ['Debian', 'Ubuntu']
+      - semaphore_version is match('^[0-9]+\.[0-9]+\.[0-9]+$')
+      - semaphore_db_dialect in ['bolt', 'sqlite', 'mysql', 'postgres']
+      - semaphore_port | int >= 1
+      - semaphore_port | int <= 65535
+      - semaphore_user is match('^[a-z_][a-z0-9_-]{0,31}$')
+      - semaphore_project_root is match('^/')
+    fail_msg: >-
+      The controller runs on Debian or Ubuntu, needs a pinned three-part Semaphore version, a
+      supported database dialect and an absolute project path.
+
+- name: Refuse to expose the Semaphore UI beyond loopback
+  # There is no TLS, no domain and no reverse proxy here on purpose. Binding
+  # anywhere else would publish an authenticated admin panel over plain HTTP.
+  ansible.builtin.assert:
+    that:
+      - semaphore_interface in ['127.0.0.1', '::1', 'localhost']
+    fail_msg: >-
+      semaphore_interface is '{{ semaphore_interface }}'. This role only binds the UI to loopback;
+      it is reached with 'ssh -N -L {{ semaphore_port }}:127.0.0.1:{{ semaphore_port }} <controller>'.
+      Publishing it would need TLS and an authenticating proxy, which this project does not set up.
+
+- name: Validate the public access declaration
+  ansible.builtin.assert:
+    that:
+      - controller_proxy_domain is match('^(?=.{1,253}$)([A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,63}$')
+      - controller_proxy_acme_email is search('@')
+      - controller_proxy_acme_environment in controller_proxy_acme_directories
+    fail_msg: >-
+      Publishing the UI needs controller_proxy_domain (a name that already resolves to this host),
+      controller_proxy_acme_email and a valid controller_proxy_acme_environment.
+  when: controller_proxy_enabled | bool
+
+- name: Require an explicit decision before the UI is open to the internet
+  # The panel behind this proxy provisions every node in the fleet. An address
+  # list in front of it is the control that actually limits the damage of a
+  # leaked password, so leaving it empty has to be a decision somebody made.
+  ansible.builtin.assert:
+    that:
+      - controller_proxy_allowed_cidrs | length > 0 or controller_proxy_ack_public | bool
+    fail_msg: >-
+      controller_proxy_enabled is true and controller_proxy_allowed_cidrs is empty, which publishes
+      the panel that provisions the fleet to the whole internet. List the office, VPN or home
+      addresses in controller_proxy_allowed_cidrs, or set controller_proxy_ack_public=true to state
+      that unrestricted access is intended. Basic auth
+      (controller_proxy_basic_auth_users) is worth adding either way.
+  when: controller_proxy_enabled | bool
+
+- name: Validate every address allowed to reach the UI
+  ansible.builtin.assert:
+    that:
+      - (item | ansible.utils.ipaddr) != false
+    fail_msg: "Invalid CIDR in controller_proxy_allowed_cidrs: {{ item }}"
+  loop: "{{ controller_proxy_allowed_cidrs | default([]) }}"
+  loop_control:
+    label: "{{ item }}"
+  when: controller_proxy_enabled | bool
+
+- name: Validate the basic-auth entries
+  ansible.builtin.assert:
+    that:
+      - item.user is match('^[A-Za-z0-9._-]{1,32}$')
+      - item.hash | default('') | length > 0
+      - not (item.hash | default('') is match('^[A-Za-z0-9._-]{0,20}$'))
+    fail_msg: >-
+      controller_proxy_basic_auth_users entries need a user and a password *hash*. Produce one with
+      'openssl passwd -apr1' and keep the plaintext out of the repository; a value that looks like a
+      plain password is refused here rather than written into a file nginx would happily accept.
+  loop: "{{ controller_proxy_basic_auth_users | default([]) }}"
+  loop_control:
+    label: "{{ item.user | default('?') }}"
+  no_log: true
+  when: controller_proxy_enabled | bool
+
+- name: Require the published name to resolve to this host
+  ansible.builtin.command:
+    argv: [getent, ahostsv4, "{{ controller_proxy_domain }}"]
+  register: controller_proxy_dns
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  when: controller_proxy_enabled | bool
+
+- name: Refuse to request a certificate for a name that does not point here
+  # ACME would fail anyway, and five failures per hour per hostname is the whole
+  # budget. Failing before certbot runs keeps that budget intact.
+  ansible.builtin.assert:
+    that:
+      - >-
+        (controller_proxy_dns.stdout | default('') | regex_findall('(?m)^([0-9.]+)\s+')) |
+        intersect(ansible_facts.all_ipv4_addresses | default([])) | length > 0
+        or controller_proxy_ack_dns_elsewhere | default(false) | bool
+    fail_msg: >-
+      {{ controller_proxy_domain }} resolves to
+      {{ controller_proxy_dns.stdout | default('') | regex_findall('(?m)^([0-9.]+)\s+') | unique }},
+      none of which is an address of this host
+      ({{ ansible_facts.all_ipv4_addresses | default([]) | join(', ') }}). Create the A record first.
+      Behind a proxy that terminates elsewhere, set controller_proxy_ack_dns_elsewhere=true.
+  when: controller_proxy_enabled | bool
+
+- name: Read an existing Semaphore configuration
+  ansible.builtin.slurp:
+    src: "{{ semaphore_config_path }}"
+  register: semaphore_existing_config_raw
+  failed_when: false
+  changed_when: false
+
+- name: Remember the existing configuration
+  ansible.builtin.set_fact:
+    semaphore_existing_config: >-
+      {{ (semaphore_existing_config_raw.content | b64decode | from_json)
+         if semaphore_existing_config_raw.content is defined else {} }}
+  no_log: true
+
+- name: Refuse to change the database dialect of an existing instance
+  # Migrating Semaphore's database is not something a converge run invents. If
+  # the running instance disagrees with the declaration, the declaration is what
+  # gets corrected.
+  ansible.builtin.assert:
+    that:
+      - semaphore_existing_config.dialect | default(semaphore_db_dialect) == semaphore_db_dialect
+    fail_msg: >-
+      {{ semaphore_config_path }} says dialect '{{ semaphore_existing_config.dialect | default('') }}'
+      while semaphore_db_dialect is '{{ semaphore_db_dialect }}'. This role does not migrate a
+      Semaphore database. Set semaphore_db_dialect to what the instance already uses, or migrate
+      deliberately and by hand.
+
+- name: Report what will be reused from the existing instance
+  ansible.builtin.debug:
+    msg: >-
+      {{ semaphore_config_path }}:
+      {{ ('found - reusing its encryption keys and dialect ' ~ (semaphore_existing_config.dialect | default('')))
+         if semaphore_existing_config | length > 0
+         else 'absent - a new configuration with fresh encryption keys will be generated' }}
+
+- name: Read which units systemd already knows about
+  # A dry-run installs no unit files, so a later systemd task would be asked to
+  # start something that does not exist and the whole run would stop on
+  # "Could not find the requested service". This one read is what every systemd
+  # task below consults instead of assuming its unit is already there. It covers
+  # .service, .timer, .socket and .path alike, and units that come from a package
+  # as well as the ones this role writes.
+  ansible.builtin.command:
+    argv: [systemctl, list-unit-files, --no-legend, --no-pager]
+  register: controller_unit_files
+  changed_when: false
+  failed_when: false
+  # Read-only: it runs in check mode too, so a dry-run sees real state.
+  check_mode: false
+
+- name: Remember which units systemd already knows about
+  ansible.builtin.set_fact:
+    controller_systemd_units: "{{ controller_unit_files.stdout | default('') }}"

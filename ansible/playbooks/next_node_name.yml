@@ -1,0 +1,117 @@
+---
+# Allocate the name of the next node of a country, and nothing else.
+#
+#   ansible-playbook ansible/playbooks/next_node_name.yml -e country_code=TR
+#   ./provision-node --next TR                     (the wrapper passes the same thing)
+#
+# It reads the panel and changes nothing, anywhere. The number it prints is meant
+# to be written into the inventory once, as a host called "tr02"; from then on
+# that hostname is the node's identity and every later run derives TR-02 from it.
+#
+# Allocation is deliberately a separate step rather than something the install
+# does on the fly: a run that computed "the next free number" every time would
+# move the identity of a node that already exists, and two installs started at
+# once would both pick the same one. Here the operator sees the number, puts it
+# in the inventory, and it stops being a guess.
+- name: Work out the next node name for a country
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  become: false
+
+  vars:
+    country_code: ""
+    # This playbook uses no role, so the panel connection defaults the roles
+    # carry have to be repeated here. They are overridden the same way as
+    # everywhere else, by /etc/remnawave/fleet.yml.
+    remnawave_api_timeout: 60
+    remnawave_panel_validate_certs: true
+
+  tasks:
+    - name: Require a two-letter country code
+      ansible.builtin.assert:
+        that:
+          - country_code | length == 2
+          - country_code is match('^[A-Za-z]{2}$')
+        fail_msg: >-
+          Pass the country as a two-letter code, for example -e country_code=TR.
+
+    - name: Require a country the fleet has a label for
+      # The label is what users see in the client. A country with no entry would
+      # publish a Host with an empty remark, which is only noticed by the user.
+      ansible.builtin.assert:
+        that:
+          - node_country_remarks[country_code | upper] | default('') | length > 0
+        fail_msg: >-
+          Country '{{ country_code | upper }}' has no display name in
+          ansible/playbooks/group_vars/all/countries.yml. Add it there first - it is what the
+          client shows for every node of that country.
+
+    - name: Refuse to allocate against the published documentation values
+      ansible.builtin.assert:
+        that:
+          - remnawave_panel_url != 'https://panel.example.com'
+        fail_msg: >-
+          This run is still using the documentation panel URL, so it would allocate a number from a
+          panel that does not exist. Load the deployment values:
+          -e @/etc/remnawave/fleet.yml -e @/etc/remnawave/secrets.yml
+
+    - name: Read every name the panel already uses
+      # Nodes, Config Profiles and Hosts, because a number is taken if any of them
+      # still carries it. A Config Profile left behind by a deleted node is
+      # exactly the case where reusing the number would attach a new machine to an
+      # old object.
+      ansible.builtin.uri:
+        url: "{{ remnawave_panel_url | regex_replace('/+$', '') }}/api/{{ item }}"
+        method: GET
+        headers:
+          Authorization: "Bearer {{ remnawave_panel_token }}"
+        return_content: true
+        status_code: 200
+        timeout: "{{ remnawave_api_timeout }}"
+        validate_certs: "{{ remnawave_panel_validate_certs }}"
+      register: next_node_panel
+      loop: [nodes, config-profiles, hosts]
+      delegate_to: localhost
+      become: false
+      no_log: true
+      changed_when: false
+      # Read-only: it runs in check mode too, so a dry-run allocates the same name.
+      check_mode: false
+
+    - name: Collect the names in use
+      ansible.builtin.set_fact:
+        next_node_used_names: >-
+          {{ (next_node_panel.results[0].json | remnawave_response_items() | map(attribute='name') | list) +
+             (next_node_panel.results[1].json | remnawave_response_items('configProfiles') |
+              map(attribute='name') | list) +
+             (next_node_panel.results[2].json | remnawave_response_items() |
+              map(attribute='remark') | list) +
+             (groups['remnawave_nodes'] | default([]) |
+              map('regex_replace', '^([A-Za-z]+)[-_]?(.*)$', '\1-\2') | map('upper') | list) }}
+
+    - name: Allocate the next name
+      ansible.builtin.set_fact:
+        next_node_name: "{{ next_node_used_names | remnawave_next_node_name(country_code) }}"
+        next_node_ordinals: "{{ next_node_used_names | remnawave_country_ordinals(country_code) }}"
+
+    - name: Report the allocation
+      ansible.builtin.debug:
+        msg:
+          - "country            = {{ country_code | upper }} ({{ node_country_remarks[country_code | upper] }})"
+          - >-
+            {{ country_code | upper }} numbers in use =
+            {{ next_node_ordinals | join(', ') | default('(none)', true) }}
+          - "next node name     = {{ next_node_name }}"
+          - "inventory hostname = {{ next_node_name | lower | replace('-', '') }}"
+          - "config profile     = {{ next_node_name }}   (created by the install, same name)"
+          - "dns hostname       = {{ next_node_name | lower | replace('-', '') }}.{{ node_domain_zone }}"
+          - ""
+          - "Add one line to the inventory, then install:"
+          - "    {{ next_node_name | lower | replace('-', '') }}:"
+          - "      ansible_host: <the VPS address>"
+          - "    ./provision-node {{ next_node_name | lower | replace('-', '') }} --first-run"
+          - ""
+          - >-
+            The number is allocated once, here. It lives in the inventory hostname from now on, so
+            re-running this node reconciles {{ next_node_name }} and never allocates again.

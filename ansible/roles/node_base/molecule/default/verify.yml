@@ -1,0 +1,24 @@
+---
+- name: Verify node_base
+  hosts: all
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Read Docker version
+      ansible.builtin.command:
+        argv: [docker, version, --format, "{{ '{{' }}.Server.Version{{ '}}' }}"]
+      register: molecule_docker_version
+      changed_when: false
+
+    - name: Read Compose version
+      ansible.builtin.command:
+        argv: [docker, compose, version]
+      register: molecule_compose_version
+      changed_when: false
+
+    - name: Require Docker and Compose
+      ansible.builtin.assert:
+        that:
+          - molecule_docker_version.stdout | length > 0
+          - molecule_compose_version.stdout is search('Docker Compose')
+

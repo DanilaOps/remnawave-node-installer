@@ -1,0 +1,21 @@
+---
+# What a provider image has and a test image does not: current package metadata,
+# and the two tools this role's collector depends on. Nothing here belongs to
+# the role - it only makes the starting point look like a node that node_base
+# has already run on.
+- name: Prepare the instance
+  hosts: all
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Refresh the package metadata the image was built with
+      ansible.builtin.apt:
+        update_cache: true
+      changed_when: false
+
+    - name: Install the tools the session collector uses
+      ansible.builtin.apt:
+        name:
+          - iproute2
+          - ca-certificates
+        state: present

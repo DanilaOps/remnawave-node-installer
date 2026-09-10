@@ -1,0 +1,26 @@
+[sshd]
+enabled = true
+port = {{ ansible_port | default(22) }}
+backend = systemd
+findtime = 10m
+maxretry = 5
+bantime = 1h
+# Port {{ ansible_port | default(22) }} is source-restricted in the nftables
+# ruleset to management_cidrs, and the input chain drops everything else. Where
+# that list names specific hosts, the only addresses sshd on this node can ever
+# see are the controller's and the operator's - which means this jail cannot
+# protect the node from anybody. What it can do is ban those two, for an hour,
+# after five failed attempts, with password authentication enabled; and no
+# re-run of the playbook clears that ban. Both are therefore exempt here. The
+# firewall in front of sshd is the stronger control and it is the one doing the
+# work.
+#
+# A zero-prefix entry is the exception, and it is why this list is filtered
+# rather than copied. A fleet may deliberately open SSH to the whole internet on
+# a node - management_cidrs_extra: ['0.0.0.0/0', '::/0'] - and on such a node the
+# premise above is false: sshd sees the internet. Exempting it would write
+# 0.0.0.0/0 into ignoreip, which turns the jail off for every source, on exactly
+# the node that is exposed and still accepts a root password. A /0 therefore
+# stays in the firewall, where it is the operator's deliberate decision, and is
+# dropped here, where it would only disarm the last control left.
+ignoreip = 127.0.0.1/8 ::1{% for cidr in management_cidrs if (cidr | ansible.utils.ipaddr('prefix') | int) > 0 %} {{ cidr }}{% endfor %}

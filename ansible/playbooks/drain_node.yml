@@ -1,0 +1,241 @@
+---
+# Вывести ноду из балансировки, дождаться, пока с неё уйдут пользователи, и
+# вернуть обратно.
+#
+#   Вывести:   ansible-playbook ansible/playbooks/drain_node.yml --limit de03
+#   Вернуть:   ansible-playbook ansible/playbooks/drain_node.yml --limit de03 -e drain_state=in
+#
+# Зачем отдельная процедура. Обслуживание ноды - перезапуск контейнера,
+# обновление ядра, sysctl с перезагрузкой - разрывает соединения всем, кто на
+# ней сидит. Пока это делается «просто так», каждый такой разрыв виден
+# пользователям и не виден нам. Вывод из балансировки превращает разрыв в
+# переключение: новым клиентам ноду больше не предлагают, а старые уходят сами.
+#
+# Ничего на самой ноде playbook не делает: он работает только с панелью, поэтому
+# connection: local. Обслуживание и проверка - отдельными прогонами, между
+# выводом и возвратом.
+#
+# ЧТО ЭТО НЕ ДЕЛАЕТ. Выключенный Host исчезает из конфигурации, которую панель
+# отдаёт при следующем запросе подписки, - и только. Клиент, у которого конфиг
+# уже на руках, продолжает пользоваться нодой, пока подписку не обновит, а
+# периодического опроса у клиентов нет. Проверено на DE-03: за десять минут
+# после вывода число пользователей не упало с трёх до нуля, а выросло до
+# четырёх.
+#
+# Поэтому ожидание опустошения - на удачу, а не гарантия, и его неудача не
+# считается ошибкой прогона. Реальная польза от вывода в том, что на ноду,
+# которую сейчас будут перезапускать, не попадут новые сессии. Разрыв для тех,
+# кто уже на ней, этим не убирается: убрать его можно только тем, чего у нас
+# нет, - принудительным переключением клиента.
+- name: Take a node out of balancing, or put it back
+  hosts: "{{ drain_hosts | default('remnawave_nodes') }}"
+  connection: local
+  gather_facts: false
+  become: false
+  serial: 1
+  any_errors_fatal: true
+
+  vars:
+    # Игра идёт на контроллере, поэтому интерпретатор задаётся явно. Иначе
+    # обнаружение кэширует ответ на инвентарном хосте, и следующая игра пойдёт
+    # исполнять питон контроллера на ноде по SSH.
+    ansible_python_interpreter: "{{ ansible_playbook_python }}"
+
+    # Плейбук не подключает ролей, поэтому значения, которые обычно приходят из
+    # remnawave_panel, задаются здесь. Адрес панели и токен приезжают из
+    # /etc/remnawave/fleet.yml и secrets.yml, как и во всех остальных прогонах.
+    remnawave_api_base: "{{ remnawave_panel_url | regex_replace('/+$', '') }}/api"
+    remnawave_api_timeout: 60
+    remnawave_panel_validate_certs: true
+
+    drain_state: out
+    # Сколько ждать, пока пользователи уйдут сами. Дольше ждать смысла нет:
+    # клиент, который висит на ноде часами, не уйдёт и за час.
+    drain_wait_seconds: 600
+    drain_poll_seconds: 15
+    # Снять защиту от опустошения пула. Осознанное действие: без живого члена
+    # пул отдаёт не медленное соединение, а никакое.
+    drain_force: false
+
+  tasks:
+    - name: Validate the requested state
+      ansible.builtin.assert:
+        that:
+          - drain_state in ['out', 'in']
+        fail_msg: "drain_state must be 'out' (take out of balancing) or 'in' (return)."
+
+    - name: List Hosts
+      ansible.builtin.uri:
+        url: "{{ remnawave_api_base }}/hosts"
+        method: GET
+        headers:
+          Authorization: "Bearer {{ remnawave_panel_token }}"
+        return_content: true
+        status_code: 200
+        timeout: "{{ remnawave_api_timeout }}"
+        validate_certs: "{{ remnawave_panel_validate_certs }}"
+      register: drain_hosts_response
+      no_log: true
+      changed_when: false
+      check_mode: false
+
+    - name: Select the Hosts published at this node's address
+      ansible.builtin.set_fact:
+        drain_node_hosts: >-
+          {{ drain_hosts_response.json | remnawave_response_items('hosts')
+             | selectattr('address', 'equalto', node_public_ip) | list }}
+
+    - name: Require the node to publish at least one Host
+      ansible.builtin.assert:
+        that:
+          - drain_node_hosts | length > 0
+        fail_msg: >-
+          No Host in the panel is published at {{ node_public_ip }}, so there is nothing to
+          take out of balancing. Check that this is the right node, and that its Host was
+          not already removed by hand.
+
+    - name: Report what this run will touch
+      ansible.builtin.debug:
+        msg: >-
+          {{ node_name }} ({{ node_public_ip }}):
+          {{ 'выводится из балансировки' if drain_state == 'out' else 'возвращается в балансировку' }},
+          Host(ов) {{ drain_node_hosts | length }} -
+          {{ drain_node_hosts | map(attribute='remark') | join(', ') }}
+
+    - name: List subscription templates
+      ansible.builtin.uri:
+        url: "{{ remnawave_api_base }}/subscription-templates"
+        method: GET
+        headers:
+          Authorization: "Bearer {{ remnawave_panel_token }}"
+        return_content: true
+        status_code: 200
+        timeout: "{{ remnawave_api_timeout }}"
+        validate_certs: "{{ remnawave_panel_validate_certs }}"
+      register: drain_templates_index
+      no_log: true
+      changed_when: false
+      check_mode: false
+      when: drain_state == 'out'
+
+    - name: Read every template, because membership lives inside the body
+      ansible.builtin.uri:
+        url: "{{ remnawave_api_base }}/subscription-templates/{{ item.uuid }}"
+        method: GET
+        headers:
+          Authorization: "Bearer {{ remnawave_panel_token }}"
+        return_content: true
+        status_code: 200
+        timeout: "{{ remnawave_api_timeout }}"
+        validate_certs: "{{ remnawave_panel_validate_certs }}"
+      register: drain_template_bodies
+      loop: >-
+        {{ drain_templates_index.json | remnawave_response_items('templates') }}
+      loop_control:
+        label: "{{ item.name | default(item.uuid) }}"
+      no_log: true
+      changed_when: false
+      check_mode: false
+      when: drain_state == 'out'
+
+    - name: Refuse a drain that would leave a pool with nobody serving
+      # Ровно тот риск, который план называет «канареечная нода, схлопывающая
+      # пул»: если выводимая нода - последний живой член, пользователи получают
+      # отказ вместо переключения.
+      ansible.builtin.assert:
+        that:
+          - drain_emptied | length == 0 or drain_force | bool
+        fail_msg: >-
+          Выводить {{ node_name }} нельзя: без него не останется ни одного живого члена в
+          {{ drain_emptied | join('; ') }}. Верните в пул кого-то ещё, либо, если это
+          осознанно, повторите с -e drain_force=true.
+        success_msg: >-
+          Пулы выдержат вывод {{ node_name }}:
+          {{ drain_pools | dict2items | map(attribute='key') | join(', ') }}
+      vars:
+        drain_pool_templates: >-
+          {{ drain_template_bodies.results | map(attribute='json.response') | list }}
+        drain_all_hosts: "{{ drain_hosts_response.json | remnawave_response_items('hosts') }}"
+        drain_pools: >-
+          {{ drain_pool_templates | remnawave_pool_members(drain_all_hosts) }}
+        drain_emptied: >-
+          {{ drain_pool_templates | remnawave_pools_emptied_by(
+               drain_all_hosts, drain_node_hosts | map(attribute='uuid') | list) }}
+      when: drain_state == 'out'
+
+    - name: Set the Host state in the panel
+      ansible.builtin.uri:
+        url: "{{ remnawave_api_base }}/hosts"
+        method: PATCH
+        headers:
+          Authorization: "Bearer {{ remnawave_panel_token }}"
+        body_format: json
+        body:
+          uuid: "{{ item.uuid }}"
+          isDisabled: "{{ drain_state == 'out' }}"
+        status_code: [200, 201]
+        timeout: "{{ remnawave_api_timeout }}"
+        validate_certs: "{{ remnawave_panel_validate_certs }}"
+      loop: "{{ drain_node_hosts }}"
+      loop_control:
+        label: "{{ item.remark }}"
+      register: drain_patch
+      changed_when: item.isDisabled != (drain_state == 'out')
+      no_log: true
+
+    - name: Report the Hosts that changed state
+      ansible.builtin.debug:
+        msg: >-
+          {{ node_name }}: Host(ов) изменено
+          {{ (drain_patch.results | default([])) | selectattr('changed') | list | length }} из
+          {{ drain_node_hosts | length }}{{ ' (сухой прогон, панель не менялась)' if ansible_check_mode else '' }}
+
+    - name: Wait for the node to empty
+      # Панель считает пользователей по своему каналу управления, а не по
+      # состоянию сокетов, поэтому опрашивается именно она. Ожидание
+      # намеренно не фатально: на ноде с живыми сессиями оно не может
+      # завершиться успехом - см. «ЧТО ЭТО НЕ ДЕЛАЕТ» в начале файла.
+      ansible.builtin.uri:
+        url: "{{ remnawave_api_base }}/nodes"
+        method: GET
+        headers:
+          Authorization: "Bearer {{ remnawave_panel_token }}"
+        return_content: true
+        status_code: 200
+        timeout: "{{ remnawave_api_timeout }}"
+        validate_certs: "{{ remnawave_panel_validate_certs }}"
+      register: drain_nodes_poll
+      until: >-
+        (drain_nodes_poll.json | remnawave_response_items('nodes')
+         | selectattr('name', 'equalto', node_name) | map(attribute='usersOnline')
+         | map('int') | list | first | default(0)) == 0
+      retries: "{{ ((drain_wait_seconds | int) / (drain_poll_seconds | int)) | round(0, 'ceil') | int }}"
+      delay: "{{ drain_poll_seconds | int }}"
+      no_log: true
+      changed_when: false
+      check_mode: false
+      failed_when: false
+      when: drain_state == 'out'
+
+    - name: Report readiness for maintenance
+      ansible.builtin.debug:
+        msg: >-
+          {{ node_name }} выведен из балансировки: новые сессии на него не придут.
+          {{ ('Пользователей на нём нет - обслуживание никого не затронет.'
+              if drain_left | int == 0 else
+              'На ноде осталось ' ~ drain_left ~ ' - они не уйдут сами, пока не обновят '
+              ~ 'подписку, и перезапуск их разорвёт. Решать вам: обслуживать сейчас или '
+              ~ 'подождать.') }}
+          Вернуть: тот же playbook с -e drain_state=in. Проверить перед возвратом:
+          provision_node.yml --tags node_verify --limit {{ inventory_hostname }}
+      vars:
+        drain_left: >-
+          {{ (drain_nodes_poll.json | default({}) | remnawave_response_items('nodes')
+              | selectattr('name', 'equalto', node_name) | map(attribute='usersOnline')
+              | map('int') | list | first | default(0)) }}
+      when: drain_state == 'out'
+
+    - name: Report the return
+      ansible.builtin.debug:
+        msg: "{{ node_name }} возвращён в балансировку."
+      when: drain_state == 'in'

@@ -1,0 +1,11 @@
+[Unit]
+Description=Periodic verified Remnawave geodata update
+
+[Timer]
+OnCalendar={{ geodata_update_calendar }}
+RandomizedDelaySec=20m
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+

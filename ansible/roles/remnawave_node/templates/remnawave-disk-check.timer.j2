@@ -1,0 +1,10 @@
+[Unit]
+Description=Periodic Remnawave disk check
+
+[Timer]
+OnCalendar={{ remnawave_disk_check_calendar }}
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+

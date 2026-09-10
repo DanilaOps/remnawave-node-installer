@@ -38,7 +38,7 @@ export NEEDRESTART_MODE=a
 export NEEDRESTART_SUSPEND=1
 
 # ── Defaults ────────────────────────────────────────────────────────────────
-INSTALLER_VERSION="3.3.2-rw2"
+INSTALLER_VERSION="3.3.2-rw3"
 
 # Pin the node image to a released version, not a moving :latest, so the same script
 # yields the same Node/Xray build (reproducible installs + validation). Override with
@@ -88,6 +88,7 @@ DEFAULT_COUNTRY="NL"
 # firefox/chrome are stable across clients; "randomized" breaks some Xray builds
 # (macOS: "tls: CurvePreferences includes unsupported curve") — live-tested 2026-07-07.
 DEFAULT_FP="firefox"
+DEFAULT_TORRENT_BLOCK_DURATION="3600"
 
 # ── CLI-populated globals ───────────────────────────────────────────────────
 DRY_RUN=0
@@ -132,6 +133,12 @@ NAMESPACE_HASH=1                 # 1 = append a hash of NODE_NAME to tag namespa
 GEO=1
 GEO_DIR=""
 GEO_TIMEOUT="600"                # overall cap (s) for the whole geo-download stage
+TORRENT_BLOCKER=1                # native Remnawave Node plugin; disable with --no-torrent-blocker
+TORRENT_BLOCK_DURATION="$DEFAULT_TORRENT_BLOCK_DURATION"
+TORRENT_IGNORE_IPS=""           # comma-separated concrete IPv4/IPv6 addresses (no CIDR)
+TORRENT_IGNORE_USER_IDS=""       # comma-separated numeric Remnawave user IDs
+TORRENT_RULE_TAGS=""             # optional comma-separated custom Xray routing ruleTag values
+NODE_PLUGIN_NAME=""              # per-node plugin profile; derived after NODE_NAME is known
 NODE_PORT=""
 MASK=""
 GRPC_PORT=""
@@ -183,6 +190,7 @@ CONFIG_PROFILE_UUID=""
 INBOUND_UUID=""
 declare -a INBOUND_UUIDS=()      # all created/linked inbound UUIDs (for Internal Squad)
 NODE_UUID=""
+NODE_PLUGIN_UUID=""
 HOST_UUID=""
 INBOUND_TAG=""
 INBOUND_TAG_XHTTP=""
@@ -331,9 +339,27 @@ valid_cc()     { [[ "$1" =~ ^[A-Za-z]{2}$ ]]; }
 valid_url()    { [[ "$1" =~ ^https?://[^[:space:]/]+ ]]; }
 # Config-profile names: panel allows only letters, numbers, underscore, dash, space.
 valid_profile_name() { [[ "$1" =~ ^[A-Za-z0-9_\ -]+$ ]]; }
+valid_plugin_name() { [[ ${#1} -ge 2 && ${#1} -le 30 && "$1" =~ ^[A-Za-z0-9_\ -]+$ ]]; }
 # Panel username rules (backend-contract create-user): 3-36, letters/numbers/_/-.
 valid_username() { [[ "$1" =~ ^[A-Za-z0-9_-]{3,36}$ ]]; }
 sanitize_profile_name() { printf '%s' "$1" | tr -c 'A-Za-z0-9_ -' ' ' | tr -s ' ' | sed 's/^ *//;s/ *$//'; }
+
+default_node_plugin_name() {
+  local ns="$TAG_NAMESPACE"
+  # Node-plugin names are capped at 30 chars. Preserve the namespace hash when a
+  # long node name makes TAG_NAMESPACE exceed the available space.
+  if (( ${#ns} <= 27 )); then printf 'TB-%s' "$ns"
+  else printf 'TB-%s-%s' "${ns:0:18}" "${ns: -6}"
+  fi
+}
+
+kernel_supports_node_plugins() {
+  local release major minor
+  release="$(uname -r 2>/dev/null || true)"; release="${release%%-*}"
+  IFS=. read -r major minor _ <<< "$release"
+  [[ "$major" =~ ^[0-9]+$ && "$minor" =~ ^[0-9]+$ ]] || return 1
+  (( major > 5 || (major == 5 && minor >= 7) ))
+}
 
 valid_ipv4_cidr() {
   local ip="${1%%/*}" mask="" o
@@ -357,6 +383,18 @@ PY
   fi
   if [[ "$1" == *:* ]]; then [[ "$1" =~ ^[0-9A-Fa-f:]+$ ]]; return; fi
   valid_ipv4_cidr "$1"
+}
+valid_ip_list() {
+  [[ -z "$1" ]] && return 0
+  local item; local -a items
+  IFS=',' read -r -a items <<< "$1"
+  for item in "${items[@]}"; do valid_ip "$item" || return 1; done
+}
+valid_user_id_list() {
+  [[ -z "$1" ]] || [[ "$1" =~ ^[0-9]+(,[0-9]+)*$ ]]
+}
+valid_rule_tag_list() {
+  [[ -z "$1" ]] || [[ "$1" =~ ^[^,[:space:]]+(,[^,[:space:]]+)*$ ]]
 }
 valid_whitelist() {
   [[ -n "$1" ]] || return 1
@@ -519,6 +557,10 @@ panel_check_auth() {
   else
     panel_req GET /api/keygen >/dev/null \
       || die "Cannot reach panel or token lacks scope (GET /api/keygen failed). Pass --secret-key '<SECRET_KEY>' to bypass keygen: $PANEL_URL"
+  fi
+  if [[ "$TORRENT_BLOCKER" == "1" ]]; then
+    panel_req GET /api/node-plugins >/dev/null \
+      || die "Token lacks Node Plugins read scope (GET /api/node-plugins failed). Grant node-plugins read/create/update, or use --no-torrent-blocker."
   fi
   ok "Panel reachable, token valid."
 }
@@ -794,15 +836,27 @@ EOF
 # ── Base system ─────────────────────────────────────────────────────────────
 install_base() {
   step "Base packages"
-  if [[ "$DRY_RUN" == "1" ]]; then info "DRY-RUN: apt-get install curl jq openssl socat ca-certificates unzip"; return; fi
+  if [[ "$DRY_RUN" == "1" ]]; then info "DRY-RUN: apt-get install curl jq openssl socat ca-certificates unzip nftables"; return; fi
   if command -v apt-get >/dev/null 2>&1; then
     DEBIAN_FRONTEND=noninteractive apt-get update -qq
     DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
-      curl jq openssl socat ca-certificates iproute2 cron unzip >/dev/null
+      curl jq openssl socat ca-certificates iproute2 cron unzip nftables >/dev/null
   else
-    warn "Non-apt system: ensure curl, jq, openssl, socat, cron, unzip are installed."
+    warn "Non-apt system: ensure curl, jq, openssl, socat, cron, unzip and nftables are installed."
   fi
   ok "Base packages ready."
+}
+
+check_torrent_blocker_requirements() {
+  [[ "$TORRENT_BLOCKER" == "1" ]] || return 0
+  step "Torrent Blocker requirements"
+  kernel_supports_node_plugins \
+    || die "Remnawave Torrent Blocker requires the running Linux kernel >= 5.7 (found $(uname -r 2>/dev/null || echo unknown)). Boot a supported kernel, then re-run."
+  command -v nft >/dev/null 2>&1 \
+    || die "Remnawave Torrent Blocker requires nftables, but the nft command is unavailable."
+  nft --version >/dev/null 2>&1 \
+    || die "The nft command exists but is not usable; fix nftables before enabling Torrent Blocker."
+  ok "Torrent Blocker prerequisites: kernel $(uname -r), $(nft --version | head -n1), NET_ADMIN is present in generated Compose."
 }
 install_docker() {
   step "Docker"
@@ -1710,6 +1764,16 @@ panel_find_node_uuid() {
   fi
   printf '%s' "$(head -n1 <<<"$uuids")"
 }
+panel_find_node_plugin_uuid() {
+  local name="$1" r uuids
+  r="$(panel_req GET /api/node-plugins 2>/dev/null)" || return 4
+  uuids="$(printf '%s' "$r" | jq -r --arg n "$name" \
+    '.response.nodePlugins[]? | select(.name == $n) | .uuid')"
+  (( $(grep -c . <<<"$uuids") > 1 )) && {
+    printf 'AMBIGUOUS: %s node plugins named "%s": %s\n' \
+      "$(grep -c . <<<"$uuids")" "$name" "$(tr '\n' ' ' <<<"$uuids")" >&2; return 3; }
+  printf '%s' "$(head -n1 <<<"$uuids")"
+}
 panel_find_host_uuid() {
   # Match a host by remark + address (hosts have no unique name field).
   local remark="$1" addr="$2" r uuids
@@ -1826,6 +1890,72 @@ adopt_existing_reality_keys() {
   fi
 }
 
+# Create/update a dedicated plugin profile, preserving any non-Torrent settings
+# from the node's current plugin on first adoption. A dedicated copy avoids
+# enabling Torrent Blocker on other nodes that happen to share the old profile.
+setup_torrent_blocker() {
+  [[ "$TORRENT_BLOCKER" == "1" ]] || { info "Native Torrent Blocker disabled (--no-torrent-blocker)."; return 0; }
+  if [[ "$DRY_RUN" == "1" ]]; then
+    info "DRY-RUN: create/update node-plugin '$NODE_PLUGIN_NAME'; enable Torrent Blocker (${TORRENT_BLOCK_DURATION}s); attach it to node"
+    NODE_PLUGIN_UUID="dry-plugin"; return 0
+  fi
+
+  local node_resp current_uuid target_uuid source_resp base_config='{}' resp body
+  local ip_json user_json tag_json tb_config merged_config linked
+  node_resp="$(panel_req GET "/api/nodes/${NODE_UUID}")" || die "GET node failed before Torrent Blocker setup."
+  current_uuid="$(printf '%s' "$node_resp" | jq -r '.response.activePluginUuid // empty')"
+
+  local _rc=0
+  target_uuid="$(panel_find_node_plugin_uuid "$NODE_PLUGIN_NAME")" || _rc=$?
+  (( _rc == 3 )) && die "Multiple node plugins named '$NODE_PLUGIN_NAME' — remove/rename duplicates in the panel, then re-run."
+  (( _rc == 4 )) && die "GET /api/node-plugins failed (token needs node-plugins:read scope)."
+
+  if [[ -n "$target_uuid" ]]; then
+    source_resp="$(panel_req GET "/api/node-plugins/${target_uuid}")" \
+      || die "GET node-plugin $target_uuid failed."
+    base_config="$(printf '%s' "$source_resp" | jq -c '.response.pluginConfig // {}')"
+    info "Node-plugin '$NODE_PLUGIN_NAME' exists ($target_uuid) — updating Torrent Blocker in place."
+  else
+    # Copy the old profile before switching this node, so ingress/egress filters,
+    # shared connection-drop settings, etc. are not lost.
+    if [[ -n "$current_uuid" ]]; then
+      source_resp="$(panel_req GET "/api/node-plugins/${current_uuid}")" \
+        || die "GET current node-plugin $current_uuid failed; refusing to replace it blindly."
+      base_config="$(printf '%s' "$source_resp" | jq -c '.response.pluginConfig // {}')"
+      info "Copying existing node-plugin $current_uuid into the dedicated profile before enabling Torrent Blocker."
+    fi
+    resp="$(panel_req POST /api/node-plugins "$(jq -n --arg n "$NODE_PLUGIN_NAME" '{name:$n}')")" \
+      || die "Create node-plugin '$NODE_PLUGIN_NAME' failed (token needs node-plugins:create scope)."
+    target_uuid="$(printf '%s' "$resp" | jq -r '.response.uuid // empty')"
+    [[ -n "$target_uuid" ]] || die "No node-plugin UUID in create response."
+    ok "node-plugin: $NODE_PLUGIN_NAME → $target_uuid"
+  fi
+
+  ip_json="$(jq -cn --arg s "$TORRENT_IGNORE_IPS" '$s | if length == 0 then [] else split(",") end')"
+  user_json="$(jq -cn --arg s "$TORRENT_IGNORE_USER_IDS" '$s | if length == 0 then [] else split(",") | map(tonumber) end')"
+  tag_json="$(jq -cn --arg s "$TORRENT_RULE_TAGS" '$s | if length == 0 then [] else split(",") end')"
+  tb_config="$(jq -cn --argjson duration "$TORRENT_BLOCK_DURATION" --argjson ips "$ip_json" \
+    --argjson users "$user_json" --argjson tags "$tag_json" \
+    '{enabled:true, blockDuration:$duration, ignoreLists:{ip:$ips, userId:$users}}
+     + (if ($tags|length)>0 then {includeRuleTags:$tags} else {} end)')"
+  # Preserve advanced fields (webhookUrl/rulePlacement) already present in the
+  # profile, while treating an empty --torrent-rule-tags as an explicit clear.
+  merged_config="$(printf '%s' "$base_config" | jq -c --argjson tb "$tb_config" \
+    '.torrentBlocker = (((.torrentBlocker // {}) + $tb)
+      | if ($tb | has("includeRuleTags")) then . else del(.includeRuleTags) end)')"
+  body="$(jq -n --arg u "$target_uuid" --argjson c "$merged_config" '{uuid:$u, pluginConfig:$c}')"
+  panel_req PATCH /api/node-plugins "$body" >/dev/null \
+    || die "Update Torrent Blocker config failed (token needs node-plugins:update scope)."
+
+  body="$(jq -n --arg u "$NODE_UUID" --arg p "$target_uuid" '{uuid:$u, activePluginUuid:$p}')"
+  panel_req PATCH /api/nodes "$body" >/dev/null || die "Attach Torrent Blocker plugin to node failed."
+  linked="$(panel_req GET "/api/nodes/${NODE_UUID}" | jq -r '.response.activePluginUuid // empty')"
+  [[ "$linked" == "$target_uuid" ]] \
+    || die "Node kept activePluginUuid '${linked:-<none>}', expected '$target_uuid'."
+  NODE_PLUGIN_UUID="$target_uuid"
+  ok "Torrent Blocker enabled: ${TORRENT_BLOCK_DURATION}s; plugin $NODE_PLUGIN_NAME ($NODE_PLUGIN_UUID)."
+}
+
 # ── Panel orchestration ─────────────────────────────────────────────────────
 setup_panel_resources() {
   step "Creating panel resources via API"
@@ -1842,7 +1972,7 @@ setup_panel_resources() {
       warn "jq unavailable — skipping the Xray config JSON preview (install jq to preview it)."
     fi
     NODE_SECRET_KEY="DRY_SECRET_KEY"; CONFIG_PROFILE_UUID="dry-cp"; INBOUND_UUID="dry-ib"
-    NODE_UUID="dry-node"; HOST_UUID="dry-host"; return
+    NODE_UUID="dry-node"; setup_torrent_blocker; HOST_UUID="dry-host"; return
   fi
 
   if [[ -n "$SECRET_KEY_OVERRIDE" ]]; then
@@ -1982,6 +2112,10 @@ setup_panel_resources() {
   (( active >= ${#RES_UUID[@]} )) || die "Node linked $active inbound(s), expected ${#RES_UUID[@]} — Xray may bind nothing."
   ok "Node linked to profile $CONFIG_PROFILE_UUID with $active inbound(s)."
 
+  # The native plugin owns webhook detection, nftables blocking and connection
+  # teardown. It is attached only after the node/profile link is verified.
+  setup_torrent_blocker
+
   # ── 3. One host per active inbound (create or update by remark+address) ──
   HOST_UUIDS=()
   local i suffix hremark extra seclayer h_uuid
@@ -2057,10 +2191,12 @@ save_state() {
     --arg node_name "$NODE_NAME" --arg profile_name "$PROFILE_NAME" \
     --arg host_remark "$HOST_REMARK" --arg country "$COUNTRY" \
     --arg host_address "$HOST_ADDRESS" --arg mask "$MASK" --arg transport "$TRANSPORT" \
+    --arg plugin "$NODE_PLUGIN_UUID" --arg plugin_name "$NODE_PLUGIN_NAME" \
     '{domain:$domain, node_uuid:$node, config_profile_uuid:$cp, inbound_uuid:$ib,
       host_uuid:$host, reality_public_key:$pub, reality_short_id:$sid,
       node_name:$node_name, profile_name:$profile_name, host_remark:$host_remark,
       country:$country, host_address:$host_address, mask:$mask, transport:$transport,
+      node_plugin_uuid:$plugin, node_plugin_name:$plugin_name,
       created_at:$now}' \
     > "$STATE_DIR/node.json"
   chmod 600 "$STATE_DIR/node.json"
@@ -2112,6 +2248,7 @@ ACME_EMAIL COUNTRY NODE_PORT SELFSTEAL_PORT RENEW_PORT SSH_PORT MASK FP TEMPLATE
 TCP_PORTS UDP_PORTS NA_REF NODE_NAME HOST_REMARK PROFILE_NAME HOST_ADDRESS SQUAD_NAME \
 SQUAD_UUID SQUAD_CREATE TRANSPORT XHTTP_PORT XHTTP_PATH GRPC_PORT GRPC_SERVICE \
 NODE_PUBLIC_IP NODE_IMAGE SKIP_FIREWALL SKIP_UPDATE SKIP_CROWDSEC HARDENING GEO RANDOMIZE ROTATE_KEYS NAMESPACE_HASH \
+TORRENT_BLOCKER TORRENT_BLOCK_DURATION TORRENT_IGNORE_IPS TORRENT_IGNORE_USER_IDS TORRENT_RULE_TAGS NODE_PLUGIN_NAME \
 BRIDGE BRIDGE_ENTRY_IP BRIDGE_SS_PORT BRIDGE_METHOD BRIDGE_USER ENTRY_DOMAIN"
 
 # Write every SAVED_KEYS value as a source-able KEY=value line. printf %q keeps
@@ -3102,6 +3239,17 @@ Certificate:
                           already owns this install's inbound tag; default refuses
                           (never touches a foreign profile silently)
 
+Native Torrent Blocker (Remnawave Node plugin; enabled by default):
+  --torrent-blocker       enable native webhook+nftables Torrent Blocker (default)
+  --no-torrent-blocker    do not create or attach the Torrent Blocker plugin
+  --torrent-block-duration <s>  source-IP block time in seconds (default $DEFAULT_TORRENT_BLOCK_DURATION;
+                          0 means until nftables reset/restart)
+  --torrent-ignore-ips <list>   comma-separated concrete IPv4/IPv6 addresses; CIDR unsupported
+  --torrent-ignore-users <ids>  comma-separated numeric Remnawave user IDs
+  --torrent-rule-tags <tags>    comma-separated custom Xray ruleTag values to monitor too
+  --node-plugin-name <name>     dedicated plugin profile name (default derived from node;
+                          2-30 letters/numbers/_/-/space)
+
 Optional:
   --country <CC>          ISO-2 country code (default $DEFAULT_COUNTRY)
   --node-name <name>      panel node name (prompted; default <CC>-<seq> auto)
@@ -3181,6 +3329,13 @@ parse_args() {
       --rotate-keys) ROTATE_KEYS=1; CLI_SET[ROTATE_KEYS]=1; shift ;;
       --no-rotate-keys) ROTATE_KEYS=0; CLI_SET[ROTATE_KEYS]=1; shift ;;
       --adopt-profile) ADOPT_PROFILE=1; shift ;;
+      --torrent-blocker) TORRENT_BLOCKER=1; CLI_SET[TORRENT_BLOCKER]=1; shift ;;
+      --no-torrent-blocker) TORRENT_BLOCKER=0; CLI_SET[TORRENT_BLOCKER]=1; shift ;;
+      --torrent-block-duration) TORRENT_BLOCK_DURATION="$2"; CLI_SET[TORRENT_BLOCK_DURATION]=1; shift 2 ;;
+      --torrent-ignore-ips) TORRENT_IGNORE_IPS="${2//[[:space:]]/}"; CLI_SET[TORRENT_IGNORE_IPS]=1; shift 2 ;;
+      --torrent-ignore-users) TORRENT_IGNORE_USER_IDS="${2//[[:space:]]/}"; CLI_SET[TORRENT_IGNORE_USER_IDS]=1; shift 2 ;;
+      --torrent-rule-tags) TORRENT_RULE_TAGS="${2//[[:space:]]/}"; CLI_SET[TORRENT_RULE_TAGS]=1; shift 2 ;;
+      --node-plugin-name) NODE_PLUGIN_NAME="$2"; CLI_SET[NODE_PLUGIN_NAME]=1; shift 2 ;;
       --mask) MASK="$2"; shift 2 ;;
       --grpc-port) GRPC_PORT="$2"; shift 2 ;;
       --grpc-service) GRPC_SERVICE="$2"; shift 2 ;;
@@ -3260,6 +3415,9 @@ compute_inbounds() {
     [[ -n "$nshash" ]] && tagid="${tagid}-${nshash}"
   fi
   TAG_NAMESPACE="$tagid"
+  if [[ -z "$NODE_PLUGIN_NAME" ]]; then
+    NODE_PLUGIN_NAME="$(default_node_plugin_name)"
+  fi
   INBOUND_TAG="${tagid}-REALITY"
   INBOUND_TAG_XHTTP="${tagid}-XHTTP"
   INBOUND_TAG_GRPC="${tagid}-GRPC"
@@ -3430,6 +3588,23 @@ collect_inputs() {
   fi
   [[ -n "$HOST_REMARK" ]] || die "Host remark required."
   compute_inbounds
+  # Native Torrent Blocker is on by default for new installs. Resume keeps the
+  # saved choice, while explicit CLI flags always win.
+  if [[ "$NONINTERACTIVE" != "1" && "$RESUME" != "1" && -z "${CLI_SET[TORRENT_BLOCKER]:-}" ]]; then
+    yes_no "Enable native Remnawave Torrent Blocker (webhook + nftables source-IP block)?" "y" \
+      && TORRENT_BLOCKER=1 || TORRENT_BLOCKER=0
+  fi
+  if [[ "$TORRENT_BLOCKER" == "1" ]]; then
+    if [[ "$NONINTERACTIVE" != "1" && "$RESUME" != "1" && -z "${CLI_SET[TORRENT_BLOCK_DURATION]:-}" ]]; then
+      TORRENT_BLOCK_DURATION="$(read_default "Torrent source-IP block duration (seconds)" "$TORRENT_BLOCK_DURATION")"
+    fi
+    [[ "$TORRENT_BLOCK_DURATION" =~ ^[0-9]+$ ]] || die "Bad --torrent-block-duration (non-negative integer required)."
+    (( TORRENT_BLOCK_DURATION <= 2147483647 )) || die "--torrent-block-duration is too large."
+    valid_ip_list "$TORRENT_IGNORE_IPS" || die "Bad --torrent-ignore-ips: use concrete IPv4/IPv6 addresses only (no CIDR)."
+    valid_user_id_list "$TORRENT_IGNORE_USER_IDS" || die "Bad --torrent-ignore-users: comma-separated numeric IDs required."
+    valid_rule_tag_list "$TORRENT_RULE_TAGS" || die "Bad --torrent-rule-tags: comma-separated non-empty tags without spaces required."
+    valid_plugin_name "$NODE_PLUGIN_NAME" || die "Bad --node-plugin-name: 2-30 letters/numbers/_/-/space only."
+  fi
   pick_squad
   # Config-profile name (prompted). Panel restricts to letters/numbers/_/-/space,
   # so the suggested default is a sanitized copy of the node name.
@@ -3532,6 +3707,11 @@ print_plan() {
   log "  Host address:      $HOST_ADDRESS"
   log "  Internal Squad:    $( [[ -n "$SQUAD_UUID" ]] && echo "$SQUAD_UUID" || { [[ -n "$SQUAD_NAME" ]] && echo "$SQUAD_NAME" || echo "(none — enable inbound in a squad manually)"; } )"
   log "  Config-profile:    $PROFILE_NAME"
+  if [[ "$TORRENT_BLOCKER" == "1" ]]; then
+    log "  Torrent Blocker:   enabled — ${TORRENT_BLOCK_DURATION}s, plugin '$NODE_PLUGIN_NAME'$( [[ -n "$TORRENT_RULE_TAGS" ]] && echo ", ruleTags=$TORRENT_RULE_TAGS" )"
+  else
+    log "  Torrent Blocker:   disabled"
+  fi
   log "  Node/SSH port:     $NODE_PORT / $SSH_PORT"
   log "  Masking model:     $MASK"
   if [[ "$MASK" == "grpc-tls" ]]; then
@@ -3592,7 +3772,8 @@ edit_plan() {
       1) while :; do DOMAIN="$(read_default "Selfsteal domain" "$DOMAIN")"; valid_domain "$DOMAIN" && break; warn "Invalid domain."; done ;;
       2) while :; do PANEL_URL="$(read_default "Panel URL" "$PANEL_URL")"; [[ "$PANEL_URL" != http://* && "$PANEL_URL" != https://* ]] && PANEL_URL="https://$PANEL_URL"; valid_url "$PANEL_URL" && break; warn "Invalid URL."; done ;;
       3) while :; do COUNTRY="$(read_default "Country code (ISO-2)" "$COUNTRY")"; valid_cc "$COUNTRY" && break; warn "Two letters."; done; compute_inbounds ;;
-      4) while :; do NODE_NAME="$(read_default "Node name" "$NODE_NAME")"; [[ -n "$NODE_NAME" ]] && break; warn "Required."; done; compute_inbounds ;;
+      4) while :; do NODE_NAME="$(read_default "Node name" "$NODE_NAME")"; [[ -n "$NODE_NAME" ]] && break; warn "Required."; done
+         [[ -z "${CLI_SET[NODE_PLUGIN_NAME]:-}" ]] && NODE_PLUGIN_NAME=""; compute_inbounds ;;
       5) while :; do HOST_REMARK="$(read_default "Host label" "$HOST_REMARK")"; [[ -n "$HOST_REMARK" ]] && break; warn "Required."; done ;;
       6) while :; do HOST_ADDRESS="$(read_default "Host address (domain/IPv4/IPv6)" "$HOST_ADDRESS")"; { valid_domain "$HOST_ADDRESS" || valid_ip "$HOST_ADDRESS"; } && break; warn "domain, IPv4 or IPv6."; done ;;
       7) while :; do PROFILE_NAME="$(read_default "Config-profile name" "$PROFILE_NAME")"; valid_profile_name "$PROFILE_NAME" && break; warn "letters/numbers/_/-/space only."; done ;;
@@ -3642,6 +3823,12 @@ run_preflight_checks() {
   local c miss=""
   for c in curl jq openssl docker nft timeout; do command -v "$c" >/dev/null 2>&1 || miss+=" $c"; done
   [[ -z "$miss" ]] && ok "Required commands present." || warn "Missing (installer adds most):$miss"
+  if [[ "$TORRENT_BLOCKER" == "1" ]]; then
+    if kernel_supports_node_plugins; then ok "Torrent Blocker kernel requirement met: $(uname -r)"
+    else warn "Torrent Blocker requires the running kernel >= 5.7 (found $(uname -r 2>/dev/null || echo unknown))."; fail=1; fi
+    if command -v nft >/dev/null 2>&1 && nft --version >/dev/null 2>&1; then ok "Torrent Blocker nftables requirement met."
+    else warn "Torrent Blocker requires a working nft command (the real installer installs nftables on apt systems)."; fi
+  fi
   # Occupied ports.
   if command -v ss >/dev/null 2>&1; then
     local p
@@ -3664,6 +3851,10 @@ run_preflight_checks() {
   # Panel API scope (read-only GET).
   if panel_req GET /api/nodes >/dev/null 2>&1; then ok "Panel API reachable; token can list nodes."
   else warn "Panel API check failed — verify --panel-url and token scope."; fail=1; fi
+  if [[ "$TORRENT_BLOCKER" == "1" ]]; then
+    if panel_req GET /api/node-plugins >/dev/null 2>&1; then ok "Token can list Node Plugins."
+    else warn "Token cannot GET /api/node-plugins — grant Node Plugins read/create/update scopes."; fail=1; fi
+  fi
   log
   if [[ "$fail" == "0" ]]; then ok "Preflight passed — no blocking issues."; return 0
   else warn "Preflight found blocking issues (above). Resolve them before installing."; return 1; fi
@@ -3836,6 +4027,7 @@ main() {
   # Interactive: review the plan with numbered fields and fix any before install.
   # Dry-run / non-interactive just print it.
   if [[ "$NONINTERACTIVE" == "1" || "$DRY_RUN" == "1" ]]; then print_plan; else edit_plan; fi
+  [[ "$DRY_RUN" == "1" ]] || check_torrent_blocker_requirements
   [[ "$DRY_RUN" == "1" ]] || panel_check_auth
 
   # Preflight mode stops here after the read-only checks — server + panel untouched.
@@ -3909,6 +4101,7 @@ main() {
     log "  shortId:      $REALITY_SHORT_ID"
   fi
   log "  State:        $STATE_DIR/node.json"
+  [[ "$TORRENT_BLOCKER" == "1" ]] && log "  Torrent:      ON — ${TORRENT_BLOCK_DURATION}s, plugin $NODE_PLUGIN_UUID ($NODE_PLUGIN_NAME)"
   [[ -n "$FRONT_IP" ]] && log "  Front-gate:   tcp/443 restricted to $FRONT_IP (SNI-mirror cascade)"
   if [[ "$BRIDGE" == "1" ]]; then
     log "  Cascade:      EXIT node — SS bridge :$BRIDGE_SS_PORT ($BRIDGE_TAG), user '$BRIDGE_USER'"

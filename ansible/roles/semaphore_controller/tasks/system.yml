@@ -1,0 +1,125 @@
+---
+- name: Install controller packages
+  ansible.builtin.apt:
+    name: "{{ controller_packages }}"
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+    lock_timeout: 300
+
+- name: Configure unattended upgrades
+  ansible.builtin.copy:
+    content: |
+      APT::Periodic::Update-Package-Lists "1";
+      APT::Periodic::Unattended-Upgrade "1";
+      APT::Periodic::AutocleanInterval "7";
+    dest: /etc/apt/apt.conf.d/20auto-upgrades
+    owner: root
+    group: root
+    mode: "0644"
+  when: controller_unattended_upgrades_enabled | bool
+
+- name: Check for an existing swap file
+  ansible.builtin.stat:
+    path: "{{ controller_swap_path }}"
+  register: controller_swap_file
+  when: controller_swap_enabled | bool
+
+- name: Create the swap file
+  # 2 GB of RAM is enough for Ansible until two runs and a package install
+  # overlap; swap is what keeps that from becoming an OOM kill mid-provision.
+  ansible.builtin.command:
+    argv:
+      - fallocate
+      - -l
+      - "{{ controller_swap_size_mb }}M"
+      - "{{ controller_swap_path }}"
+  when:
+    - controller_swap_enabled | bool
+    - not controller_swap_file.stat.exists
+    - not ansible_check_mode
+  changed_when: true
+
+- name: Restrict the swap file
+  ansible.builtin.file:
+    path: "{{ controller_swap_path }}"
+    owner: root
+    group: root
+    mode: "0600"
+  when:
+    - controller_swap_enabled | bool
+    - not controller_swap_file.stat.exists
+    - not ansible_check_mode
+
+- name: Format the swap file
+  ansible.builtin.command:
+    argv: [mkswap, "{{ controller_swap_path }}"]
+  when:
+    - controller_swap_enabled | bool
+    - not controller_swap_file.stat.exists
+  changed_when: true
+
+- name: Enable the swap file at boot
+  ansible.posix.mount:
+    path: none
+    src: "{{ controller_swap_path }}"
+    fstype: swap
+    opts: sw
+    state: present
+  when: controller_swap_enabled | bool
+
+- name: Read active swap
+  ansible.builtin.command:
+    argv: [swapon, --noheadings, --show=NAME]
+  register: controller_swap_active
+  changed_when: false
+  check_mode: false
+  when: controller_swap_enabled | bool
+
+- name: Activate the swap file now
+  ansible.builtin.command:
+    argv: [swapon, "{{ controller_swap_path }}"]
+  when:
+    - controller_swap_enabled | bool
+    - controller_swap_path not in (controller_swap_active.stdout | default(''))
+  changed_when: true
+
+- name: Create the fail2ban jail directory
+  # The package creates it, but a dry-run has only simulated the package, and the
+  # template module refuses a destination directory that does not exist. Creating
+  # it explicitly costs nothing and makes the first run order-independent.
+  ansible.builtin.file:
+    path: /etc/fail2ban/jail.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  when: controller_fail2ban_enabled | bool
+
+- name: Configure fail2ban for the controller's own SSH
+  ansible.builtin.template:
+    src: fail2ban-sshd.local.j2
+    dest: /etc/fail2ban/jail.d/remnawave-controller-sshd.local
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart fail2ban
+  when: controller_fail2ban_enabled | bool
+
+- name: Enable fail2ban
+  ansible.builtin.systemd_service:
+    name: fail2ban
+    state: started
+    enabled: true
+  when:
+    - controller_fail2ban_enabled | bool
+    # In a dry-run the package was not installed, so the unit does not exist yet.
+    - not ansible_check_mode or 'fail2ban.service' in controller_systemd_units
+
+- name: Report the fail2ban unit a dry-run would enable
+  ansible.builtin.debug:
+    msg: Would start and enable fail2ban.service, which this run would install first.
+  when:
+    - controller_fail2ban_enabled | bool
+    - ansible_check_mode
+    - "'fail2ban.service' not in controller_systemd_units"
